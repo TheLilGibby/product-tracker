@@ -1,0 +1,156 @@
+{% extends 'base.html' %}
+
+{% block title %}Product Tracker - Dashboard{% endblock %}
+
+{% block content %}
+<header class="mb-4">
+    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+        <div>
+            <h2>Your Tracked Products</h2>
+            <p>Track product prices and availability, get notified via Discord when prices drop.</p>
+            <p><small>
+                {% if config.CHECK_INTERVAL_SECONDS > 0 %}
+                    Products are automatically checked every {{ config.CHECK_INTERVAL_MINUTES }} minutes and {{ config.CHECK_INTERVAL_SECONDS }} seconds
+                {% else %}
+                    Products are automatically checked every {{ config.CHECK_INTERVAL_MINUTES }} minutes
+                {% endif %}
+            </small></p>
+        </div>
+        <div style="display: flex; gap: 1rem; flex-direction: column;">
+            <div>
+                <a href="{{ url_for('main.add_product') }}" role="button">Add New Product</a>
+                <a href="{{ url_for('main.update_all_products') }}" role="button" class="secondary">Update All Products</a>
+            </div>
+            
+            <!-- Check Interval Settings Form -->
+            <div style="background-color: #f8f9fa; padding: 1rem; border-radius: 5px; border: 1px solid #dee2e6;">
+                <h5 style="margin-top: 0;">Check Interval Settings</h5>
+                <form method="post" action="{{ url_for('main.update_check_interval') }}" style="display: flex; gap: 0.5rem; align-items: flex-end;">
+                    <div>
+                        <label for="check_interval_minutes" style="margin-bottom: 0.25rem; font-size: 0.875rem;">Minutes</label>
+                        <input type="number" id="check_interval_minutes" name="check_interval_minutes" min="0" value="{{ config.CHECK_INTERVAL_MINUTES }}" style="padding: 0.25rem 0.5rem;">
+                    </div>
+                    <div>
+                        <label for="check_interval_seconds" style="margin-bottom: 0.25rem; font-size: 0.875rem;">Seconds</label>
+                        <input type="number" id="check_interval_seconds" name="check_interval_seconds" min="0" max="59" value="{{ config.CHECK_INTERVAL_SECONDS }}" style="padding: 0.25rem 0.5rem;">
+                    </div>
+                    <button type="submit" style="padding: 0.25rem 0.5rem; margin-bottom: 0; font-size: 0.875rem;">Apply</button>
+                </form>
+                <p style="margin-top: 0.5rem; margin-bottom: 0; font-size: 0.75rem; color: #6c757d;">Minimum interval: 10 seconds</p>
+            </div>
+            
+            <!-- Timezone Settings Form -->
+            <div style="background-color: #f8f9fa; padding: 1rem; border-radius: 5px; border: 1px solid #dee2e6;">
+                <h5 style="margin-top: 0;">Timezone Settings</h5>
+                <form method="post" action="{{ url_for('main.update_timezone') }}" style="display: flex; gap: 0.5rem; align-items: flex-end;">
+                    <div style="flex: 1;">
+                        <label for="timezone" style="margin-bottom: 0.25rem; font-size: 0.875rem;">Timezone</label>
+                        <select id="timezone" name="timezone" style="padding: 0.25rem 0.5rem; width: 100%;">
+                            {% for tz in timezones %}
+                                <option value="{{ tz }}" {% if tz == current_timezone %}selected{% endif %}>{{ tz }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <button type="submit" style="padding: 0.25rem 0.5rem; margin-bottom: 0; font-size: 0.875rem;">Apply</button>
+                </form>
+                <p style="margin-top: 0.5rem; margin-bottom: 0; font-size: 0.75rem; color: #6c757d;">Current timezone: {{ current_timezone }}</p>
+            </div>
+        </div>
+    </div>
+</header>
+
+{% if products %}
+    <div class="product-grid">
+        {% for product in products %}
+            <article class="product-card">
+                <div style="text-align: center; padding: 1rem; background-color: #f8f9fa; height: 220px; display: flex; align-items: center; justify-content: center;">
+                    {% if product.image_url %}
+                        <img src="{{ product.image_url }}" alt="{{ product.name }}" style="max-height: 200px; max-width: 100%;">
+                    {% else %}
+                        <svg class="icon" style="width: 4rem; height: 4rem; color: #9ca3af;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                    {% endif %}
+                </div>
+                
+                <div class="product-card-content">
+                    <h3>{{ product.name|truncate(50) }}</h3>
+                    
+                    <div>
+                        {% if product.current_price %}
+                            <p class="current-price">
+                                ${{ "%.2f"|format(product.current_price) }}
+                                {% if product.target_price and product.current_price <= product.target_price %}
+                                    <span class="badge badge-success">Target reached!</span>
+                                {% endif %}
+                            </p>
+                        {% else %}
+                            <p style="color: var(--text-light);">Price not available</p>
+                        {% endif %}
+                        
+                        {% if product.target_price %}
+                            <p class="target-price">
+                                Target: ${{ "%.2f"|format(product.target_price) }}
+                            </p>
+                        {% endif %}
+                    </div>
+                    
+                    <div>
+                        {% if product.available %}
+                            <span class="badge badge-success">In Stock</span>
+                        {% else %}
+                            <span class="badge badge-danger">Out of Stock</span>
+                        {% endif %}
+                        
+                        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-light);">
+                            Last checked: {{ format_datetime(product.last_checked, current_timezone) }}
+                        </p>
+                    </div>
+                </div>
+                <div class="product-card-footer">
+                    <a href="{{ url_for('main.product_detail', product_id=product.id) }}" role="button" style="padding: 0.25rem 0.5rem; margin: 0;">Details</a>
+                    <a href="{{ url_for('main.update_product', product_id=product.id) }}" role="button" class="secondary" style="padding: 0.25rem 0.5rem; margin: 0;">
+                        <svg class="icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                            <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+                        </svg>
+                        Update
+                    </a>
+                </div>
+            </article>
+        {% endfor %}
+    </div>
+{% else %}
+    <div style="padding: 1.5rem; background-color: #dbeafe; color: #1e40af; border-radius: 5px;">
+        <p style="margin: 0;">No products are being tracked yet. <a href="{{ url_for('main.add_product') }}">Add your first product</a> to get started!</p>
+    </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Timezone selector enhancements
+    document.addEventListener('DOMContentLoaded', function() {
+        const timezoneSelect = document.getElementById('timezone');
+        
+        // Add search functionality to make it easier to find timezones
+        timezoneSelect.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                timezoneSelect.blur();
+                return;
+            }
+            
+            const letter = e.key.toLowerCase();
+            if (letter.length === 1 && /[a-z]/i.test(letter)) {
+                for (let i = 0; i < timezoneSelect.options.length; i++) {
+                    const option = timezoneSelect.options[i];
+                    if (option.text.toLowerCase().startsWith(letter)) {
+                        timezoneSelect.selectedIndex = i;
+                        break;
+                    }
+                }
+            }
+        });
+    });
+</script>
+{% endblock %} 

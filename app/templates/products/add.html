@@ -1,0 +1,63 @@
+{% extends 'base.html' %}
+
+{% block title %}Add New Product - Product Tracker{% endblock %}
+
+{% block content %}
+<header class="mb-4">
+    <h2>Add New Product</h2>
+    <p>Enter the details of the product you want to track. We'll fetch its information and start monitoring it.</p>
+</header>
+
+<form method="post" action="{{ url_for('main.add_product') }}">
+    <div class="mb-4">
+        <label for="url">Product URL <span style="color: red;">*</span></label>
+        <input type="url" id="url" name="url" placeholder="https://www.amazon.com/product-page" required>
+        <small>Currently supported sites: Amazon, Walmart, Newegg, Microcenter, Best Buy, and B&H Photo Video</small>
+    </div>
+    
+    <div class="mb-4">
+        <label for="scraper_type">Store/Website <span style="color: red;">*</span></label>
+        <select id="scraper_type" name="scraper_type" required>
+            <option value="">-- Select Store --</option>
+            <option value="amazon">Amazon</option>
+            <option value="walmart">Walmart</option>
+            <option value="newegg">Newegg</option>
+            <option value="microcenter">Microcenter</option>
+            <option value="bestbuy">Best Buy</option>
+            <option value="bh">B&H Photo Video</option>
+        </select>
+        <small>Select the store or website that your product link is from</small>
+    </div>
+    
+    <div class="mb-4">
+        <label for="target_price">Target Price</label>
+        <input type="number" id="target_price" name="target_price" step="0.01" min="0" placeholder="49.99">
+        <small>You'll receive a notification when the price drops below this amount</small>
+    </div>
+    
+    <div class="mb-4">
+        <label for="discord_webhook">Discord Webhook URL</label>
+        <input type="url" id="discord_webhook" name="discord_webhook" placeholder="https://discord.com/api/webhooks/...">
+        <small>URL for sending Discord notifications (optional)</small>
+    </div>
+    
+    <fieldset>
+        <legend>Notification Preferences</legend>
+        
+        <label>
+            <input type="checkbox" id="notify_price" name="notify_price" checked>
+            Notify me when price drops
+        </label>
+        
+        <label>
+            <input type="checkbox" id="notify_availability" name="notify_availability" checked>
+            Notify me when product becomes available
+        </label>
+    </fieldset>
+    
+    <div style="margin-top: 2rem;">
+        <button type="submit">Add Product</button>
+        <a href="{{ url_for('main.index') }}" role="button" class="secondary">Cancel</a>
+    </div>
+</form>
+{% endblock %} 

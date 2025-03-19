@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.env
+.venv/
+Scripts/
+Include/
+Lib/
+
+# Project specifics
+data/
+logs/
+*.log
+*.db
+.DS_Store
+
+# Docker
+.dockerignore
+Dockerfile
+docker-compose.yml 

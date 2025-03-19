@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Product Tracker{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/simple-css-framework@2.0.3/dist/simple.min.css">
+    <style>
+        /* Custom styles to enhance SimpleCSS */
+        :root {
+            --accent: #4d7c0f;
+            --accent-bg: #ecfdf5;
+        }
+        
+        /* Header styles */
+        body > header {
+            padding: 1rem;
+            background: var(--accent);
+            color: white;
+            margin-bottom: 2rem;
+        }
+        
+        body > header h1 {
+            margin: 0;
+        }
+        
+        body > header nav {
+            margin-top: 1rem;
+        }
+        
+        body > header nav a {
+            color: white;
+            margin-right: 1rem;
+        }
+        
+        /* Card styles for products */
+        .product-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 1.5rem;
+        }
+        
+        .product-card {
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            padding: 0;
+            overflow: hidden;
+        }
+        
+        .product-card img {
+            max-height: 200px;
+            width: 100%;
+            object-fit: contain;
+            background-color: #f9fafb;
+            padding: 1rem;
+        }
+        
+        .product-card-content {
+            padding: 1rem;
+        }
+        
+        .product-card-footer {
+            padding: 0.5rem 1rem;
+            background-color: var(--accent-bg);
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        /* Price display */
+        .current-price {
+            font-size: 1.25rem;
+            font-weight: bold;
+            color: var(--accent);
+        }
+        
+        .target-price {
+            font-size: 0.9rem;
+            color: var(--text-light);
+        }
+        
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: bold;
+        }
+        
+        .badge-success {
+            background-color: #d1fae5;
+            color: #065f46;
+        }
+        
+        .badge-danger {
+            background-color: #fee2e2;
+            color: #b91c1c;
+        }
+        
+        .badge-info {
+            background-color: #dbeafe;
+            color: #1e40af;
+        }
+        
+        /* Flash messages */
+        .flash-messages {
+            margin-bottom: 1.5rem;
+        }
+        
+        .flash-message {
+            padding: 0.75rem;
+            border-radius: 5px;
+            margin-bottom: 0.5rem;
+        }
+        
+        .flash-success {
+            background-color: #d1fae5;
+            color: #065f46;
+        }
+        
+        .flash-danger {
+            background-color: #fee2e2;
+            color: #b91c1c;
+        }
+        
+        .flash-info {
+            background-color: #dbeafe;
+            color: #1e40af;
+        }
+        
+        .flash-warning {
+            background-color: #fff7ed;
+            color: #9a3412;
+        }
+        
+        /* Layout utilities */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1rem;
+        }
+        
+        .mb-4 {
+            margin-bottom: 1.5rem;
+        }
+        
+        .text-right {
+            text-align: right;
+        }
+        
+        .icon {
+            display: inline-block;
+            width: 1em;
+            height: 1em;
+            vertical-align: -0.125em;
+        }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Product Tracker</h1>
+            <nav>
+                <a href="{{ url_for('main.index') }}">Home</a>
+                <a href="{{ url_for('main.add_product') }}">Add Product</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container">
+        <div class="flash-messages">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="flash-message flash-{{ category if category != 'message' else 'info' }}">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+        </div>
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; {% if now %}{{ now.year }}{% else %}2025{% endif %} Product Tracker. All rights reserved.</p>
+            <p><small>
+                {% if config.CHECK_INTERVAL_SECONDS > 0 %}
+                    Products are checked every {{ config.CHECK_INTERVAL_MINUTES }} minutes and {{ config.CHECK_INTERVAL_SECONDS }} seconds
+                {% else %}
+                    Products are checked every {{ config.CHECK_INTERVAL_MINUTES|default(15) }} minutes
+                {% endif %}
+            </small></p>
+        </div>
+    </footer>
+    
+    {% block scripts %}{% endblock %}
+</body>
+</html> 

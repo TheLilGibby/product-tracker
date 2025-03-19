@@ -1,0 +1,152 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ product.name }} - Product Tracker{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2rem;">
+    <div>
+        <h2>{{ product.name }}</h2>
+        <p><a href="{{ product.url }}" target="_blank" rel="noopener noreferrer">View on retailer site</a></p>
+    </div>
+    <div>
+        <a href="{{ url_for('main.update_product', product_id=product.id) }}" role="button">
+            <svg class="icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem;">
+                <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+            </svg>
+            Update Now
+        </a>
+    </div>
+</div>
+
+<div style="display: grid; grid-template-columns: minmax(300px, 1fr) 2fr; gap: 2rem;">
+    <div>
+        {% if product.image_url %}
+            <img src="{{ product.image_url }}" alt="{{ product.name }}" style="max-width: 100%; border-radius: 5px;">
+        {% else %}
+            <div style="height: 300px; display: flex; align-items: center; justify-content: center; background: #f9fafb; border-radius: 5px;">
+                <svg class="icon" style="width: 4rem; height: 4rem; color: #9ca3af;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+            </div>
+        {% endif %}
+
+        <div style="margin-top: 1.5rem;">
+            <h3>Current Status</h3>
+            
+            <div style="margin-bottom: 1rem;">
+                <h4 style="margin-bottom: 0.25rem;">Price</h4>
+                {% if product.current_price %}
+                    <p class="current-price" style="margin: 0;">
+                        ${{ "%.2f"|format(product.current_price) }}
+                        {% if product.target_price and product.current_price <= product.target_price %}
+                            <span class="badge badge-success">Target reached!</span>
+                        {% endif %}
+                    </p>
+                {% else %}
+                    <p style="color: var(--text-light); margin: 0;">Price not available</p>
+                {% endif %}
+                
+                {% if product.target_price %}
+                    <p class="target-price" style="margin-top: 0.25rem;">
+                        Target: ${{ "%.2f"|format(product.target_price) }}
+                    </p>
+                {% endif %}
+            </div>
+            
+            <div>
+                <h4 style="margin-bottom: 0.25rem;">Availability</h4>
+                {% if product.available %}
+                    <span class="badge badge-success" style="font-size: 1rem;">In Stock</span>
+                {% else %}
+                    <span class="badge badge-danger" style="font-size: 1rem;">Out of Stock</span>
+                {% endif %}
+            </div>
+            
+            <p style="margin-top: 0.5rem; color: var(--text-light);">
+                Last checked: {{ format_datetime(product.last_checked, current_timezone) }}
+            </p>
+        </div>
+    </div>
+    
+    <div>
+        <article>
+            <h3>Price History</h3>
+            {% if product.price_histories|length > 1 %}
+                <p>Chart would be displayed here - using SimpleCSS we'd need to add a simple chart library.</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Price</th>
+                            <th>Change</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for history in product.price_histories %}
+                            <tr>
+                                <td>{{ format_datetime(history.timestamp, current_timezone) }}</td>
+                                <td>${{ "%.2f"|format(history.price) }}</td>
+                                <td>
+                                    {% if loop.index < product.price_histories|length %}
+                                        {% set prev_price = product.price_histories[loop.index].price %}
+                                        {% set change = history.price - prev_price %}
+                                        {% if change > 0 %}
+                                            <span style="color: #b91c1c;">+${{ "%.2f"|format(change) }}</span>
+                                        {% elif change < 0 %}
+                                            <span style="color: #065f46;">${{ "%.2f"|format(change) }}</span>
+                                        {% else %}
+                                            <span style="color: var(--text-light);">No change</span>
+                                        {% endif %}
+                                    {% else %}
+                                        <span style="color: var(--text-light);">Initial price</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p>Not enough price history data yet. We'll track changes as they happen.</p>
+            {% endif %}
+        </article>
+        
+        <article style="margin-top: 2rem;">
+            <h3>Notification Settings</h3>
+            <form method="post" action="{{ url_for('main.update_notification_settings', product_id=product.id) }}">
+                <div style="margin-bottom: 1rem;">
+                    <label for="discord_webhook">Discord Webhook URL</label>
+                    <input type="url" id="discord_webhook" name="discord_webhook" value="{{ product.discord_webhook_url or '' }}" placeholder="https://discord.com/api/webhooks/...">
+                    <small>URL for sending Discord notifications (optional)</small>
+                </div>
+                
+                <fieldset>
+                    <legend>Notification Preferences</legend>
+                    
+                    <label>
+                        <input type="checkbox" id="notify_price" name="notify_price" {% if product.notify_on_price_drop %}checked{% endif %}>
+                        Notify me when price drops
+                    </label>
+                    
+                    <label>
+                        <input type="checkbox" id="notify_availability" name="notify_availability" {% if product.notify_on_availability %}checked{% endif %}>
+                        Notify me when product becomes available
+                    </label>
+                </fieldset>
+                
+                <div style="margin-top: 1rem;">
+                    <button type="submit">Update Settings</button>
+                </div>
+            </form>
+        </article>
+        
+        <article style="margin-top: 2rem;">
+            <h3>Danger Zone</h3>
+            <p>Remove this product from your tracking list. This action cannot be undone.</p>
+            <form method="post" action="{{ url_for('main.delete_product', product_id=product.id) }}" onsubmit="return confirm('Are you sure you want to delete this product? This action cannot be undone.');">
+                <button type="submit" style="background-color: #b91c1c; border-color: #b91c1c;">Delete Product</button>
+            </form>
+        </article>
+    </div>
+</div>
+{% endblock %} 

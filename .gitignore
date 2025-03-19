@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Flask
+instance/
+.webassets-cache
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Database
+*.db
+*.sqlite3
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Virtual environment directories 
+Include/
+Lib/
+Scripts/
+pyvenv.cfg
+
+# Logs
+*.log
+logs/
+
+# Docker
+var/
+
+# Sensitive data
+.env
+data/
+
+# Miscellaneous
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/ 
