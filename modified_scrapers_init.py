@@ -7,12 +7,11 @@ import logging
 from app.scrapers.base_scraper import BaseScraper
 from app.scrapers.amazon_scraper import AmazonScraper
 from app.scrapers.walmart_scraper import WalmartScraper
-from app.scrapers.newegg_scraper import NeweggScraper
+from app.scrapers.newegg_scraper_with_http_fallback import NeweggScraperWithFallback
 from app.scrapers.microcenter_scraper import MicrocenterScraper
 from app.scrapers.bestbuy_scraper import BestBuyScraper
 from app.scrapers.bh_scraper import BHScraper
 from app.scrapers.test_scraper import TestScraper
-from app.scrapers.adorama_scraper import AdoramaScraper
 
 # Set up logging
 logger = logging.getLogger('app.scrapers')
@@ -35,12 +34,11 @@ def get_scraper(store_type):
     scrapers = {
         'amazon': AmazonScraper,
         'walmart': WalmartScraper,
-        'newegg': NeweggScraper,
+        'newegg': NeweggScraperWithFallback,  # Using the enhanced Newegg scraper with HTTP fallback
         'microcenter': MicrocenterScraper,
         'bestbuy': BestBuyScraper,
         'bh': BHScraper,
         'test': TestScraper,
-        'adorama': AdoramaScraper,
     }
     
     if store_type not in scrapers:

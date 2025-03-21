@@ -5,6 +5,9 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from app.config import config
 import atexit
+import json
+import sys
+from logging.handlers import RotatingFileHandler
 
 # Create extensions first (without initializing)
 db = SQLAlchemy()
@@ -26,7 +29,7 @@ def create_app(config_name='default'):
     Create and configure the Flask application.
     
     Args:
-        config_name: The configuration profile to use ('development', 'production', 'testing', or 'default')
+        config_name: Configuration to use (default, development, testing, production)
         
     Returns:
         Flask application instance
@@ -44,6 +47,31 @@ def create_app(config_name='default'):
     db.init_app(app)
     migrate.init_app(app, db)
     
+    # Set up logging
+    if not app.debug:
+        # Configure file handler
+        file_handler = RotatingFileHandler('app.log', maxBytes=10240, backupCount=10)
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
+        ))
+        file_handler.setLevel(logging.INFO)
+        app.logger.addHandler(file_handler)
+        
+        # Configure stderr handler
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler.setFormatter(logging.Formatter(
+            '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
+        ))
+        stderr_handler.setLevel(logging.INFO)
+        app.logger.addHandler(stderr_handler)
+        
+        app.logger.setLevel(logging.INFO)
+        app.logger.info('Product Tracker startup')
+    
+    # Add custom Jinja2 filters
+    app.jinja_env.filters['tojson'] = json.dumps
+    app.jinja_env.filters['fromjson'] = lambda x: json.loads(x)
+    
     # Register blueprints
     from app.routes import main_bp
     app.register_blueprint(main_bp)
@@ -51,6 +79,10 @@ def create_app(config_name='default'):
     # Setup error handlers
     from app.errors import register_error_handlers
     register_error_handlers(app)
+    
+    # Create all database tables
+    with app.app_context():
+        db.create_all()
     
     # Initialize scheduler for periodic tasks
     from app.tasks import init_scheduler

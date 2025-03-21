@@ -1,0 +1,75 @@
+{% extends 'base.html' %}
+
+{% block title %}Test Auto-Cart Functionality - Product Tracker{% endblock %}
+
+{% block content %}
+<article>
+    <h2>Test Auto-Cart Functionality</h2>
+    <p>
+        This page allows you to test the auto-cart functionality using a simulated product. 
+        The test scraper simulates various scenarios based on URL parameters.
+    </p>
+
+    <h3>Test Parameters</h3>
+    <p>Add these parameters to the URL to test different scenarios:</p>
+    <ul>
+        <li><strong>success=true|false</strong> - Force success or failure (default: 80% success rate)</li>
+        <li><strong>stock=true|false</strong> - Set product availability (default: true)</li>
+        <li><strong>price=X</strong> - Set product price (default: random between $50-$500)</li>
+        <li><strong>timeout=true</strong> - Simulate a timeout</li>
+        <li><strong>name=ProductName</strong> - Customize the product name</li>
+    </ul>
+
+    <h3>Example Test URLs</h3>
+    <ul>
+        <li><a href="http://test-store.example.com/product/123" target="_blank">Basic Test Product</a></li>
+        <li><a href="http://test-store.example.com/product/123?success=true" target="_blank">Always Successful</a></li>
+        <li><a href="http://test-store.example.com/product/123?success=false" target="_blank">Always Fail</a></li>
+        <li><a href="http://test-store.example.com/product/123?stock=false" target="_blank">Out of Stock</a></li>
+        <li><a href="http://test-store.example.com/product/123?price=99.99" target="_blank">Specific Price</a></li>
+        <li><a href="http://test-store.example.com/product/123?timeout=true" target="_blank">Timeout Test</a></li>
+    </ul>
+
+    <form method="post" action="{{ url_for('main.test_cart') }}" class="grid">
+        <div>
+            <label for="test_url">Test Product URL:</label>
+            <input type="text" id="test_url" name="test_url" value="http://test-store.example.com/product/123" required>
+            <small>You can add parameters as shown above.</small>
+        </div>
+
+        <div>
+            <label for="quantity">Quantity:</label>
+            <input type="number" id="quantity" name="quantity" value="1" min="1" required>
+        </div>
+
+        <button type="submit">Test Add to Cart</button>
+    </form>
+
+    {% if test_result %}
+    <div style="margin-top: 2rem; padding: 1rem; border: 1px solid #ccc; border-radius: 0.5rem;">
+        <h3>Test Result</h3>
+        
+        <div style="margin: 1rem 0;">
+            <strong>Success:</strong> {{ test_result.success }}
+        </div>
+        
+        <div style="margin: 1rem 0;">
+            <strong>Message:</strong> {{ test_result.message }}
+        </div>
+        
+        {% if test_result.cart_url %}
+        <div style="margin: 1rem 0;">
+            <strong>Cart URL:</strong> <a href="{{ test_result.cart_url }}" target="_blank">{{ test_result.cart_url }}</a>
+        </div>
+        {% endif %}
+        
+        {% if test_result.screenshot %}
+        <div style="margin: 1rem 0;">
+            <strong>Screenshot:</strong>
+            <img src="data:image/png;base64,{{ test_result.screenshot }}" alt="Cart screenshot" style="max-width: 100%; border: 1px solid #dee2e6; border-radius: 5px; margin-top: 0.5rem;">
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+</article>
+{% endblock %} 

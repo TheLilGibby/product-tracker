@@ -1,0 +1,75 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ title|default('Wiki') }} - Product Tracker{% endblock %}
+
+{% block extra_css %}
+<style>
+    .wiki-content {
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 1rem;
+    }
+    
+    .wiki-content h1, .wiki-content h2 {
+        border-bottom: 1px solid #e5e7eb;
+        padding-bottom: 0.5rem;
+        margin-top: 2rem;
+    }
+    
+    .wiki-content h1:first-child {
+        margin-top: 0;
+    }
+    
+    .wiki-content ul, .wiki-content ol {
+        padding-left: 1.5rem;
+    }
+    
+    .wiki-content blockquote {
+        border-left: 4px solid #e5e7eb;
+        padding-left: 1rem;
+        color: #4b5563;
+    }
+    
+    .wiki-content code {
+        background-color: #f3f4f6;
+        padding: 0.2rem 0.4rem;
+        border-radius: 3px;
+        font-size: 0.875em;
+    }
+    
+    .wiki-content pre {
+        background-color: #f3f4f6;
+        padding: 1rem;
+        border-radius: 5px;
+        overflow-x: auto;
+    }
+    
+    .wiki-content pre code {
+        background-color: transparent;
+        padding: 0;
+    }
+    
+    .wiki-content table {
+        border-collapse: collapse;
+        width: 100%;
+        margin: 1rem 0;
+    }
+    
+    .wiki-content th, .wiki-content td {
+        border: 1px solid #e5e7eb;
+        padding: 0.5rem;
+    }
+    
+    .wiki-content th {
+        background-color: #f9fafb;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>{{ title|default('Product Tracker Wiki') }}</h1>
+
+<div class="wiki-content">
+    {{ html_content|safe }}
+</div>
+{% endblock %} 

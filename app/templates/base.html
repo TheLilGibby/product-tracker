@@ -66,6 +66,39 @@
             justify-content: space-between;
         }
         
+        /* Table styles for products */
+        .table-responsive {
+            overflow-x: auto;
+            margin-bottom: 1.5rem;
+        }
+        
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 0.95rem;
+        }
+        
+        table th {
+            text-align: left;
+            background-color: var(--accent-bg);
+            color: var(--accent);
+            font-weight: bold;
+        }
+        
+        table td, table th {
+            padding: 0.75rem;
+            vertical-align: middle;
+            border: 1px solid var(--border);
+        }
+        
+        table tr:nth-child(even) {
+            background-color: #f9fafb;
+        }
+        
+        table tr:hover {
+            background-color: #f3f4f6;
+        }
+        
         /* Price display */
         .current-price {
             font-size: 1.25rem;
@@ -154,6 +187,28 @@
             height: 1em;
             vertical-align: -0.125em;
         }
+        
+        /* Cart badge and link styles */
+        .cart-link {
+            position: relative;
+            padding-right: 0.5rem;
+        }
+        
+        .cart-badge {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            background-color: #b91c1c;
+            color: white;
+            font-size: 0.75rem;
+            font-weight: bold;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
     </style>
     {% block extra_css %}{% endblock %}
 </head>
@@ -164,6 +219,19 @@
             <nav>
                 <a href="{{ url_for('main.index') }}">Home</a>
                 <a href="{{ url_for('main.add_product') }}">Add Product</a>
+                <a href="{{ url_for('main.add_test_product') }}">Add Test Product</a>
+                <a href="{{ url_for('main.test_cart') }}">Test Auto-Cart</a>
+                <a href="{{ url_for('main.cart_successes') }}" class="cart-link">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem; vertical-align: text-bottom;">
+                        <path d="M0 1.5A.5.5 0 0 1 .5 1H2a.5.5 0 0 1 .485.379L2.89 3H14.5a.5.5 0 0 1 .491.592l-1.5 8A.5.5 0 0 1 13 12H4a.5.5 0 0 1-.491-.408L2.01 3.607 1.61 2H.5a.5.5 0 0 1-.5-.5zM3.102 4l1.313 7h8.17l1.313-7H3.102zM5 12a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-7 1a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm7 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/>
+                    </svg>
+                    Cart Successes
+                    {% if (session.get('cart_count', 0) | int) > 0 %}
+                        <span class="cart-badge">{{ session.get('cart_count', 0) }}</span>
+                    {% endif %}
+                </a>
+                <a href="{{ url_for('main.wiki') }}">Wiki</a>
+                <a href="{{ url_for('main.settings') }}">Settings</a>
             </nav>
         </div>
     </header>
@@ -187,15 +255,58 @@
     <footer>
         <div class="container">
             <p>&copy; {% if now %}{{ now.year }}{% else %}2025{% endif %} Product Tracker. All rights reserved.</p>
-            <p><small>
-                {% if config.CHECK_INTERVAL_SECONDS > 0 %}
-                    Products are checked every {{ config.CHECK_INTERVAL_MINUTES }} minutes and {{ config.CHECK_INTERVAL_SECONDS }} seconds
-                {% else %}
-                    Products are checked every {{ config.CHECK_INTERVAL_MINUTES|default(15) }} minutes
-                {% endif %}
-            </small></p>
         </div>
     </footer>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Check for cart updates periodically
+            function checkCartUpdates() {
+                fetch('/api/cart-count')
+                    .then(response => response.json())
+                    .then(data => {
+                        // Update cart badge if needed
+                        const cartLink = document.querySelector('.cart-link');
+                        if (cartLink) {
+                            let cartBadge = cartLink.querySelector('.cart-badge');
+                            
+                            if (data.count > 0) {
+                                // If badge doesn't exist, create it
+                                if (!cartBadge) {
+                                    cartBadge = document.createElement('span');
+                                    cartBadge.className = 'cart-badge';
+                                    cartLink.appendChild(cartBadge);
+                                }
+                                
+                                // Update count
+                                cartBadge.textContent = data.count;
+                            } else if (cartBadge) {
+                                // Remove badge if count is 0
+                                cartBadge.remove();
+                            }
+                        }
+                    })
+                    .catch(error => console.error('Error checking cart updates:', error));
+            }
+            
+            // Check initially and then every 30 seconds
+            checkCartUpdates();
+            setInterval(checkCartUpdates, 30000);
+            
+            // Flash message auto-dismiss
+            const flashMessages = document.querySelectorAll('.flash-message');
+            flashMessages.forEach(message => {
+                setTimeout(() => {
+                    message.style.opacity = '0';
+                    message.style.transition = 'opacity 0.5s ease-out';
+                    
+                    setTimeout(() => {
+                        message.remove();
+                    }, 500);
+                }, 5000);
+            });
+        });
+    </script>
     
     {% block scripts %}{% endblock %}
 </body>

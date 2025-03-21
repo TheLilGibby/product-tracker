@@ -55,6 +55,22 @@
         </label>
     </fieldset>
     
+    <fieldset style="margin-top: 1rem;">
+        <legend>Auto-Cart Settings</legend>
+        
+        <label>
+            <input type="checkbox" id="auto_cart_enabled" name="auto_cart_enabled">
+            Enable Auto-Cart
+        </label>
+        <small>Automatically add product to cart when it becomes available or hits target price</small>
+        
+        <div style="margin-top: 0.5rem;">
+            <label for="auto_cart_quantity">Quantity to add to cart</label>
+            <input type="number" id="auto_cart_quantity" name="auto_cart_quantity" min="1" value="1">
+            <small>How many units to add to cart automatically</small>
+        </div>
+    </fieldset>
+    
     <div style="margin-top: 2rem;">
         <button type="submit">Add Product</button>
         <a href="{{ url_for('main.index') }}" role="button" class="secondary">Cancel</a>

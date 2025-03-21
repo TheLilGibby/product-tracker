@@ -8,117 +8,84 @@
         <div>
             <h2>Your Tracked Products</h2>
             <p>Track product prices and availability, get notified via Discord when prices drop.</p>
-            <p><small>
-                {% if config.CHECK_INTERVAL_SECONDS > 0 %}
-                    Products are automatically checked every {{ config.CHECK_INTERVAL_MINUTES }} minutes and {{ config.CHECK_INTERVAL_SECONDS }} seconds
-                {% else %}
-                    Products are automatically checked every {{ config.CHECK_INTERVAL_MINUTES }} minutes
-                {% endif %}
-            </small></p>
         </div>
-        <div style="display: flex; gap: 1rem; flex-direction: column;">
-            <div>
-                <a href="{{ url_for('main.add_product') }}" role="button">Add New Product</a>
-                <a href="{{ url_for('main.update_all_products') }}" role="button" class="secondary">Update All Products</a>
-            </div>
-            
-            <!-- Check Interval Settings Form -->
-            <div style="background-color: #f8f9fa; padding: 1rem; border-radius: 5px; border: 1px solid #dee2e6;">
-                <h5 style="margin-top: 0;">Check Interval Settings</h5>
-                <form method="post" action="{{ url_for('main.update_check_interval') }}" style="display: flex; gap: 0.5rem; align-items: flex-end;">
-                    <div>
-                        <label for="check_interval_minutes" style="margin-bottom: 0.25rem; font-size: 0.875rem;">Minutes</label>
-                        <input type="number" id="check_interval_minutes" name="check_interval_minutes" min="0" value="{{ config.CHECK_INTERVAL_MINUTES }}" style="padding: 0.25rem 0.5rem;">
-                    </div>
-                    <div>
-                        <label for="check_interval_seconds" style="margin-bottom: 0.25rem; font-size: 0.875rem;">Seconds</label>
-                        <input type="number" id="check_interval_seconds" name="check_interval_seconds" min="0" max="59" value="{{ config.CHECK_INTERVAL_SECONDS }}" style="padding: 0.25rem 0.5rem;">
-                    </div>
-                    <button type="submit" style="padding: 0.25rem 0.5rem; margin-bottom: 0; font-size: 0.875rem;">Apply</button>
-                </form>
-                <p style="margin-top: 0.5rem; margin-bottom: 0; font-size: 0.75rem; color: #6c757d;">Minimum interval: 10 seconds</p>
-            </div>
-            
-            <!-- Timezone Settings Form -->
-            <div style="background-color: #f8f9fa; padding: 1rem; border-radius: 5px; border: 1px solid #dee2e6;">
-                <h5 style="margin-top: 0;">Timezone Settings</h5>
-                <form method="post" action="{{ url_for('main.update_timezone') }}" style="display: flex; gap: 0.5rem; align-items: flex-end;">
-                    <div style="flex: 1;">
-                        <label for="timezone" style="margin-bottom: 0.25rem; font-size: 0.875rem;">Timezone</label>
-                        <select id="timezone" name="timezone" style="padding: 0.25rem 0.5rem; width: 100%;">
-                            {% for tz in timezones %}
-                                <option value="{{ tz }}" {% if tz == current_timezone %}selected{% endif %}>{{ tz }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <button type="submit" style="padding: 0.25rem 0.5rem; margin-bottom: 0; font-size: 0.875rem;">Apply</button>
-                </form>
-                <p style="margin-top: 0.5rem; margin-bottom: 0; font-size: 0.75rem; color: #6c757d;">Current timezone: {{ current_timezone }}</p>
-            </div>
+        <div>
+            <a href="{{ url_for('main.add_product') }}" role="button">Add New Product</a>
+            <a href="{{ url_for('main.update_all_products') }}" role="button" class="secondary">Update All Products</a>
         </div>
     </div>
 </header>
 
 {% if products %}
-    <div class="product-grid">
-        {% for product in products %}
-            <article class="product-card">
-                <div style="text-align: center; padding: 1rem; background-color: #f8f9fa; height: 220px; display: flex; align-items: center; justify-content: center;">
-                    {% if product.image_url %}
-                        <img src="{{ product.image_url }}" alt="{{ product.name }}" style="max-height: 200px; max-width: 100%;">
-                    {% else %}
-                        <svg class="icon" style="width: 4rem; height: 4rem; color: #9ca3af;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                        </svg>
-                    {% endif %}
-                </div>
-                
-                <div class="product-card-content">
-                    <h3>{{ product.name|truncate(50) }}</h3>
-                    
-                    <div>
-                        {% if product.current_price %}
-                            <p class="current-price">
-                                ${{ "%.2f"|format(product.current_price) }}
+    <div class="table-responsive" style="overflow-x: auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 60px;">Image</th>
+                    <th>Product Name</th>
+                    <th>Current Price</th>
+                    <th>Target Price</th>
+                    <th>Status</th>
+                    <th>Last Checked</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for product in products %}
+                    <tr>
+                        <td style="text-align: center; padding: 0.5rem;">
+                            {% if product.image_url %}
+                                <img src="{{ product.image_url }}" alt="{{ product.name }}" style="max-height: 50px; max-width: 50px; object-fit: contain;">
+                            {% else %}
+                                <svg class="icon" style="width: 2rem; height: 2rem; color: #9ca3af;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                </svg>
+                            {% endif %}
+                        </td>
+                        <td>{{ product.name|truncate(50) }}</td>
+                        <td>
+                            {% if product.current_price %}
+                                <span class="current-price">${{ "%.2f"|format(product.current_price) }}</span>
                                 {% if product.target_price and product.current_price <= product.target_price %}
                                     <span class="badge badge-success">Target reached!</span>
                                 {% endif %}
-                            </p>
-                        {% else %}
-                            <p style="color: var(--text-light);">Price not available</p>
-                        {% endif %}
-                        
-                        {% if product.target_price %}
-                            <p class="target-price">
-                                Target: ${{ "%.2f"|format(product.target_price) }}
-                            </p>
-                        {% endif %}
-                    </div>
-                    
-                    <div>
-                        {% if product.available %}
-                            <span class="badge badge-success">In Stock</span>
-                        {% else %}
-                            <span class="badge badge-danger">Out of Stock</span>
-                        {% endif %}
-                        
-                        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-light);">
-                            Last checked: {{ format_datetime(product.last_checked, current_timezone) }}
-                        </p>
-                    </div>
-                </div>
-                <div class="product-card-footer">
-                    <a href="{{ url_for('main.product_detail', product_id=product.id) }}" role="button" style="padding: 0.25rem 0.5rem; margin: 0;">Details</a>
-                    <a href="{{ url_for('main.update_product', product_id=product.id) }}" role="button" class="secondary" style="padding: 0.25rem 0.5rem; margin: 0;">
-                        <svg class="icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
-                            <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
-                            <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
-                        </svg>
-                        Update
-                    </a>
-                </div>
-            </article>
-        {% endfor %}
+                            {% else %}
+                                <span style="color: var(--text-light);">Not available</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if product.target_price %}
+                                ${{ "%.2f"|format(product.target_price) }}
+                            {% else %}
+                                <span style="color: var(--text-light);">Not set</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if product.available %}
+                                <span class="badge badge-success">In Stock</span>
+                            {% else %}
+                                <span class="badge badge-danger">Out of Stock</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span style="font-size: 0.875rem;">
+                                {{ format_datetime(product.last_checked, current_timezone) }}
+                            </span>
+                        </td>
+                        <td>
+                            <a href="{{ url_for('main.product_detail', product_id=product.id) }}" role="button" style="padding: 0.25rem 0.5rem; margin: 0 0.25rem 0 0;">Details</a>
+                            <a href="{{ url_for('main.update_product', product_id=product.id) }}" role="button" class="secondary" style="padding: 0.25rem 0.5rem; margin: 0;">
+                                <svg class="icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                                    <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                                    <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+                                </svg>
+                                Update
+                            </a>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
     </div>
 {% else %}
     <div style="padding: 1.5rem; background-color: #dbeafe; color: #1e40af; border-radius: 5px;">
@@ -129,28 +96,344 @@
 
 {% block scripts %}
 <script>
-    // Timezone selector enhancements
     document.addEventListener('DOMContentLoaded', function() {
-        const timezoneSelect = document.getElementById('timezone');
+        // Table sorting functionality
+        const table = document.querySelector('table');
+        if (table) {
+            const headers = table.querySelectorAll('th');
+            const tableBody = table.querySelector('tbody');
+            const rows = tableBody.querySelectorAll('tr');
+
+            // Add a click event listener to each header
+            headers.forEach((header, index) => {
+                // Skip the image and actions columns
+                if (index === 0 || index === headers.length - 1) return;
+
+                header.style.cursor = 'pointer';
+                header.innerHTML += ' <span class="sort-icon">⇵</span>';
+                
+                header.addEventListener('click', () => {
+                    // Get the current sort order
+                    const sortOrder = header.getAttribute('data-sort') || 'asc';
+                    
+                    // Clear sort indicators on all headers
+                    headers.forEach(h => {
+                        h.setAttribute('data-sort', '');
+                        h.querySelector('.sort-icon')?.textContent = '⇵';
+                    });
+                    
+                    // Set the new sort order
+                    const newSortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+                    header.setAttribute('data-sort', newSortOrder);
+                    header.querySelector('.sort-icon').textContent = newSortOrder === 'asc' ? '↑' : '↓';
+                    
+                    // Convert rows to array for sorting
+                    const rowsArray = Array.from(rows);
+                    
+                    // Sort the rows
+                    const sortedRows = rowsArray.sort((a, b) => {
+                        const aValue = a.cells[index].textContent.trim();
+                        const bValue = b.cells[index].textContent.trim();
+                        
+                        // Handle price columns (strip $ and convert to number)
+                        if (aValue.includes('$') && bValue.includes('$')) {
+                            const aPrice = parseFloat(aValue.replace(/[^\d.-]/g, ''));
+                            const bPrice = parseFloat(bValue.replace(/[^\d.-]/g, ''));
+                            
+                            if (!isNaN(aPrice) && !isNaN(bPrice)) {
+                                return newSortOrder === 'asc' ? aPrice - bPrice : bPrice - aPrice;
+                            }
+                        }
+                        
+                        // Handle "Not available" and "Not set" cases
+                        if (aValue === 'Not available' || aValue === 'Not set') return newSortOrder === 'asc' ? 1 : -1;
+                        if (bValue === 'Not available' || bValue === 'Not set') return newSortOrder === 'asc' ? -1 : 1;
+                        
+                        // Handle availability status
+                        if (aValue.includes('In Stock') && !bValue.includes('In Stock')) return newSortOrder === 'asc' ? -1 : 1;
+                        if (!aValue.includes('In Stock') && bValue.includes('In Stock')) return newSortOrder === 'asc' ? 1 : -1;
+                        
+                        // Default string comparison
+                        return newSortOrder === 'asc' 
+                            ? aValue.localeCompare(bValue) 
+                            : bValue.localeCompare(aValue);
+                    });
+                    
+                    // Remove all existing rows
+                    while (tableBody.firstChild) {
+                        tableBody.removeChild(tableBody.firstChild);
+                    }
+                    
+                    // Add the sorted rows
+                    sortedRows.forEach(row => {
+                        tableBody.appendChild(row);
+                    });
+                });
+            });
+        }
         
-        // Add search functionality to make it easier to find timezones
-        timezoneSelect.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                timezoneSelect.blur();
-                return;
+        // Auto-refresh functionality
+        let autoRefreshEnabled = true;
+        let refreshIntervalId;
+        const refreshInterval = 30000; // Refresh every 30 seconds
+        
+        // Function to fetch the latest products data
+        function fetchProducts() {
+            fetch('/api/products')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.products && table) {
+                        updateTable(data.products);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching products:', error);
+                });
+        }
+        
+        // Function to update the table with new data
+        function updateTable(products) {
+            const tableBody = table.querySelector('tbody');
+            if (!tableBody) return;
+            
+            // Get the current sort state if any
+            let sortColumn = -1;
+            let sortOrder = 'asc';
+            
+            table.querySelectorAll('th').forEach((th, index) => {
+                if (th.getAttribute('data-sort')) {
+                    sortColumn = index;
+                    sortOrder = th.getAttribute('data-sort');
+                }
+            });
+            
+            // Create new rows from products data
+            const newRows = products.map(product => {
+                const row = document.createElement('tr');
+                
+                // Image cell
+                const imageCell = document.createElement('td');
+                imageCell.style.textAlign = 'center';
+                imageCell.style.padding = '0.5rem';
+                
+                if (product.image_url) {
+                    const img = document.createElement('img');
+                    img.src = product.image_url;
+                    img.alt = product.name;
+                    img.style.maxHeight = '50px';
+                    img.style.maxWidth = '50px';
+                    img.style.objectFit = 'contain';
+                    imageCell.appendChild(img);
+                } else {
+                    imageCell.innerHTML = `
+                        <svg class="icon" style="width: 2rem; height: 2rem; color: #9ca3af;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                    `;
+                }
+                row.appendChild(imageCell);
+                
+                // Name cell
+                const nameCell = document.createElement('td');
+                nameCell.textContent = product.name;
+                row.appendChild(nameCell);
+                
+                // Current price cell
+                const priceCell = document.createElement('td');
+                if (product.current_price) {
+                    const priceSpan = document.createElement('span');
+                    priceSpan.className = 'current-price';
+                    priceSpan.textContent = '$' + product.current_price.toFixed(2);
+                    priceCell.appendChild(priceSpan);
+                    
+                    if (product.target_price && product.current_price <= product.target_price) {
+                        const badge = document.createElement('span');
+                        badge.className = 'badge badge-success';
+                        badge.textContent = 'Target reached!';
+                        priceCell.appendChild(document.createTextNode(' '));
+                        priceCell.appendChild(badge);
+                    }
+                } else {
+                    const noPrice = document.createElement('span');
+                    noPrice.style.color = 'var(--text-light)';
+                    noPrice.textContent = 'Not available';
+                    priceCell.appendChild(noPrice);
+                }
+                row.appendChild(priceCell);
+                
+                // Target price cell
+                const targetCell = document.createElement('td');
+                if (product.target_price) {
+                    targetCell.textContent = '$' + product.target_price.toFixed(2);
+                } else {
+                    const noTarget = document.createElement('span');
+                    noTarget.style.color = 'var(--text-light)';
+                    noTarget.textContent = 'Not set';
+                    targetCell.appendChild(noTarget);
+                }
+                row.appendChild(targetCell);
+                
+                // Status cell
+                const statusCell = document.createElement('td');
+                const statusBadge = document.createElement('span');
+                statusBadge.className = product.available ? 'badge badge-success' : 'badge badge-danger';
+                statusBadge.textContent = product.available ? 'In Stock' : 'Out of Stock';
+                statusCell.appendChild(statusBadge);
+                row.appendChild(statusCell);
+                
+                // Last checked cell
+                const timeCell = document.createElement('td');
+                const timeSpan = document.createElement('span');
+                timeSpan.style.fontSize = '0.875rem';
+                timeSpan.textContent = product.last_checked;
+                timeCell.appendChild(timeSpan);
+                row.appendChild(timeCell);
+                
+                // Action cell
+                const actionCell = document.createElement('td');
+                
+                // Details button
+                const detailsLink = document.createElement('a');
+                detailsLink.href = `/product/${product.id}`;
+                detailsLink.setAttribute('role', 'button');
+                detailsLink.style.padding = '0.25rem 0.5rem';
+                detailsLink.style.margin = '0 0.25rem 0 0';
+                detailsLink.textContent = 'Details';
+                actionCell.appendChild(detailsLink);
+                
+                // Update button
+                const updateLink = document.createElement('a');
+                updateLink.href = `/product/${product.id}/update`;
+                updateLink.setAttribute('role', 'button');
+                updateLink.className = 'secondary';
+                updateLink.style.padding = '0.25rem 0.5rem';
+                updateLink.style.margin = '0';
+                updateLink.innerHTML = `
+                    <svg class="icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                        <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                        <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+                    </svg>
+                    Update
+                `;
+                actionCell.appendChild(updateLink);
+                
+                row.appendChild(actionCell);
+                
+                return row;
+            });
+            
+            // Clear the table body
+            while (tableBody.firstChild) {
+                tableBody.removeChild(tableBody.firstChild);
             }
             
-            const letter = e.key.toLowerCase();
-            if (letter.length === 1 && /[a-z]/i.test(letter)) {
-                for (let i = 0; i < timezoneSelect.options.length; i++) {
-                    const option = timezoneSelect.options[i];
-                    if (option.text.toLowerCase().startsWith(letter)) {
-                        timezoneSelect.selectedIndex = i;
-                        break;
+            // Add the new rows
+            newRows.forEach(row => {
+                tableBody.appendChild(row);
+            });
+            
+            // Reapply sorting if it was active
+            if (sortColumn !== -1) {
+                const rows = Array.from(tableBody.querySelectorAll('tr'));
+                
+                // Sort the rows
+                const sortedRows = rows.sort((a, b) => {
+                    const aValue = a.cells[sortColumn].textContent.trim();
+                    const bValue = b.cells[sortColumn].textContent.trim();
+                    
+                    // Handle price columns (strip $ and convert to number)
+                    if (aValue.includes('$') && bValue.includes('$')) {
+                        const aPrice = parseFloat(aValue.replace(/[^\d.-]/g, ''));
+                        const bPrice = parseFloat(bValue.replace(/[^\d.-]/g, ''));
+                        
+                        if (!isNaN(aPrice) && !isNaN(bPrice)) {
+                            return sortOrder === 'asc' ? aPrice - bPrice : bPrice - aPrice;
+                        }
                     }
+                    
+                    // Handle "Not available" and "Not set" cases
+                    if (aValue === 'Not available' || aValue === 'Not set') return sortOrder === 'asc' ? 1 : -1;
+                    if (bValue === 'Not available' || bValue === 'Not set') return sortOrder === 'asc' ? -1 : 1;
+                    
+                    // Handle availability status
+                    if (aValue.includes('In Stock') && !bValue.includes('In Stock')) return sortOrder === 'asc' ? -1 : 1;
+                    if (!aValue.includes('In Stock') && bValue.includes('In Stock')) return sortOrder === 'asc' ? 1 : -1;
+                    
+                    // Default string comparison
+                    return sortOrder === 'asc' 
+                        ? aValue.localeCompare(bValue) 
+                        : bValue.localeCompare(aValue);
+                });
+                
+                // Clear the table body again
+                while (tableBody.firstChild) {
+                    tableBody.removeChild(tableBody.firstChild);
                 }
+                
+                // Add the sorted rows
+                sortedRows.forEach(row => {
+                    tableBody.appendChild(row);
+                });
             }
-        });
+        }
+        
+        // Add auto-refresh controls to the page
+        const headerDiv = document.querySelector('header > div');
+        if (headerDiv) {
+            const refreshControls = document.createElement('div');
+            refreshControls.style.marginTop = '1rem';
+            refreshControls.style.display = 'flex';
+            refreshControls.style.alignItems = 'center';
+            refreshControls.style.gap = '0.5rem';
+            
+            const refreshStatus = document.createElement('span');
+            refreshStatus.textContent = 'Auto-refresh: ';
+            refreshStatus.style.fontSize = '0.875rem';
+            
+            const toggleRefreshBtn = document.createElement('button');
+            toggleRefreshBtn.textContent = 'Enabled';
+            toggleRefreshBtn.className = 'success';
+            toggleRefreshBtn.style.padding = '0.25rem 0.5rem';
+            toggleRefreshBtn.style.margin = '0';
+            
+            refreshControls.appendChild(refreshStatus);
+            refreshControls.appendChild(toggleRefreshBtn);
+            
+            headerDiv.appendChild(refreshControls);
+            
+            // Toggle auto-refresh when the button is clicked
+            toggleRefreshBtn.addEventListener('click', () => {
+                autoRefreshEnabled = !autoRefreshEnabled;
+                
+                if (autoRefreshEnabled) {
+                    toggleRefreshBtn.textContent = 'Enabled';
+                    toggleRefreshBtn.className = 'success';
+                    startAutoRefresh();
+                } else {
+                    toggleRefreshBtn.textContent = 'Disabled';
+                    toggleRefreshBtn.className = 'secondary';
+                    stopAutoRefresh();
+                }
+            });
+        }
+        
+        // Start auto-refresh
+        function startAutoRefresh() {
+            fetchProducts(); // Fetch immediately
+            refreshIntervalId = setInterval(fetchProducts, refreshInterval);
+        }
+        
+        // Stop auto-refresh
+        function stopAutoRefresh() {
+            if (refreshIntervalId) {
+                clearInterval(refreshIntervalId);
+            }
+        }
+        
+        // Start auto-refresh initially
+        if (autoRefreshEnabled && table) {
+            startAutoRefresh();
+        }
     });
 </script>
 {% endblock %} 

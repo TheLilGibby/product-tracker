@@ -16,6 +16,17 @@
             </svg>
             Update Now
         </a>
+        
+        <!-- Add to Cart Button -->
+        <form method="post" action="{{ url_for('main.add_product_to_cart', product_id=product.id) }}" style="display: inline;">
+            <input type="hidden" name="quantity" value="1">
+            <button type="submit" class="outline" style="margin-left: 0.5rem;">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem;">
+                    <path d="M0 1.5A.5.5 0 0 1 .5 1H2a.5.5 0 0 1 .485.379L2.89 3H14.5a.5.5 0 0 1 .491.592l-1.5 8A.5.5 0 0 1 13 12H4a.5.5 0 0 1-.491-.408L2.01 3.607 1.61 2H.5a.5.5 0 0 1-.5-.5zM3.102 4l1.313 7h8.17l1.313-7H3.102zM5 12a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-7 1a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm7 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/>
+                </svg>
+                Add to Cart
+            </button>
+        </form>
     </div>
 </div>
 
@@ -66,6 +77,60 @@
             <p style="margin-top: 0.5rem; color: var(--text-light);">
                 Last checked: {{ format_datetime(product.last_checked, current_timezone) }}
             </p>
+        </div>
+
+        <!-- Auto Cart Settings -->
+        <div style="margin-top: 1.5rem;">
+            <h3>Auto Cart Settings</h3>
+            <form method="post" action="{{ url_for('main.update_auto_cart_settings', product_id=product.id) }}">
+                <div style="margin-bottom: 1rem;">
+                    <label for="auto_cart_enabled">
+                        <input type="checkbox" id="auto_cart_enabled" name="auto_cart_enabled" {% if product.auto_cart_enabled %}checked{% endif %}>
+                        Enable Auto Cart
+                    </label>
+                    <p style="margin-top: 0.25rem; font-size: 0.875rem; color: #6c757d;">
+                        Automatically add this product to cart when it becomes available or drops below target price
+                    </p>
+                </div>
+                
+                <div style="margin-bottom: 1rem;">
+                    <label for="auto_cart_quantity">Quantity</label>
+                    <input type="number" id="auto_cart_quantity" name="auto_cart_quantity" min="1" value="{{ product.auto_cart_quantity }}">
+                </div>
+                
+                <button type="submit" style="margin-bottom: 1rem;">Save Settings</button>
+            </form>
+            
+            {% if product.last_cart_attempt %}
+                <div style="font-size: 0.875rem; margin-top: 0.5rem; padding: 1rem; background-color: var(--accent-bg); border-radius: 5px;">
+                    <p style="margin-top: 0;">Last cart attempt: {{ format_datetime(product.last_cart_attempt, current_timezone) }}</p>
+                    <p style="margin-bottom: 0;">Status: {{ product.last_cart_status }}</p>
+                    
+                    {% if product.last_cart_status and 'success' in product.last_cart_status.lower() %}
+                        <div style="margin-top: 1rem;">
+                            <a href="{{ product.url }}" target="_blank" class="complete-purchase-btn">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem;">
+                                    <path d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.3 0-1.59-.947-2.51-2.956-3.028l-.722-.187V3.467c1.122.11 1.879.714 2.07 1.616h1.47c-.166-1.6-1.54-2.748-3.54-2.875V1H7.591v1.233c-1.939.23-3.27 1.472-3.27 3.156 0 1.454.966 2.483 2.661 2.917l.61.162v4.031c-1.149-.17-1.94-.8-2.131-1.718H4zm3.391-3.836c-1.043-.263-1.6-.825-1.6-1.616 0-.944.704-1.641 1.8-1.828v3.495l-.2-.05zm1.591 1.872c1.287.323 1.852.859 1.852 1.769 0 1.097-.826 1.828-2.2 1.939V8.73l.348.086z"/>
+                                </svg>
+                                Complete Purchase
+                            </a>
+                        </div>
+                    {% endif %}
+                </div>
+            {% endif %}
+            
+            {% if request.args.get('cart_result') %}
+                <h4 style="margin-top: 1.5rem;">Cart Result</h4>
+                <div style="margin-top: 0.5rem;">
+                    {% set cart_result = request.args.get('cart_result')|tojson|safe %}
+                    {% set result_data = cart_result|fromjson %}
+                    
+                    {% if result_data and result_data.screenshot %}
+                        <h5>Screenshot:</h5>
+                        <img src="data:image/png;base64,{{ result_data.screenshot }}" alt="Cart screenshot" style="max-width: 100%; border: 1px solid #dee2e6; border-radius: 5px;">
+                    {% endif %}
+                </div>
+            {% endif %}
         </div>
     </div>
     
@@ -149,4 +214,25 @@
         </article>
     </div>
 </div>
+
+<style>
+    .complete-purchase-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background-color: var(--accent);
+        color: white !important;
+        padding: 0.5rem 1rem;
+        border-radius: 4px;
+        text-decoration: none;
+        font-weight: bold;
+        margin-top: 0.5rem;
+        border: none;
+        cursor: pointer;
+    }
+    
+    .complete-purchase-btn:hover {
+        background-color: #3f6c0f;
+    }
+</style>
 {% endblock %} 

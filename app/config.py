@@ -31,6 +31,10 @@ class Config:
     # Default timezone setting (uses UTC by default)
     DEFAULT_TIMEZONE = os.environ.get('DEFAULT_TIMEZONE', 'UTC')
     
+    # Time display format preference (24-hour/military or 12-hour/AM-PM)
+    # Options: '24h' or '12h'
+    TIME_FORMAT = os.environ.get('TIME_FORMAT', '24h')
+    
     @staticmethod
     def init_app(app):
         """Initialize app with this configuration."""
