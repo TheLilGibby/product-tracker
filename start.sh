@@ -1,29 +1,28 @@
 #!/bin/bash
 set -e
 
-# Create directories if they don't exist and ensure proper permissions
+# Create directories if they don't exist
 mkdir -p /app/data
 mkdir -p /app/logs
-chmod 777 /app/data /app/logs
 
-echo "Checking data directory permissions:"
-ls -la /app/data
+# Try to set permissions but don't fail if it doesn't work (for Windows compatibility)
+echo "Setting directory permissions (this may fail on Windows mounts):"
+chmod 777 /app/data /app/logs || echo "Could not change permissions - this is expected on Windows and is not a problem"
 
-# Initialize the database if it doesn't exist
-if [ ! -f /app/data/product_tracker.db ]; then
-    echo "Initializing database..."
-    python create_db.py
-    if [ $? -ne 0 ]; then
-        echo "Error initializing database. Checking permissions:"
-        ls -la /app/data
-        echo "Creating empty file to test permissions:"
-        touch /app/data/test.txt
-        echo "Database initialization failed, but continuing..."
-    else
-        echo "Database initialized successfully."
-    fi
+echo "Checking data directory existence and contents:"
+ls -la /app/data || echo "Could not list directory contents"
+
+# Always run create_db.py to ensure schema is up to date
+echo "Updating database schema..."
+python create_db.py
+if [ $? -ne 0 ]; then
+    echo "Error updating database schema. Checking permissions:"
+    ls -la /app/data || echo "Could not list directory contents"
+    echo "Creating empty file to test permissions:"
+    touch /app/data/test.txt || echo "Could not create test file - check volume mount permissions"
+    echo "Database schema update failed, but continuing..."
 else
-    echo "Database already exists."
+    echo "Database schema updated successfully."
 fi
 
 # Run migrations if needed

@@ -9,6 +9,7 @@ from app.scrapers import get_scraper
 from app.notifications.discord import DiscordNotifier
 import urllib.parse
 import threading
+import atexit
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ def check_all_products():
                 'www.bestbuy.com': 'bestbuy',
                 'bhphotovideo.com': 'bh',
                 'www.bhphotovideo.com': 'bh',
+                'test-store.example.com': 'test',
             }
             
             for product in products:
@@ -94,7 +96,12 @@ def check_all_products():
                     
                     # Scrape product data
                     try:
-                        product_data = scraper.scrape_product(product.url)
+                        if store_type == 'test':
+                            # TestScraper uses get_product_info instead of scrape_product
+                            product_data = scraper.get_product_info(url=product.url)
+                        else:
+                            product_data = scraper.scrape_product(product.url)
+                            
                         if not product_data:
                             logger.error(f"Failed to retrieve data for product {product.id}")
                             continue
@@ -177,49 +184,208 @@ def check_all_products():
 
 def init_scheduler(app):
     """
-    Initialize the scheduler with the app context
+    Initialize the APScheduler.
     
     Args:
         app: Flask application instance
     """
-    global scheduler
-    
-    # Shutdown any existing scheduler to prevent multiple instances
-    try:
-        if scheduler and scheduler.running:
-            logger.info("Shutting down existing scheduler")
-            scheduler.shutdown(wait=False)
-    except Exception as e:
-        logger.warning(f"Error shutting down existing scheduler: {str(e)}")
+    logger.info("Initializing scheduler")
     
     with app.app_context():
-        # Create a new scheduler
-        scheduler = BackgroundScheduler()
-        
-        # Get interval from config in seconds
-        # Convert the property to a direct integer value
+        # Get interval from app config (minutes and seconds)
         minutes = app.config.get('CHECK_INTERVAL_MINUTES', 15)
         seconds = app.config.get('CHECK_INTERVAL_SECONDS', 0)
-        check_interval_seconds = (minutes * 60) + seconds
         
-        # Add job to check products at regular intervals
-        scheduler.add_job(
-            check_all_products,
-            IntervalTrigger(seconds=check_interval_seconds),
+        # Convert to total seconds
+        interval_seconds = (minutes * 60) + seconds
+        
+        # Ensure minimum interval of 10 seconds
+        if interval_seconds < 10:
+            logger.warning("Check interval too low, setting to 10 seconds minimum")
+            interval_seconds = 10
+            
+        logger.info(f"Scheduler will run every {interval_seconds} seconds")
+        
+        if hasattr(app, 'scheduler'):
+            logger.info("Removing existing scheduler jobs")
+            app.scheduler.remove_all_jobs()
+            app.scheduler.shutdown()
+            
+        # Create a scheduler
+        app.scheduler = BackgroundScheduler()
+        
+        # Add job to check products on the interval
+        app.scheduler.add_job(
+            func=lambda: check_all_products_with_context(app),
+            trigger='interval',
+            seconds=interval_seconds,
             id='check_products',
-            replace_existing=True,
-            max_instances=1  # Ensure only one instance of the job runs at a time
+            name='Check all products',
+            replace_existing=True
+        )
+        
+        # Add job to check for auto-cart opportunities (runs every minute)
+        app.scheduler.add_job(
+            func=lambda: check_auto_cart_opportunities_with_context(app),
+            trigger='interval',
+            seconds=60,
+            id='check_auto_cart',
+            name='Check auto cart opportunities',
+            replace_existing=True
         )
         
         # Start the scheduler
-        scheduler.start()
+        app.scheduler.start()
+        logger.info("Scheduler started")
         
-        # Log the interval in a human-readable format
-        minutes = check_interval_seconds // 60
-        seconds = check_interval_seconds % 60
-        if seconds == 0:
-            logger.info(f"Scheduler initialized with check interval of {minutes} minutes")
-        else:
-            logger.info(f"Scheduler initialized with check interval of {minutes} minutes and {seconds} seconds")
-        
-        return scheduler 
+        # Register a function to shut down the scheduler when the app exits
+        atexit.register(lambda: app.scheduler.shutdown() if hasattr(app, 'scheduler') else None)
+
+def check_all_products_with_context(app):
+    """
+    Run check_all_products in the application context.
+    
+    Args:
+        app: Flask application instance
+    """
+    with app.app_context():
+        try:
+            check_all_products()
+        except Exception as e:
+            logger.error(f"Error in product check: {str(e)}", exc_info=True)
+
+def check_auto_cart_opportunities_with_context(app):
+    """
+    Run check_auto_cart_opportunities in the application context.
+    
+    Args:
+        app: Flask application instance
+    """
+    with app.app_context():
+        try:
+            check_auto_cart_opportunities()
+        except Exception as e:
+            logger.error(f"Error in auto cart opportunity check: {str(e)}", exc_info=True)
+
+def check_auto_cart_opportunities():
+    """
+    Check for products that meet auto-cart criteria and add them to cart automatically.
+    """
+    logger.info("Checking for auto-cart opportunities")
+    
+    # Query for products with auto_cart_enabled that are:
+    # 1. Available and notify_on_availability is True, OR
+    # 2. Below target price and notify_on_price_drop is True
+    eligible_products = Product.query.filter(
+        Product.auto_cart_enabled == True,
+        db.or_(
+            db.and_(
+                Product.available == True,
+                Product.notify_on_availability == True
+            ),
+            db.and_(
+                Product.current_price != None,
+                Product.target_price != None,
+                Product.current_price <= Product.target_price,
+                Product.notify_on_price_drop == True
+            )
+        )
+    ).all()
+    
+    logger.info(f"Found {len(eligible_products)} products eligible for auto-cart")
+    
+    from app.scrapers import add_to_cart
+    from urllib.parse import urlparse
+    
+    # Map domains to store types
+    domain_to_store = {
+        'amazon.com': 'amazon',
+        'www.amazon.com': 'amazon',
+        'walmart.com': 'walmart',
+        'www.walmart.com': 'walmart',
+        'newegg.com': 'newegg',
+        'www.newegg.com': 'newegg',
+        'microcenter.com': 'microcenter',
+        'www.microcenter.com': 'microcenter',
+        'bestbuy.com': 'bestbuy',
+        'www.bestbuy.com': 'bestbuy',
+        'bhphotovideo.com': 'bh',
+        'www.bhphotovideo.com': 'bh',
+        'test-store.example.com': 'test',
+    }
+    
+    # Track if we had any successful cart additions
+    had_successful_cart = False
+    
+    for product in eligible_products:
+        try:
+            # Determine store type from URL
+            domain = urlparse(product.url).netloc.lower()
+            
+            store_type = None
+            for d, s in domain_to_store.items():
+                if d in domain:
+                    store_type = s
+                    break
+            
+            if not store_type:
+                logger.warning(f"Could not determine store type for {product.url}")
+                continue
+                
+            # Try to add to cart
+            logger.info(f"Attempting to add product {product.id} ({product.name}) to cart")
+            
+            # Get quantity from product settings
+            quantity = product.auto_cart_quantity or 1
+            
+            try:
+                result = add_to_cart(store_type, product.url, quantity)
+                
+                # Update product with cart attempt results
+                product.last_cart_attempt = datetime.now()
+                product.last_cart_status = result.get('message', 'Unknown status')
+                db.session.commit()
+                
+                if result.get('success'):
+                    logger.info(f"Successfully added product {product.id} to cart")
+                    had_successful_cart = True
+                    
+                    # Send notification about auto-cart success
+                    if product.discord_webhook_url:
+                        from app.notifications.discord import DiscordNotifier
+                        
+                        # Send auto-cart notification
+                        DiscordNotifier.send_notification(
+                            webhook_url=product.discord_webhook_url,
+                            product_name=product.name,
+                            product_url=product.url,
+                            current_price=product.current_price,
+                            is_auto_cart=True,
+                            cart_url=result.get('cart_url'),
+                            image_url=product.image_url
+                        )
+                else:
+                    logger.warning(f"Failed to add product {product.id} to cart: {result.get('message', 'Unknown error')}")
+            except Exception as e:
+                logger.error(f"Error adding product {product.id} to cart: {str(e)}", exc_info=True)
+                product.last_cart_attempt = datetime.now()
+                product.last_cart_status = f"Error: {str(e)}"
+                db.session.commit()
+        except Exception as e:
+            logger.error(f"Error processing auto-cart for product {product.id}: {str(e)}", exc_info=True)
+    
+    # If we had any successful cart additions, update the cart count in the application context
+    if had_successful_cart:
+        try:
+            # Import Flask to access the app
+            from flask import current_app, session
+            
+            # Check if we're in an application context
+            if current_app:
+                with current_app.app_context():
+                    # Update the cart count function
+                    # This function would be imported from routes.main to avoid circular imports
+                    from app.routes.main import update_cart_count
+                    update_cart_count()
+        except Exception as e:
+            logger.error(f"Error updating cart count after auto-cart: {str(e)}", exc_info=True) 

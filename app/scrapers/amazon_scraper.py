@@ -2,6 +2,15 @@ import re
 import logging
 import requests
 from bs4 import BeautifulSoup
+import time
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+import base64
+from io import BytesIO
+from PIL import Image
 
 # Set up logging
 logger = logging.getLogger('app.scrapers.amazon')
@@ -39,6 +48,181 @@ class AmazonScraper:
             }
         except Exception as e:
             logger.error(f"Error scraping Amazon product: {str(e)}")
+            return None
+    
+    def add_to_cart(self, url, quantity=1):
+        """
+        Add a product to the Amazon cart
+        
+        Args:
+            url: The product URL to add to cart
+            quantity: Quantity to add to cart (default: 1)
+            
+        Returns:
+            dict: A dictionary with cart status information
+        """
+        logger.info(f"Adding Amazon product to cart: {url}, quantity: {quantity}")
+        
+        try:
+            # Create a new undetected-chromedriver instance
+            logger.debug("Starting undetected-chromedriver for Amazon add to cart")
+            options = uc.ChromeOptions()
+            options.add_argument("--headless")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            
+            # Proxy setup if needed
+            # options.add_argument('--proxy-server=your-proxy-server')
+            
+            driver = uc.Chrome(options=options)
+            
+            try:
+                # Set window size
+                driver.set_window_size(1366, 768)
+                
+                # Navigate to the product page
+                logger.debug(f"Navigating to {url}")
+                driver.get(url)
+                
+                # Wait for the page to load
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+                
+                # Update quantity if needed (only if quantity > 1)
+                if quantity > 1:
+                    try:
+                        logger.debug(f"Setting quantity to {quantity}")
+                        quantity_dropdown = WebDriverWait(driver, 5).until(
+                            EC.presence_of_element_located((By.ID, "quantity"))
+                        )
+                        quantity_dropdown.click()
+                        time.sleep(1)
+                        
+                        # Find and click the desired quantity option
+                        # This works for quantities up to 10 which Amazon typically shows in dropdown
+                        if quantity <= 10:
+                            quantity_option = WebDriverWait(driver, 5).until(
+                                EC.element_to_be_clickable((By.XPATH, f"//select[@id='quantity']/option[@value='{quantity}']"))
+                            )
+                            quantity_option.click()
+                            time.sleep(1)
+                    except (TimeoutException, NoSuchElementException) as e:
+                        logger.warning(f"Could not set quantity: {str(e)}")
+                
+                # Check if there's an "Add to Cart" button
+                try:
+                    add_to_cart_button = WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable((By.ID, "add-to-cart-button"))
+                    )
+                    logger.debug("Found Add to Cart button, clicking...")
+                    add_to_cart_button.click()
+                    
+                    # Wait for the cart confirmation
+                    try:
+                        WebDriverWait(driver, 10).until(
+                            EC.presence_of_element_located((By.ID, "attach-sidesheet-checkout-button"))
+                        )
+                        logger.debug("Product successfully added to cart")
+                        
+                        # Take a screenshot
+                        screenshot = self._take_screenshot(driver)
+                        
+                        # Get the cart URL
+                        driver.get("https://www.amazon.com/gp/cart/view.html")
+                        time.sleep(2)
+                        cart_url = driver.current_url
+                        
+                        return {
+                            'success': True,
+                            'message': "Product successfully added to cart",
+                            'cart_url': cart_url,
+                            'screenshot': screenshot
+                        }
+                    except TimeoutException:
+                        # Sometimes Amazon doesn't show the checkout sheet, try another approach
+                        logger.debug("No side checkout sheet, trying to proceed to cart")
+                        
+                        try:
+                            # Try to click "Cart" button if available
+                            cart_button = WebDriverWait(driver, 5).until(
+                                EC.element_to_be_clickable((By.ID, "nav-cart"))
+                            )
+                            cart_button.click()
+                            time.sleep(2)
+                            
+                            # Check if the product is in cart
+                            items_in_cart = len(driver.find_elements(By.CSS_SELECTOR, ".sc-list-item"))
+                            if items_in_cart > 0:
+                                logger.debug(f"Found {items_in_cart} items in cart")
+                                screenshot = self._take_screenshot(driver)
+                                return {
+                                    'success': True,
+                                    'message': f"Product added to cart ({items_in_cart} items in cart)",
+                                    'cart_url': driver.current_url,
+                                    'screenshot': screenshot
+                                }
+                            else:
+                                return {
+                                    'success': False,
+                                    'message': "Product could not be added to cart",
+                                    'cart_url': driver.current_url,
+                                    'screenshot': self._take_screenshot(driver)
+                                }
+                        except TimeoutException:
+                            logger.warning("Could not verify if product was added to cart")
+                            screenshot = self._take_screenshot(driver)
+                            return {
+                                'success': False,
+                                'message': "Could not verify if product was added to cart",
+                                'cart_url': None,
+                                'screenshot': screenshot
+                            }
+                except TimeoutException:
+                    logger.warning("Could not find Add to Cart button")
+                    
+                    # Try to find "Buy Now" button instead
+                    try:
+                        buy_now_button = WebDriverWait(driver, 3).until(
+                            EC.element_to_be_clickable((By.ID, "buy-now-button"))
+                        )
+                        logger.debug("Found Buy Now button but not Add to Cart - product may require special handling")
+                        screenshot = self._take_screenshot(driver)
+                        return {
+                            'success': False,
+                            'message': "Product requires special handling (only Buy Now available)",
+                            'cart_url': None,
+                            'screenshot': screenshot
+                        }
+                    except TimeoutException:
+                        logger.error("No Add to Cart or Buy Now buttons found")
+                        screenshot = self._take_screenshot(driver)
+                        return {
+                            'success': False,
+                            'message': "No Add to Cart or Buy Now buttons found - product may be unavailable",
+                            'cart_url': None,
+                            'screenshot': screenshot
+                        }
+            finally:
+                driver.quit()
+                
+        except Exception as e:
+            logger.error(f"Error adding Amazon product to cart: {str(e)}", exc_info=True)
+            return {
+                'success': False,
+                'message': f"Error: {str(e)}",
+                'cart_url': None,
+                'screenshot': None
+            }
+            
+    def _take_screenshot(self, driver):
+        """Take a screenshot and convert it to base64 for embedding in HTML"""
+        try:
+            # Take screenshot and convert to base64
+            screenshot = driver.get_screenshot_as_base64()
+            return screenshot
+        except Exception as e:
+            logger.error(f"Error taking screenshot: {str(e)}")
             return None
     
     def extract_name(self, soup):

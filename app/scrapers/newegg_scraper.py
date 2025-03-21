@@ -43,6 +43,9 @@ class NeweggScraper:
         
         # Get proxy list (you'll need to set up your proxy provider)
         self.proxies = self.get_proxies()
+        
+        # Store the most recent product URL for use in add_to_cart
+        self.current_product_url = None
     
     def get_proxies(self):
         """Get a list of proxies from your provider"""
@@ -738,26 +741,41 @@ class NeweggScraper:
     
     def scrape_product(self, url):
         """Scrape product information from Newegg URL using undetected-chromedriver"""
+        # Store the URL for potential add_to_cart operations
+        self.current_product_url = url
+        
         max_retries = 2
         current_retry = 0
         
         # Extract product ID from URL for fallback
         product_id = None
+        
+        # First try the N82E format
         id_match = re.search(r'N82E(\d+)', url)
         if id_match:
             product_id = 'N82E' + id_match.group(1)
-            logger.info(f"Extracted product ID: {product_id}")
+        else:
+            # Try the /p/XXX-XXX-XXXXX format
+            id_match = re.search(r'/p/([A-Z0-9]{1,3}-[A-Z0-9]{1,3}-[A-Z0-9]{1,5})', url)
+            if id_match:
+                product_id = id_match.group(1)
+            else:
+                # Fallback to just using the last segment of the URL
+                segments = url.split('/')
+                if len(segments) > 1:
+                    product_id = segments[-1] if segments[-1] else segments[-2]
         
+        if product_id:
+            logger.info(f"Extracted product ID: {product_id}")
+            # Store product ID for add_to_cart
+            self.current_product_id = product_id
+        
+        # Try Selenium first
         while current_retry < max_retries:
             driver = None
             try:
                 # Get fresh ChromeOptions to avoid reuse error
                 options = self._get_chrome_options()
-                
-                # Reduce complexity - avoid proxy for direct connection
-                # if self.proxies:
-                #     proxy = random.choice(self.proxies)
-                #     options.add_argument(f'--proxy-server={proxy}')
                 
                 # Add page load strategy for faster loading
                 options.page_load_strategy = 'eager'
@@ -826,7 +844,14 @@ class NeweggScraper:
                     except:
                         pass
         
-        # If all retries failed, try to use the product ID for a basic entry
+        # If all retries failed, use simplified HTTP-based scraping as a fallback
+        try:
+            logger.info(f"Using HTTP-based fallback scraper for {url}")
+            return self.scrape_via_requests(url, product_id)
+        except Exception as e:
+            logger.error(f"Error using fallback scraper: {str(e)}")
+        
+        # As a last resort, return basic information based on product ID
         if product_id:
             product_name = f"Newegg Product {product_id}"
             logger.info(f"Using fallback product name: {product_name}")
@@ -845,6 +870,267 @@ class NeweggScraper:
             'image_url': None
         }
     
+    def scrape_via_requests(self, url, product_id=None):
+        """Simple HTTP-based scraping as a fallback when Selenium fails."""
+        logger.info(f"Attempting to scrape Newegg product via direct HTTP request: {url}")
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': 'https://www.newegg.com/',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'Sec-Ch-Ua': '"Not A(Brand";v="99", "Google Chrome";v="122", "Chromium";v="122"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin',
+            'Upgrade-Insecure-Requests': '1'
+        }
+        
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code != 200:
+                logger.warning(f"Failed to get page, status code: {response.status_code}")
+                return {
+                    'name': f"Newegg Product {product_id if product_id else url.split('/')[-1]}",
+                    'price': None,
+                    'available': False,
+                    'image_url': None
+                }
+            
+            # Parse the HTML
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Extract product info without using Selenium
+            name = self.extract_name_from_html(soup)
+            price = self.extract_price_from_html(soup)
+            available = self.extract_availability_from_html(soup)
+            image_url = self.extract_image_url_from_html(soup)
+            
+            logger.info(f"HTTP fallback scraper extracted: name={name}, price={price}, available={available}")
+            
+            if not name or name == "Unknown Product":
+                name = f"Newegg Product {product_id}" if product_id else f"Newegg Product {url.split('/')[-1]}"
+            
+            return {
+                'name': name,
+                'price': price,
+                'available': available,
+                'image_url': image_url
+            }
+        except Exception as e:
+            logger.error(f"Error in HTTP-based scraper: {str(e)}")
+            return {
+                'name': f"Newegg Product {product_id if product_id else url.split('/')[-1]}",
+                'price': None,
+                'available': False,
+                'image_url': None
+            }
+
+    def extract_name_from_html(self, soup):
+        """Extract product name from HTML without Selenium."""
+        try:
+            # Try to find the product title in various locations
+            selectors = [
+                'h1.product-title',
+                '[data-selenium="product-title"]',
+                '.product-title',
+                '.page-title'
+            ]
+            
+            for selector in selectors:
+                element = soup.select_one(selector)
+                if element and element.text.strip():
+                    return element.text.strip()
+            
+            # Try to get from meta tags
+            meta_title = soup.find('meta', property='og:title')
+            if meta_title and meta_title.get('content'):
+                return meta_title.get('content').strip()
+            
+            # Try to find structured data
+            scripts = soup.find_all('script', type='application/ld+json')
+            for script in scripts:
+                try:
+                    if script and script.string:
+                        data = json.loads(script.string)
+                        if isinstance(data, dict) and 'name' in data:
+                            return data['name']
+                except:
+                    continue
+                
+            return "Unknown Product"
+        except Exception as e:
+            logger.error(f"Error extracting name from HTML: {str(e)}")
+            return "Unknown Product"
+
+    def extract_price_from_html(self, soup):
+        """Extract product price from HTML without Selenium."""
+        try:
+            # Try various price selectors
+            selectors = [
+                '.price-current',
+                '.price-current strong',
+                '.product-price',
+                '.product-price strong',
+                '[data-selenium="salePrice"]',
+                '[data-selenium="itemPrice"]',
+                '.price'
+            ]
+            
+            for selector in selectors:
+                element = soup.select_one(selector)
+                if element and element.text.strip():
+                    # Extract dollar amount
+                    price_text = element.text.strip()
+                    price_match = re.search(r'(\$)?(\d+,?\d*\.?\d*)', price_text)
+                    if price_match:
+                        price_str = price_match.group(2).replace(',', '')
+                        try:
+                            return float(price_str)
+                        except ValueError:
+                            continue
+            
+            # Try to find structured data
+            scripts = soup.find_all('script', type='application/ld+json')
+            for script in scripts:
+                try:
+                    if script and script.string:
+                        data = json.loads(script.string)
+                        if isinstance(data, dict) and 'offers' in data:
+                            offers = data['offers']
+                            if isinstance(offers, dict) and 'price' in offers:
+                                return float(offers['price'])
+                            elif isinstance(offers, list) and len(offers) > 0:
+                                for offer in offers:
+                                    if isinstance(offer, dict) and 'price' in offer:
+                                        return float(offer['price'])
+                except:
+                    continue
+                
+            # Try meta tags
+            meta_price = soup.find('meta', property='og:price:amount')
+            if meta_price and meta_price.get('content'):
+                try:
+                    return float(meta_price.get('content'))
+                except:
+                    pass
+                
+            return None
+        except Exception as e:
+            logger.error(f"Error extracting price from HTML: {str(e)}")
+            return None
+
+    def extract_availability_from_html(self, soup):
+        """Extract product availability from HTML without Selenium."""
+        try:
+            # Check for "Add to cart" button (enabled)
+            add_to_cart_buttons = soup.select('button.btn-primary')
+            for button in add_to_cart_buttons:
+                if button.get('disabled') is None and ('add to cart' in button.text.lower() or 'add' in button.text.lower()):
+                    return True
+            
+            # Look for in-stock text
+            for element in soup.select('.product-inventory, [data-selenium="inStock"]'):
+                text = element.text.lower()
+                if 'in stock' in text and 'out of stock' not in text:
+                    return True
+                
+            # Look for out-of-stock indicators
+            out_of_stock_elements = soup.find_all(string=lambda text: text and ('out of stock' in text.lower() or 'OUT OF STOCK' in text))
+            if out_of_stock_elements:
+                return False
+            
+            # Find price elements
+            price_elements = soup.select('.price, .price-current')
+            for element in price_elements:
+                if element and '$' in element.text:
+                    # If a price is displayed, it's likely in stock
+                    return True
+                
+            # Try to find structured data
+            scripts = soup.find_all('script', type='application/ld+json')
+            for script in scripts:
+                try:
+                    if script and script.string:
+                        data = json.loads(script.string)
+                        if isinstance(data, dict) and 'offers' in data:
+                            offers = data['offers']
+                            if isinstance(offers, dict) and 'availability' in offers:
+                                return 'InStock' in offers['availability']
+                            elif isinstance(offers, list) and len(offers) > 0:
+                                for offer in offers:
+                                    if isinstance(offer, dict) and 'availability' in offer:
+                                        if 'InStock' in offer['availability']:
+                                            return True
+                except:
+                    continue
+                
+            # If we can't determine, default to False
+            return False
+        except Exception as e:
+            logger.error(f"Error extracting availability from HTML: {str(e)}")
+            return False
+
+    def extract_image_url_from_html(self, soup):
+        """Extract product image URL from HTML without Selenium."""
+        try:
+            # Try various image selectors
+            selectors = [
+                '.product-view-img-original',
+                '[data-selenium="product-image"]',
+                '.product-gallery img',
+                '.swiper-zoom-container img',
+                '.product-view-img-container img',
+                '#product_preview_img',
+                'div.swiper-slide.swiper-slide-active img',
+                'img.mainSlide'
+            ]
+            
+            for selector in selectors:
+                element = soup.select_one(selector)
+                if element and element.get('src'):
+                    return element.get('src')
+            
+            # Try meta tags
+            meta_image = soup.find('meta', property='og:image')
+            if meta_image and meta_image.get('content'):
+                return meta_image.get('content')
+            
+            # Try media gallery
+            for media in soup.select('[data-slide-index="0"] img'):
+                if media.get('src'):
+                    return media.get('src')
+                
+            # Try structured data
+            scripts = soup.find_all('script', type='application/ld+json')
+            for script in scripts:
+                try:
+                    if script and script.string:
+                        data = json.loads(script.string)
+                        if isinstance(data, dict) and 'image' in data:
+                            if isinstance(data['image'], str):
+                                return data['image']
+                            elif isinstance(data['image'], list) and len(data['image']) > 0:
+                                return data['image'][0]
+                except:
+                    continue
+                
+            # Last resort - find any image that seems to be a product image
+            for img in soup.find_all('img'):
+                src = img.get('src', '')
+                if any(term in src.lower() for term in ['product', 'gallery', 'large']):
+                    return src
+                
+            return None
+        except Exception as e:
+            logger.error(f"Error extracting image URL from HTML: {str(e)}")
+            return None
+
     def extract_name(self, soup, driver):
         """Extract product name using Selenium"""
         logger.debug("NeweggScraper: Extracting name")
@@ -893,43 +1179,77 @@ class NeweggScraper:
         logger.debug("NeweggScraper: Extracting price")
         try:
             # Try multiple price selectors
-            selectors = [
-                (By.CLASS_NAME, "price-current"),
+            price_selectors = [
                 (By.CSS_SELECTOR, ".price-current strong"),
-                (By.CSS_SELECTOR, "[data-selenium='price']"),
-                (By.CSS_SELECTOR, ".product-price")
+                (By.CSS_SELECTOR, ".price-current"),
+                (By.CSS_SELECTOR, ".product-price strong"),
+                (By.CSS_SELECTOR, ".product-price"),
+                (By.CSS_SELECTOR, ".price"),
+                (By.CSS_SELECTOR, "[data-selenium='salePrice']"),
+                (By.CSS_SELECTOR, "[data-selenium='itemPrice']"),
+                (By.XPATH, "//span[contains(@class, 'price') or contains(@class, 'price-current')]"),
+                (By.XPATH, "//li[contains(@class, 'price-current')]/strong")
             ]
             
-            for by, selector in selectors:
+            for by, selector in price_selectors:
                 try:
-                    element = WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((by, selector))
-                    )
+                    element = driver.find_element(by, selector)
                     price_text = element.text.strip()
-                    price_match = re.search(r'(\d+[\d,]*\.?\d*)', price_text)
-                    if price_match:
-                        price = float(price_match.group(1).replace(',', ''))
-                        logger.debug(f"Found price: ${price}")
-                        return price
+                    
+                    # If price element is found but empty, try getting text from child elements
+                    if not price_text:
+                        child_elements = element.find_elements(By.XPATH, ".//*")
+                        for child in child_elements:
+                            if child.text and '$' in child.text:
+                                price_text = child.text
+                                break
+                    
+                    if price_text:
+                        # Extract dollar amount
+                        import re
+                        price_match = re.search(r'(\$)?(\d+,?\d*\.?\d*)', price_text)
+                        if price_match:
+                            price_str = price_match.group(2).replace(',', '')
+                            try:
+                                price = float(price_str)
+                                logger.debug(f"Found price: ${price}")
+                                return price
+                            except ValueError:
+                                logger.warning(f"Could not convert price string to float: {price_str}")
+                                continue
                 except:
                     continue
             
             # Try structured data
             try:
-                script = soup.find('script', {'type': 'application/ld+json'})
-                if script and script.string:
-                    import json
-                    data = json.loads(script.string)
-                    if isinstance(data, dict) and 'offers' in data:
-                        offers = data['offers']
-                        if isinstance(offers, dict) and 'price' in offers:
-                            price = float(offers['price'])
-                            logger.debug(f"Found price from structured data: ${price}")
-                            return price
+                structured_data = driver.find_elements(By.XPATH, "//script[@type='application/ld+json']")
+                for data_element in structured_data:
+                    try:
+                        data = json.loads(data_element.get_attribute('textContent'))
+                        if isinstance(data, dict) and 'offers' in data:
+                            offers = data['offers']
+                            if isinstance(offers, dict) and 'price' in offers:
+                                try:
+                                    price = float(offers['price'])
+                                    logger.debug(f"Found price from structured data: ${price}")
+                                    return price
+                                except (ValueError, TypeError):
+                                    pass
+                            elif isinstance(offers, list) and len(offers) > 0:
+                                for offer in offers:
+                                    if isinstance(offer, dict) and 'price' in offer:
+                                        try:
+                                            price = float(offer['price'])
+                                            logger.debug(f"Found price from structured data offers list: ${price}")
+                                            return price
+                                        except (ValueError, TypeError):
+                                            pass
+                    except:
+                        pass
             except:
                 pass
             
-            logger.warning("Could not find product price")
+            logger.warning("Could not extract price from page")
             return None
         except Exception as e:
             logger.error(f"Error extracting price: {str(e)}")
@@ -939,46 +1259,93 @@ class NeweggScraper:
         """Extract product availability using Selenium"""
         logger.debug("NeweggScraper: Extracting availability")
         try:
-            # Check multiple availability indicators
-            try:
-                # Check for add to cart button
-                add_to_cart = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".btn-primary"))
-                )
-                if "add to cart" in add_to_cart.text.lower():
-                    logger.debug("Found enabled add to cart button")
-                    return True
-            except:
-                pass
+            # Try multiple availability indicators
             
-            # Check for out of stock indicators
-            out_of_stock_texts = ["sold out", "out of stock", "coming soon"]
-            try:
-                inventory = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "product-inventory"))
-                )
-                if any(text in inventory.text.lower() for text in out_of_stock_texts):
-                    logger.debug("Product is out of stock")
-                    return False
-            except:
-                pass
+            # Check "Add to cart" button availability
+            add_to_cart_selectors = [
+                (By.CSS_SELECTOR, "button.btn-primary:not([disabled])"),
+                (By.XPATH, "//button[contains(text(), 'ADD TO CART') and not(@disabled)]"),
+                (By.XPATH, "//button[contains(@class, 'btn-primary') and not(@disabled)]"),
+                (By.XPATH, "//button[contains(text(), 'Add to cart') and not(@disabled)]")
+            ]
+            
+            for by, selector in add_to_cart_selectors:
+                try:
+                    element = driver.find_element(by, selector)
+                    if element and element.is_displayed():
+                        logger.debug("Found enabled Add to Cart button - product is in stock")
+                        return True
+                except:
+                    continue
+            
+            # Check for explicit in-stock text
+            stock_text_selectors = [
+                (By.CSS_SELECTOR, ".product-inventory"),
+                (By.CSS_SELECTOR, "[data-selenium='inStock']"),
+                (By.XPATH, "//*[contains(text(), 'In Stock')]")
+            ]
+            
+            for by, selector in stock_text_selectors:
+                try:
+                    element = driver.find_element(by, selector)
+                    if element:
+                        text = element.text.lower()
+                        if "in stock" in text and "out of stock" not in text:
+                            logger.debug(f"Found in-stock text: {text}")
+                            return True
+                except:
+                    continue
+            
+            # Check for out-of-stock indicators
+            out_of_stock_selectors = [
+                (By.XPATH, "//*[contains(text(), 'OUT OF STOCK')]"),
+                (By.XPATH, "//*[contains(text(), 'Out of Stock')]"),
+                (By.XPATH, "//*[contains(text(), 'out of stock')]"),
+                (By.XPATH, "//button[contains(@class, 'btn-primary') and @disabled]")
+            ]
+            
+            for by, selector in out_of_stock_selectors:
+                try:
+                    element = driver.find_element(by, selector)
+                    if element and element.is_displayed():
+                        logger.debug("Found out-of-stock indicator")
+                        return False
+                except:
+                    continue
             
             # Try structured data
             try:
-                script = soup.find('script', {'type': 'application/ld+json'})
-                if script and script.string:
-                    import json
-                    data = json.loads(script.string)
-                    if isinstance(data, dict) and 'offers' in data:
-                        offers = data['offers']
-                        if isinstance(offers, dict) and 'availability' in offers:
-                            available = 'InStock' in offers['availability']
-                            logger.debug(f"Found availability from structured data: {available}")
-                            return available
+                structured_data = driver.find_elements(By.XPATH, "//script[@type='application/ld+json']")
+                for data_element in structured_data:
+                    try:
+                        data = json.loads(data_element.get_attribute('textContent'))
+                        if isinstance(data, dict) and 'offers' in data:
+                            offers = data['offers']
+                            if isinstance(offers, dict) and 'availability' in offers:
+                                available = 'InStock' in offers['availability']
+                                logger.debug(f"Found availability from structured data: {available}")
+                                return available
+                            elif isinstance(offers, list) and len(offers) > 0:
+                                for offer in offers:
+                                    if isinstance(offer, dict) and 'availability' in offer:
+                                        if 'InStock' in offer['availability']:
+                                            return True
+                    except:
+                        pass
             except:
                 pass
             
-            logger.warning("Could not determine product availability")
+            # If we can find a current price, the product is likely in stock
+            try:
+                price_elements = driver.find_elements(By.CSS_SELECTOR, ".price")
+                for element in price_elements:
+                    if element.is_displayed() and '$' in element.text:
+                        logger.debug("Found price display - assuming product is in stock")
+                        return True
+            except:
+                pass
+            
+            logger.warning("Could not determine product availability - defaulting to False")
             return False
         except Exception as e:
             logger.error(f"Error extracting availability: {str(e)}")
@@ -992,7 +1359,13 @@ class NeweggScraper:
             selectors = [
                 (By.CLASS_NAME, "product-view-img-original"),
                 (By.CSS_SELECTOR, "[data-selenium='product-image']"),
-                (By.CSS_SELECTOR, ".product-gallery img")
+                (By.CSS_SELECTOR, ".product-gallery img"),
+                (By.CSS_SELECTOR, ".swiper-zoom-container img"),
+                (By.CSS_SELECTOR, ".product-view-img-container img"),
+                (By.CSS_SELECTOR, "#product_preview_img"),
+                (By.CSS_SELECTOR, "div.swiper-slide.swiper-slide-active img"),
+                (By.CSS_SELECTOR, "img.mainSlide"),
+                (By.XPATH, "//div[contains(@class, 'swiper-slide') and contains(@class, 'swiper-slide-active')]//img")
             ]
             
             for by, selector in selectors:
@@ -1007,28 +1380,29 @@ class NeweggScraper:
                 except:
                     continue
             
-            # Try structured data
+            # Try json-ld structured data for images
             try:
-                script = soup.find('script', {'type': 'application/ld+json'})
-                if script and script.string:
-                    import json
-                    data = json.loads(script.string)
-                    if isinstance(data, dict) and 'image' in data:
-                        image_url = data['image']
-                        if isinstance(image_url, list):
-                            image_url = image_url[0]
-                        logger.debug(f"Found image URL from structured data: {image_url}")
-                        return image_url
+                structured_data = driver.find_elements(By.XPATH, "//script[@type='application/ld+json']")
+                for data_element in structured_data:
+                    try:
+                        data = json.loads(data_element.get_attribute('textContent'))
+                        if isinstance(data, dict) and 'image' in data:
+                            if isinstance(data['image'], str):
+                                return data['image']
+                            elif isinstance(data['image'], list) and len(data['image']) > 0:
+                                return data['image'][0]
+                    except:
+                        pass
             except:
                 pass
-            
-            # Try meta image
+                
+            # Last resort: look for any image with product in the src
             try:
-                meta_img = soup.find('meta', {'property': 'og:image'})
-                if meta_img and meta_img.get('content'):
-                    image_url = meta_img.get('content')
-                    logger.debug(f"Found image URL from meta: {image_url}")
-                    return image_url
+                all_images = driver.find_elements(By.TAG_NAME, "img")
+                for img in all_images:
+                    src = img.get_attribute("src")
+                    if src and ("product" in src.lower() or "gallery" in src.lower() or "large" in src.lower()):
+                        return src
             except:
                 pass
             
@@ -1089,3 +1463,243 @@ class NeweggScraper:
         except Exception as e:
             logger.error(f"Error solving hCaptcha: {str(e)}")
             return False
+
+    def add_to_cart(self, quantity=1):
+        """
+        Add a product to Newegg cart.
+        
+        Args:
+            quantity: Quantity to add to cart (default: 1)
+            
+        Returns:
+            dict: A dictionary with cart status information
+                {
+                    'success': True/False,
+                    'message': str,
+                    'cart_url': str,
+                    'screenshot': str (base64)
+                }
+        """
+        logger.info(f"Attempting to add product to Newegg cart with quantity {quantity}")
+        
+        if not hasattr(self, 'current_product_url') or not self.current_product_url:
+            logger.error("No product URL available. Use scrape_product first.")
+            return {
+                'success': False,
+                'message': "No product URL available. Please scrape the product first.",
+                'cart_url': None,
+                'screenshot': None
+            }
+        
+        url = self.current_product_url
+        driver = None
+        
+        try:
+            # Get fresh ChromeOptions to avoid reuse error
+            options = self._get_chrome_options()
+            
+            # Create browser instance
+            driver = uc.Chrome(options=options)
+            
+            # Step 1: Load cookies from environment if available
+            newegg_cookies = os.environ.get('NEWEGG_COOKIES')
+            
+            # Step 2: Navigate to Newegg homepage first to set cookies
+            driver.get('https://www.newegg.com/')
+            
+            # Apply user cookies if available
+            if newegg_cookies:
+                try:
+                    logger.info("Applying user-provided Newegg cookies")
+                    # Parse the cookie string
+                    if isinstance(newegg_cookies, str):
+                        # Basic cookie format parsing
+                        cookie_pairs = newegg_cookies.split(';')
+                        
+                        for pair in cookie_pairs:
+                            pair = pair.strip()
+                            if not pair:
+                                continue
+                            
+                            # Handle cookies without values (just names)
+                            if '=' in pair:
+                                name, value = pair.split('=', 1)
+                            else:
+                                name, value = pair, ''
+                            
+                            # Add cookie to driver
+                            try:
+                                cookie_dict = {
+                                    'name': name.strip(),
+                                    'value': value.strip(),
+                                    'domain': '.newegg.com',
+                                    'path': '/'
+                                }
+                                driver.add_cookie(cookie_dict)
+                                logger.debug(f"Added cookie: {name}")
+                            except Exception as e:
+                                logger.warning(f"Failed to add cookie {name}: {str(e)}")
+                except Exception as e:
+                    logger.warning(f"Error applying cookies: {str(e)}")
+            else:
+                logger.warning("No Newegg cookies provided. Cart functionality may be limited.")
+            
+            # Refresh page after setting cookies
+            driver.refresh()
+            time.sleep(1)
+            
+            # Step 3: Navigate to product page
+            logger.info(f"Navigating to product page: {url}")
+            driver.get(url)
+            
+            # Handle any CAPTCHA or bot protection that might appear
+            try:
+                self.handle_bot_protection(driver)
+            except Exception as e:
+                logger.warning(f"Error handling bot protection: {str(e)}")
+            
+            # Step 4: Wait for page to load and check if product is available
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
+            )
+            
+            # Step 5: Check if product is available
+            try:
+                # Look for typical out-of-stock indicators
+                out_of_stock_elements = driver.find_elements(By.XPATH, "//div[contains(text(), 'OUT OF STOCK') or contains(@class, 'product-inventory') and contains(text(), 'Out of Stock')]")
+                
+                if out_of_stock_elements:
+                    screenshot = self._take_screenshot(driver)
+                    return {
+                        'success': False,
+                        'message': "Product is out of stock",
+                        'cart_url': None,
+                        'screenshot': screenshot
+                    }
+            except Exception as e:
+                logger.warning(f"Error checking stock status: {str(e)}")
+            
+            # Step 6: Find and click the Add to Cart button 
+            try:
+                # First try the standard Add to Cart button
+                add_to_cart_selectors = [
+                    "//button[contains(text(), 'ADD TO CART')]",
+                    "//button[contains(@class, 'btn-primary') and contains(text(), 'Add to cart')]",
+                    "//button[contains(@id, 'ProductBuy')]",
+                    "//button[contains(@class, 'btn-buy')]"
+                ]
+                
+                add_button = None
+                for selector in add_to_cart_selectors:
+                    elements = driver.find_elements(By.XPATH, selector)
+                    if elements:
+                        add_button = elements[0]
+                        break
+                
+                if not add_button:
+                    screenshot = self._take_screenshot(driver)
+                    return {
+                        'success': False,
+                        'message': "Could not find Add to Cart button",
+                        'cart_url': None,
+                        'screenshot': screenshot
+                    }
+                
+                # Click the Add to Cart button
+                logger.info("Clicking Add to Cart button")
+                
+                # Scroll to the button to make it visible
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", add_button)
+                time.sleep(0.5)
+                
+                # Try regular click first
+                try:
+                    add_button.click()
+                except Exception as e:
+                    logger.warning(f"Regular click failed: {str(e)}, trying JavaScript click")
+                    driver.execute_script("arguments[0].click();", add_button)
+                
+                # Wait a bit for the cart to update
+                time.sleep(2)
+                
+                # Check if we need to handle a popup
+                try:
+                    # Look for common popups that might appear after adding to cart
+                    popup_close_buttons = driver.find_elements(By.XPATH, "//button[contains(@class, 'close') or contains(@class, 'btn-close')]")
+                    if popup_close_buttons:
+                        popup_close_buttons[0].click()
+                        time.sleep(1)
+                except Exception as e:
+                    logger.warning(f"Error handling popup: {str(e)}")
+                
+                # Step 7: Verify that product was added to cart
+                # Go to cart page
+                driver.get("https://secure.newegg.com/shop/cart")
+                time.sleep(2)
+                
+                # Take a screenshot of the cart
+                screenshot = self._take_screenshot(driver)
+                
+                # Check if the cart has items
+                cart_empty = len(driver.find_elements(By.XPATH, "//div[contains(text(), 'Your Shopping Cart is empty')]")) > 0
+                
+                if cart_empty:
+                    return {
+                        'success': False,
+                        'message': "Failed to add product to cart",
+                        'cart_url': driver.current_url,
+                        'screenshot': screenshot
+                    }
+                
+                return {
+                    'success': True,
+                    'message': "Product added to cart successfully",
+                    'cart_url': driver.current_url,
+                    'screenshot': screenshot
+                }
+                
+            except Exception as e:
+                logger.error(f"Error adding to cart: {str(e)}")
+                if driver:
+                    screenshot = self._take_screenshot(driver)
+                else:
+                    screenshot = None
+                    
+                return {
+                    'success': False,
+                    'message': f"Error adding to cart: {str(e)}",
+                    'cart_url': None,
+                    'screenshot': screenshot
+                }
+        except Exception as e:
+            logger.error(f"Unexpected error in add_to_cart: {str(e)}")
+            if driver:
+                try:
+                    screenshot = self._take_screenshot(driver)
+                except:
+                    screenshot = None
+            else:
+                screenshot = None
+                
+            return {
+                'success': False,
+                'message': f"Unexpected error: {str(e)}",
+                'cart_url': None,
+                'screenshot': screenshot
+            }
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
+
+    def _take_screenshot(self, driver):
+        """Take a screenshot and return as base64 string"""
+        try:
+            import base64
+            screenshot = driver.get_screenshot_as_base64()
+            return screenshot
+        except Exception as e:
+            logger.error(f"Error taking screenshot: {str(e)}")
+            return None

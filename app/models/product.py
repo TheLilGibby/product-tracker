@@ -20,6 +20,12 @@ class Product(db.Model):
     notify_on_price_drop = db.Column(db.Boolean, default=True)
     notify_on_availability = db.Column(db.Boolean, default=True)
     
+    # Auto cart functionality settings
+    auto_cart_enabled = db.Column(db.Boolean, default=False)
+    auto_cart_quantity = db.Column(db.Integer, default=1)
+    last_cart_attempt = db.Column(db.DateTime, nullable=True)
+    last_cart_status = db.Column(db.String(100), nullable=True)
+    
     # Relationship with price history
     price_histories = db.relationship('PriceHistory', backref='product', lazy=True, cascade='all, delete-orphan')
     

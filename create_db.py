@@ -2,8 +2,15 @@ from app import create_app, db
 from app.models.product import Product, PriceHistory
 import os
 import pathlib
+import sqlite3
 
 app = create_app()
+
+def get_columns(table_name, conn):
+    """Get all columns for a given table"""
+    cursor = conn.cursor()
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    return [row[1] for row in cursor.fetchall()]
 
 with app.app_context():
     # Make sure the data directory exists
@@ -37,6 +44,50 @@ with app.app_context():
                 except Exception as e:
                     print(f"ERROR: Could not write to data directory: {e}")
     
+    # Check if database already exists
+    full_path = ""
+    if db_uri.startswith('sqlite:///'):
+        db_path = db_uri.replace('sqlite:///', '')
+        if not os.path.isabs(db_path):
+            full_path = os.path.join(os.getcwd(), db_path)
+        else:
+            full_path = db_path
+        
+        db_exists = os.path.exists(full_path)
+        print(f"Database file exists: {db_exists}")
+        
+        # If database exists, check if we need to add new columns
+        if db_exists:
+            print("Checking for schema updates...")
+            try:
+                conn = sqlite3.connect(full_path)
+                
+                # Check if products table has the new auto cart columns
+                columns = get_columns('products', conn)
+                
+                # Add new auto cart columns if they don't exist
+                if 'auto_cart_enabled' not in columns:
+                    print("Adding auto_cart_enabled column...")
+                    conn.execute("ALTER TABLE products ADD COLUMN auto_cart_enabled BOOLEAN DEFAULT 0")
+                
+                if 'auto_cart_quantity' not in columns:
+                    print("Adding auto_cart_quantity column...")
+                    conn.execute("ALTER TABLE products ADD COLUMN auto_cart_quantity INTEGER DEFAULT 1")
+                
+                if 'last_cart_attempt' not in columns:
+                    print("Adding last_cart_attempt column...")
+                    conn.execute("ALTER TABLE products ADD COLUMN last_cart_attempt DATETIME")
+                
+                if 'last_cart_status' not in columns:
+                    print("Adding last_cart_status column...")
+                    conn.execute("ALTER TABLE products ADD COLUMN last_cart_status VARCHAR(100)")
+                
+                conn.commit()
+                conn.close()
+                print("Schema updates completed!")
+            except Exception as e:
+                print(f"Error updating schema: {e}")
+    
     # Create all tables
     try:
         db.create_all()
@@ -46,7 +97,8 @@ with app.app_context():
         # Try to diagnose the issue
         import sqlite3
         try:
-            full_path = os.path.join(os.getcwd(), 'data/product_tracker.db')
+            if not full_path:
+                full_path = os.path.join(os.getcwd(), 'data/product_tracker.db')
             print(f"Attempting direct SQLite connection to: {full_path}")
             conn = sqlite3.connect(full_path)
             print("Direct SQLite connection successful!")

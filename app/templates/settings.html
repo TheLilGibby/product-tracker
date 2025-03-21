@@ -1,0 +1,150 @@
+{% extends 'base.html' %}
+
+{% block title %}Settings - Product Tracker{% endblock %}
+
+{% block content %}
+<header class="mb-4">
+    <h2>Application Settings</h2>
+    <p>Configure various settings for your product tracker.</p>
+</header>
+
+<div class="settings-container" style="max-width: 800px; margin: 0 auto;">
+    <!-- Check Interval Settings Form -->
+    <article style="margin-bottom: 2rem;">
+        <h3>Check Interval Settings</h3>
+        <p>Control how frequently products are checked for updates.</p>
+        
+        <form method="post" action="{{ url_for('main.update_check_interval') }}" style="display: flex; gap: 1rem; align-items: flex-end;">
+            <div>
+                <label for="check_interval_minutes">Minutes</label>
+                <input type="number" id="check_interval_minutes" name="check_interval_minutes" min="0" value="{{ config.CHECK_INTERVAL_MINUTES }}">
+            </div>
+            <div>
+                <label for="check_interval_seconds">Seconds</label>
+                <input type="number" id="check_interval_seconds" name="check_interval_seconds" min="0" max="59" value="{{ config.CHECK_INTERVAL_SECONDS }}">
+            </div>
+            <button type="submit">Apply</button>
+        </form>
+        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: #6c757d;">
+            Minimum interval: 10 seconds. Current setting: 
+            {% if config.CHECK_INTERVAL_SECONDS > 0 %}
+                Products are checked every {{ config.CHECK_INTERVAL_MINUTES }} minutes and {{ config.CHECK_INTERVAL_SECONDS }} seconds
+            {% else %}
+                Products are checked every {{ config.CHECK_INTERVAL_MINUTES }} minutes
+            {% endif %}
+        </p>
+    </article>
+    
+    <!-- Timezone Settings Form -->
+    <article style="margin-bottom: 2rem;">
+        <h3>Timezone Settings</h3>
+        <p>Set your preferred timezone for displaying dates and times.</p>
+        
+        <form method="post" action="{{ url_for('main.update_timezone') }}">
+            <div style="margin-bottom: 1rem;">
+                <label for="timezone">Timezone</label>
+                <select id="timezone" name="timezone">
+                    {% for tz in timezones %}
+                        <option value="{{ tz }}" {% if tz == current_timezone %}selected{% endif %}>{{ tz }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit">Apply</button>
+        </form>
+        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: #6c757d;">Current timezone: {{ current_timezone }}</p>
+    </article>
+    
+    <!-- Time Format Toggle -->
+    <article style="margin-bottom: 2rem;">
+        <h3>Time Format</h3>
+        <p>Choose between 12-hour (AM/PM) and 24-hour (military) time format.</p>
+        
+        <form method="post" action="{{ url_for('main.toggle_time_format') }}">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
+                <div>
+                    <p style="margin: 0;">
+                        Current format: 
+                        <strong>
+                            {% if current_time_format == '12h' %}
+                                12-hour (AM/PM)
+                            {% else %}
+                                24-hour (Military)
+                            {% endif %}
+                        </strong>
+                    </p>
+                </div>
+                <button type="submit">Toggle Format</button>
+            </div>
+        </form>
+    </article>
+
+    <!-- Newegg Cookies Settings Form -->
+    <article style="margin-bottom: 2rem;">
+        <h3>Newegg Auto-Cart Settings</h3>
+        <p>Configure cookies for automatic cart functionality on Newegg.com</p>
+        
+        <form method="post" action="{{ url_for('main.update_newegg_cookies') }}">
+            <div style="margin-bottom: 1rem;">
+                <label for="newegg_cookies">Newegg Cookies</label>
+                <textarea id="newegg_cookies" name="newegg_cookies" rows="4" style="font-family: monospace; font-size: 0.8rem;"></textarea>
+                <small>Paste your Newegg cookies here to enable auto-cart functionality. Format should be the cookie string from your browser.</small>
+            </div>
+            
+            <details>
+                <summary>How to get Newegg cookies</summary>
+                <div style="margin-top: 0.5rem; padding: 1rem; background-color: var(--accent-bg); border-radius: 5px;">
+                    <ol style="margin-bottom: 0;">
+                        <li>Log into your Newegg account in your web browser</li>
+                        <li>Right-click on the page and select "Inspect" or press F12</li>
+                        <li>Go to the "Application" tab in Chrome (or "Storage" in Firefox)</li>
+                        <li>Select "Cookies" on the left, then click on "www.newegg.com"</li>
+                        <li>Copy the value of the following cookies:
+                            <ul>
+                                <li>NID</li>
+                                <li>NSC</li>
+                                <li>cto_bundle</li>
+                                <li>SoldDate</li>
+                            </ul>
+                        </li>
+                        <li>Format them as: <code>NID=value; NSC=value; cto_bundle=value; SoldDate=value</code></li>
+                    </ol>
+                </div>
+            </details>
+            
+            <button type="submit" style="margin-top: 1rem;">Update Cookies</button>
+        </form>
+        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: #6c757d;">
+            These cookies allow the auto-cart system to add items to your cart as your logged-in account. 
+            They will be saved securely and only used for auto-cart operations on products you select.
+        </p>
+    </article>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Timezone selector enhancements
+    document.addEventListener('DOMContentLoaded', function() {
+        const timezoneSelect = document.getElementById('timezone');
+        
+        // Add search functionality to make it easier to find timezones
+        timezoneSelect.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                timezoneSelect.blur();
+                return;
+            }
+            
+            const letter = e.key.toLowerCase();
+            if (letter.length === 1 && /[a-z]/i.test(letter)) {
+                for (let i = 0; i < timezoneSelect.options.length; i++) {
+                    const option = timezoneSelect.options[i];
+                    if (option.text.toLowerCase().startsWith(letter)) {
+                        timezoneSelect.selectedIndex = i;
+                        break;
+                    }
+                }
+            }
+        });
+    });
+</script>
+{% endblock %} 

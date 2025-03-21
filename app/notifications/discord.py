@@ -7,7 +7,7 @@ class DiscordNotifier:
     
     @staticmethod
     def send_notification(webhook_url, product_name, product_url, current_price, old_price=None, 
-                         is_availability_alert=False, image_url=None):
+                         is_availability_alert=False, is_auto_cart=False, cart_url=None, image_url=None):
         """
         Send a notification to Discord via webhook
         
@@ -18,6 +18,8 @@ class DiscordNotifier:
             current_price: Current price of the product
             old_price: Previous price (for price drop alerts)
             is_availability_alert: Whether this is an availability alert
+            is_auto_cart: Whether this is an auto-cart notification
+            cart_url: URL to the cart (for auto-cart notifications)
             image_url: URL to product image
             
         Returns:
@@ -26,16 +28,26 @@ class DiscordNotifier:
         if not webhook_url:
             return False
             
+        if is_auto_cart:
+            title = "🛒 Auto-Cart Success!"
+            color = 3447003  # Blue for auto-cart
+        elif is_availability_alert:
+            title = "🔔 Product Available!"
+            color = 5814783  # Green for availability
+        else:
+            title = "🔔 Price Drop Alert!"
+            color = 15158332  # Red for price drop
+            
         embed = {
-            "title": f"🔔 {'Product Available!' if is_availability_alert else 'Price Drop Alert!'}",
+            "title": title,
             "description": f"**{product_name}**",
-            "color": 5814783 if is_availability_alert else 15158332,  # Green for availability, Red for price drop
+            "color": color,
             "timestamp": datetime.utcnow().isoformat(),
             "url": product_url,
             "fields": [
                 {
                     "name": "Product Link",
-                    "value": f"[Click here to buy now!]({product_url})",
+                    "value": f"[Click here to view product]({product_url})",
                     "inline": False
                 }
             ],
@@ -48,7 +60,29 @@ class DiscordNotifier:
         if image_url:
             embed["thumbnail"] = {"url": image_url}
         
-        if is_availability_alert:
+        if is_auto_cart:
+            # Add cart URL if available
+            if cart_url:
+                embed["fields"].append({
+                    "name": "Cart Link",
+                    "value": f"[Click here to view cart]({cart_url})",
+                    "inline": False
+                })
+            
+            # Add price information if available
+            if current_price:
+                embed["fields"].append({
+                    "name": "Current Price",
+                    "value": f"${current_price:.2f}",
+                    "inline": True
+                })
+            
+            embed["fields"].append({
+                "name": "Status",
+                "value": "Product has been automatically added to cart!",
+                "inline": False
+            })
+        elif is_availability_alert:
             embed["fields"].append({
                 "name": "Status",
                 "value": "Product is now in stock!",
