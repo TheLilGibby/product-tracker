@@ -35,8 +35,7 @@ if LOGIN_MODE:
     os.environ['TARGET_HEADLESS'] = '0'
 
 from app.scrapers.target_scraper import TargetScraper, TARGET_CART_URL  # noqa: E402
-from app.scrapers.common import detect_chrome_major  # noqa: E402
-import undetected_chromedriver as uc  # noqa: E402
+from app.scrapers.common import profile_lock  # noqa: E402
 
 # Product names contain ™ / –; keep printing on cp1252 Windows consoles
 if hasattr(sys.stdout, 'reconfigure'):
@@ -47,7 +46,15 @@ def login():
     """Open the persistent profile in a visible window for a one-time sign-in / verification."""
     scraper = TargetScraper()
     print(f"Opening a visible Chrome window using profile: {scraper.profile_dir}")
-    driver = uc.Chrome(options=scraper._get_chrome_options(), version_main=detect_chrome_major())
+    # Wait indefinitely: a scheduled scrape may hold the profile, and the human
+    # here needs it for as long as signing in takes.
+    print("Waiting for exclusive access to the profile (a running check may hold it)...")
+    with profile_lock(scraper.profile_dir, timeout=None):
+        _login_session(scraper)
+
+
+def _login_session(scraper):
+    driver = scraper._start_driver()
     try:
         driver.set_page_load_timeout(60)
         driver.get(ACCOUNT_URL)
