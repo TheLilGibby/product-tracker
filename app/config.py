@@ -27,6 +27,13 @@ class Config:
     # Product checking settings
     CHECK_INTERVAL_MINUTES = int(os.environ.get('CHECK_INTERVAL_MINUTES', 15))
     CHECK_INTERVAL_SECONDS = int(os.environ.get('CHECK_INTERVAL_SECONDS', 0))
+
+    # Per-store backoff. After STORE_BACKOFF_FAILURES consecutive failed scrapes
+    # a store's products are skipped for STORE_BACKOFF_MINUTES, doubling with
+    # each further failure up to an hour. Retrying a retailer that is already
+    # blocking us on every cycle only extends the block.
+    STORE_BACKOFF_FAILURES = int(os.environ.get('STORE_BACKOFF_FAILURES', 2))
+    STORE_BACKOFF_MINUTES = int(os.environ.get('STORE_BACKOFF_MINUTES', 15))
     
     # Default timezone setting (uses UTC by default)
     DEFAULT_TIMEZONE = os.environ.get('DEFAULT_TIMEZONE', 'UTC')
