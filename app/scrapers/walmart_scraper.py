@@ -60,6 +60,34 @@ class WalmartScraper:
         # Persistent profile so Walmart's bot checks see a returning browser
         self.profile_dir = os.path.join(os.path.expanduser("~"), ".chrome_profiles", "walmart_profile")
     
+    @staticmethod
+    def _is_orderable(product):
+        """
+        Whether a __NEXT_DATA__ product node can actually be ordered right now.
+
+        One rule for both callers. The tracker's availability and the cart path's
+        pre-check have to agree: if they diverge, a product reads "available",
+        fires an availability alert and triggers auto-cart, and the cart path then
+        refuses it - a false positive on exactly the drop the user is waiting for.
+
+        availabilityStatus alone is not enough. A pre-order whose allocation is
+        gone keeps advertising PREORDER and isPreOrder, and only orderLimit drops
+        to 0. Treat that as unorderable.
+
+        Args:
+            product: the node at props.pageProps.initialData.data.product
+
+        Returns:
+            (orderable, status, order_limit) - status normalised to upper case
+        """
+        status = ((product.get('availabilityStatus') or '')).upper()
+        order_limit = product.get('orderLimit')
+        orderable = status in WALMART_AVAILABLE_STATUSES
+        if orderable and order_limit == 0:
+            logger.debug(f"availabilityStatus={status} but orderLimit=0; treating as unorderable")
+            orderable = False
+        return orderable, status, order_limit
+
     def scrape_product(self, url):
         """
         Scrape product information from Walmart URL
@@ -117,10 +145,10 @@ class WalmartScraper:
                 logger.debug("__NEXT_DATA__ has no product node")
                 return None
             
-            status = (product.get('availabilityStatus') or '').upper()
             is_pre_order = bool((product.get('preOrder') or {}).get('isPreOrder'))
-            available = status in WALMART_AVAILABLE_STATUSES
-            logger.debug(f"__NEXT_DATA__ availabilityStatus={status} isPreOrder={is_pre_order} -> available={available}")
+            available, status, order_limit = self._is_orderable(product)
+            logger.debug(f"__NEXT_DATA__ availabilityStatus={status} isPreOrder={is_pre_order} "
+                         f"orderLimit={order_limit} -> available={available}")
             
             price = None
             current_price = (product.get('priceInfo') or {}).get('currentPrice') or {}
@@ -294,13 +322,8 @@ class WalmartScraper:
             logger.debug(f"Could not read Walmart order state: {str(e)}")
             return None
 
-        status = product.get('availabilityStatus')
         pre_order = (product.get('preOrder') or {}).get('isPreOrder')
-        order_limit = product.get('orderLimit')
-        orderable = status in WALMART_AVAILABLE_STATUSES
-        # A pre-order whose allocation is gone still advertises isPreOrder
-        if orderable and order_limit == 0:
-            orderable = False
+        orderable, status, order_limit = self._is_orderable(product)
         return {
             'item_id': product.get('usItemId'),
             'name': product.get('name'),
