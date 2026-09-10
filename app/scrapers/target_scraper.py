@@ -30,14 +30,16 @@ import re
 import logging
 import os
 import time
+from contextlib import ExitStack
 import requests
 from bs4 import BeautifulSoup
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
-from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text, detect_chrome_major
+from selenium.common.exceptions import TimeoutException, WebDriverException
+from app.scrapers.common import (DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text,
+                                 detect_chrome_major, profile_lock, ProfileBusyError)
 
 # Set up logging
 logger = logging.getLogger('app.scrapers.target')
@@ -232,6 +234,24 @@ class TargetScraper:
         return False
 
     # ----------------------------------------------------------------- browser
+    def _start_driver(self):
+        """
+        Launch Chrome on the shared profile, translating the launch failure that
+        profile contention produces into something the caller can report.
+
+        The lock must already be held: Chrome will not run two instances against
+        one --user-data-dir, and the loser dies with "chrome not reachable".
+        """
+        try:
+            return uc.Chrome(options=self._get_chrome_options(), version_main=detect_chrome_major())
+        except WebDriverException as e:
+            message = str(e)
+            if 'not reachable' in message or 'session not created' in message:
+                raise ProfileBusyError(
+                    f"Chrome could not start on the profile {self.profile_dir}. Another Chrome is most "
+                    "likely using it - close any window opened from that profile and retry") from e
+            raise
+
     def _get_chrome_options(self):
         """Get fresh ChromeOptions (reusing an options object raises in undetected-chromedriver)"""
         options = uc.ChromeOptions()
@@ -260,9 +280,14 @@ class TargetScraper:
         driver = None
         html = None
         challenge = None
+        profile = ExitStack()
         try:
-            options = self._get_chrome_options()
-            driver = uc.Chrome(options=options, version_main=detect_chrome_major())
+            profile.enter_context(profile_lock(self.profile_dir))
+        except ProfileBusyError as e:
+            logger.warning(f"Skipping browser scrape for Target TCIN {tcin}: {str(e)}")
+            return None
+        try:
+            driver = self._start_driver()
             driver.set_page_load_timeout(45)
             driver.get(url)
             try:
@@ -276,12 +301,16 @@ class TargetScraper:
             html = driver.page_source
             # Must be read before the driver is torn down below
             challenge = self._challenge_present(driver)
+        except ProfileBusyError as e:
+            logger.warning(f"Could not start Chrome for Target TCIN {tcin}: {str(e)}")
+            return None
         finally:
             if driver:
                 try:
                     driver.quit()
                 except Exception:
                     pass
+            profile.close()
 
         if challenge:
             logger.warning(f"Target showed a human-verification challenge ({challenge}) for {url}; "
@@ -452,8 +481,13 @@ class TargetScraper:
 
         logger.info(f"Adding Target product to cart: {url} (TCIN {tcin}), quantity: {quantity}")
         driver = None
+        profile = ExitStack()
         try:
-            driver = uc.Chrome(options=self._get_chrome_options(), version_main=detect_chrome_major())
+            profile.enter_context(profile_lock(self.profile_dir))
+        except ProfileBusyError as e:
+            return self._cart_result(False, str(e))
+        try:
+            driver = self._start_driver()
             driver.set_page_load_timeout(45)
             driver.get(url)
             try:
@@ -506,6 +540,8 @@ class TargetScraper:
 
             logger.info(f"Target product {tcin} is in the cart")
             return self._cart_result(True, f"Product added to Target cart{note}", driver=driver, cart_url=driver.current_url)
+        except ProfileBusyError as e:
+            return self._cart_result(False, str(e), driver=driver)
         except Exception as e:
             logger.error(f"Error adding Target product to cart: {str(e)}", exc_info=True)
             return self._cart_result(False, f"Error: {str(e)}", driver=driver)
@@ -515,6 +551,7 @@ class TargetScraper:
                     driver.quit()
                 except Exception:
                     pass
+            profile.close()
 
     @staticmethod
     def _cart_result(success, message, driver=None, cart_url=None):
