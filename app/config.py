@@ -39,6 +39,10 @@ class Config:
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     
+
+    # Minimum minutes between auto-cart attempts for the same product
+    AUTO_CART_COOLDOWN_MINUTES = int(os.environ.get('AUTO_CART_COOLDOWN_MINUTES', 30))
+
     @staticmethod
     def init_app(app):
         """Initialize app with this configuration."""

@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from flask import current_app
@@ -279,9 +279,25 @@ def check_auto_cart_opportunities():
             )
         )
     ).all()
-    
+
+    # Don't re-add the same item every cycle: skip products already carted
+    # successfully, and rate-limit retries after a failed attempt.
+    cooldown = timedelta(minutes=current_app.config.get('AUTO_CART_COOLDOWN_MINUTES', 30))
+    now = datetime.utcnow()
+    products_to_cart = []
+    for product in eligible_products:
+        status = (product.last_cart_status or '').lower()
+        if status.startswith('success'):
+            logger.debug(f"Skipping product {product.id}: already in cart ({product.last_cart_status})")
+            continue
+        if product.last_cart_attempt and now - product.last_cart_attempt < cooldown:
+            logger.debug(f"Skipping product {product.id}: last cart attempt {product.last_cart_attempt} is within the {cooldown} cooldown")
+            continue
+        products_to_cart.append(product)
+    eligible_products = products_to_cart
+
     logger.info(f"Found {len(eligible_products)} products eligible for auto-cart")
-    
+
     from app.scrapers import add_to_cart
     from urllib.parse import urlparse
     
@@ -332,7 +348,7 @@ def check_auto_cart_opportunities():
                 result = add_to_cart(store_type, product.url, quantity)
                 
                 # Update product with cart attempt results
-                product.last_cart_attempt = datetime.now()
+                product.last_cart_attempt = datetime.utcnow()
                 product.last_cart_status = result.get('message', 'Unknown status')
                 db.session.commit()
                 
@@ -346,7 +362,7 @@ def check_auto_cart_opportunities():
                     logger.warning(f"Failed to add product {product.id} to cart: {result.get('message', 'Unknown error')}")
             except Exception as e:
                 logger.error(f"Error adding product {product.id} to cart: {str(e)}", exc_info=True)
-                product.last_cart_attempt = datetime.now()
+                product.last_cart_attempt = datetime.utcnow()
                 product.last_cart_status = f"Error: {str(e)}"
                 db.session.commit()
         except Exception as e:
@@ -355,9 +371,9 @@ def check_auto_cart_opportunities():
     # If we had any successful cart additions, update the cart count in the application context
     if had_successful_cart:
         try:
-            # Import Flask to access the app
-            from flask import current_app, session
-            
+            # current_app is imported at module level; re-importing it here made it
+            # a function-local name, so reads earlier in this function raised
+            # UnboundLocalError.
             # Check if we're in an application context
             if current_app:
                 with current_app.app_context():

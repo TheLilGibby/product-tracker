@@ -119,7 +119,8 @@
                     // Clear sort indicators on all headers
                     headers.forEach(h => {
                         h.setAttribute('data-sort', '');
-                        h.querySelector('.sort-icon')?.textContent = '⇵';
+                        const icon = h.querySelector('.sort-icon');
+                        if (icon) icon.textContent = '⇵';
                     });
                     
                     // Set the new sort order
@@ -378,7 +379,8 @@
         }
         
         // Add auto-refresh controls to the page
-        const headerDiv = document.querySelector('header > div');
+        // Scope to this page's header: 'header > div' alone matches the site banner in base.html
+        const headerDiv = document.querySelector('main header > div');
         if (headerDiv) {
             const refreshControls = document.createElement('div');
             refreshControls.style.marginTop = '1rem';
