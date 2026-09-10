@@ -92,6 +92,12 @@ def create_app(config_name='default'):
     # Register blueprints
     from app.routes import main_bp
     app.register_blueprint(main_bp)
+
+    # Refuse state-changing requests that came from another site. Installed on
+    # the app rather than on main_bp so anything registered later - api_bp, which
+    # is not on this branch yet - is covered by default instead of by remembering.
+    from app.auth import register_request_guards
+    register_request_guards(app)
     
     # Setup error handlers
     from app.errors import register_error_handlers
