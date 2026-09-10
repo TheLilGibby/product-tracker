@@ -109,6 +109,13 @@ PDP_AFTER_CLICK = ('<html><head><title>{name} - Best Buy</title></head><body><h1
                    '{toast}</body></html>')
 ADDED_TOAST = '<div role="alert">Added to cart</div>'
 
+# Another product's markup, of the shape a page-wide SKU scan also matches. On a
+# real product page this is the recommendation rail, and there are hundreds of
+# them; they sit above the CTA, so a scan of the whole page reads them first.
+CROSS_SELL_MARKUP = ('<div data-testid="pdp-recommendation-6543210">'
+                     '<span>Customers also viewed</span></div>'
+                     '<script type="application/json">{"sku": "7654321"}</script>')
+
 
 def check_contract(result):
     """Raise AssertionError if a scrape result violates the scraper contract."""
@@ -276,9 +283,18 @@ def run_cart_verification_checks():
     cart_with_item = CART_WITH_ITEM.format(sku=sku, name='Fixture Product')
     cart_other_item = CART_WITH_ITEM.format(sku='6543210', name='Some Other Thing')
 
+    # The CTA carries the right SKU; the markup above it carries other products'.
+    # A page-wide scan returns 6543210 here, which would then be looked for on
+    # the cart page and never found - a successful add reported as a failure.
+    pdp_with_cross_sell = PDP_AFTER_CLICK.format(
+        name='Fixture Product', testid=f'pdp-add-to-cart-{sku}',
+        toast=ADDED_TOAST).replace('<h1>', CROSS_SELL_MARKUP + '<h1>')
+
     cases = [
         ('SKU on the cart page', pdp, cart_with_item, TARGETS[0], True, 'Successfully added'),
         ('SKU recovered from the pdp markup', pdp, cart_with_item, TARGETS[1], True, 'Successfully added'),
+        ('SKU comes off the CTA, not a neighbouring product', pdp_with_cross_sell, cart_with_item,
+         TARGETS[1], True, 'Successfully added'),
         ('no toast, but the SKU is on the cart page', pdp_no_toast, cart_with_item, TARGETS[0],
          True, 'Successfully added'),
         ('cart holds a different item', pdp, cart_other_item, TARGETS[0], False, 'does not list SKU'),

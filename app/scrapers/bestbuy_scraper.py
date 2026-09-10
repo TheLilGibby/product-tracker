@@ -707,6 +707,20 @@ class BestBuyScraper:
                 return button, state, label or testid
         return None, None, None
 
+    @staticmethod
+    def _sku_from_button(button):
+        """
+        The SKU off the CTA's own data-testid ("pdp-<state>-<sku>"), or None.
+
+        Preferred over extract_sku's page-wide scan because it is unambiguous:
+        it is the button this add is about to click. A real Best Buy product
+        page carries ~275 other "sku" values in its cross-sell JSON, and the
+        page-wide fallback lands on the right one only because the page's own
+        happens to come first in the document.
+        """
+        match = re.search(r'-(\d{7})$', button.get_attribute('data-testid') or '')
+        return match.group(1) if match else None
+
     def _add_to_cart_with_driver(self, driver, quantity):
         button, state, label = self._find_buy_button(driver)
         if button is None:
@@ -722,7 +736,8 @@ class BestBuyScraper:
         # the pdp markup now, while the product page is still loaded, for the
         # URL shapes extract_sku cannot read on their own.
         if not self.current_sku:
-            self.current_sku = self.extract_sku(self.current_product_url or '', driver.page_source)
+            self.current_sku = self._sku_from_button(button) or self.extract_sku(
+                self.current_product_url or '', driver.page_source)
             if self.current_sku:
                 logger.info(f"Recovered SKU {self.current_sku} from the product page")
 
