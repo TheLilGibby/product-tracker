@@ -387,6 +387,8 @@ def update_product(product_id):
         'www.bestbuy.com': 'bestbuy',
         'bhphotovideo.com': 'bh',
         'www.bhphotovideo.com': 'bh',
+        'target.com': 'target',
+        'www.target.com': 'target',
         'test-store.example.com': 'test',
     }
     
@@ -655,6 +657,8 @@ def add_product_to_cart(product_id):
             'www.bestbuy.com': 'bestbuy',
             'bhphotovideo.com': 'bh',
             'www.bhphotovideo.com': 'bh',
+            'target.com': 'target',
+            'www.target.com': 'target',
             'test-store.example.com': 'test',
         }
         

@@ -1,14 +1,36 @@
+"""
+Amazon scraper.
+
+Scraping is plain ``requests`` + BeautifulSoup. ``add_to_cart`` needs a real
+browser and a signed-in session, so it drives undetected-chromedriver against a
+persistent profile under ``~/.chrome_profiles/amazon_profile`` - the same
+arrangement Best Buy and Target use - serialized on ``common.profile_lock``,
+because Chrome refuses to run two instances against one ``--user-data-dir`` and
+the loser dies at launch with an error that reads exactly like a bot wall.
+
+Environment knobs (both optional):
+
+``AMAZON_HEADLESS``       ``1`` (default) or ``0`` to show the Chrome window.
+``CHROME_MAJOR_VERSION``  Force the chromedriver major version (see
+                          ``common.detect_chrome_major``); otherwise it is
+                          detected from the installed Chrome.
+"""
+
 import re
 import logging
+import os
+import random
 import requests
 from bs4 import BeautifulSoup
-from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text, detect_chrome_major
+from contextlib import contextmanager
+from app.scrapers.common import (DEFAULT_HEADERS, PROFILE_LOCK_TIMEOUT, REQUEST_TIMEOUT, ProfileBusyError,
+                                 detect_block_page, detect_chrome_major, is_preorder_text, profile_lock)
 import time
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 import base64
 from io import BytesIO
 from PIL import Image
@@ -39,6 +61,51 @@ UNAVAILABLE_MARKERS = (
 # test on that reported the Zelda 40th console as available.
 IN_STOCK_RE = re.compile(r'(?<!back )\bin stock\b', re.IGNORECASE)
 
+AMAZON_CART_URL = 'https://www.amazon.com/gp/cart/view.html'
+
+# Every canonical Amazon product link carries the ASIN by format, so reading one
+# back out is parsing rather than inference. Worth keeping it that way: a saved
+# product page carries ~40 other ASINs in its cross-sell markup, and a page-wide
+# scan for "an ASIN" would land on the right one only by document order.
+# An ASIN is ten characters - B0-style for most things, a 10-digit ISBN for books.
+ASIN_RE = re.compile(r'/(?:dp|gp/product|gp/aw/d|gp/offer-listing)/([A-Z0-9]{10})(?![A-Z0-9])',
+                     re.IGNORECASE)
+
+# The buy box's own Add to Cart. A product page carries several other
+# add-to-cart forms - see _find_add_to_cart_button - and this id is the buy
+# box's alone.
+ADD_TO_CART_BUTTON_ID = 'add-to-cart-button'
+BUY_NOW_BUTTON_ID = 'buy-now-button'
+
+# Each add-to-cart form names what it will add in a hidden field. Confirmed
+# against saved product pages for both an ordinary ASIN and a 10-digit ISBN one.
+BUTTON_ASIN_SELECTOR = 'input[name="ASIN"], input[name="ASIN.0"], input[name="asin"]'
+
+# Controls this scraper must never click, whatever the page offers. Each of
+# these starts an order; adding to the cart is as far as the app goes, and the
+# user places the order themselves.
+NEVER_CLICK_IDS = ('buy-now-button', 'attach-sidesheet-checkout-button', 'sc-buy-box-ptc-button')
+
+# Cart line items, scoped to the ACTIVE cart. The cart page also renders "Saved
+# for later" and a recommendation rail, and an ASIN in either of those is not an
+# item in the cart - the rail is quite capable of showing the very product whose
+# add just failed.
+CART_ACTIVE_SCOPES = ('#sc-active-cart', 'form[name="activeCartViewForm"]', 'div[data-name="Active Items"]')
+CART_ITEM_SELECTOR = ', '.join(scope + ' [data-asin]' for scope in CART_ACTIVE_SCOPES)
+CART_ITEM_LINK_SELECTOR = ', '.join(scope + ' a[href*="/dp/"]' for scope in CART_ACTIVE_SCOPES)
+
+CART_EMPTY_RE = re.compile(r'your (?:amazon )?(?:shopping )?cart is empty', re.IGNORECASE)
+
+DEFAULT_CHROME_MAJOR = 152
+
+
+def _env_flag(name, default):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in ('0', 'false', 'no', 'off', '')
+
+
 class AmazonScraper:
     """Scraper specifically for Amazon products"""
     
@@ -46,6 +113,111 @@ class AmazonScraper:
         """Initialize the Amazon scraper."""
         logger.debug("Initializing AmazonScraper")
         self.headers = dict(DEFAULT_HEADERS)
+
+        # Shared with test_amazon_cart.py's --login helper so a one-time manual
+        # sign-in survives between runs. Created on first launch, not here: the
+        # scraping path is plain HTTP and never starts Chrome at all, and this
+        # class is constructed once per scheduled check.
+        self.profile_dir = os.path.join(os.path.expanduser("~"), ".chrome_profiles", "amazon_profile")
+        self.headless = _env_flag('AMAZON_HEADLESS', True)
+        self.chrome_major = None
+
+    # ------------------------------------------------------------------ #
+    # Chrome setup
+    # ------------------------------------------------------------------ #
+    def _get_chrome_options(self, headless=None):
+        """Build fresh ChromeOptions for every launch (reusing an options object raises)."""
+        headless = self.headless if headless is None else headless
+        os.makedirs(self.profile_dir, exist_ok=True)
+        options = uc.ChromeOptions()
+
+        options.add_argument(f'--user-data-dir={self.profile_dir}')
+        options.add_argument('--profile-directory=Default')
+
+        if headless:
+            options.add_argument('--headless=new')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_argument('--disable-notifications')
+        options.add_argument('--disable-popup-blocking')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--lang=en-US,en')
+
+        width, height = random.choice([(1920, 1080), (1536, 864), (1440, 900), (1366, 768)])
+        options.add_argument(f'--window-size={width},{height}')
+        options.page_load_strategy = 'eager'
+        return options
+
+    def _launch(self, headless=None):
+        """
+        Start Chrome, retrying once with the browser-reported major version on a
+        driver mismatch. The profile lock must already be held - go through
+        _browser() rather than calling this directly.
+        """
+        if self.chrome_major is None:
+            self.chrome_major = detect_chrome_major() or DEFAULT_CHROME_MAJOR
+        version_main = self.chrome_major
+
+        for attempt in range(2):
+            try:
+                driver = uc.Chrome(options=self._get_chrome_options(headless), version_main=version_main)
+                driver.set_page_load_timeout(45)
+                driver.set_script_timeout(20)
+                logger.info(f"Chrome launched (version_main={version_main})")
+                return driver
+            except WebDriverException as e:
+                match = re.search(r'Current browser version is (\d+)\.', str(e))
+                if match and attempt == 0:
+                    version_main = int(match.group(1))
+                    self.chrome_major = version_main
+                    logger.warning(f"chromedriver/Chrome mismatch; retrying with version_main={version_main}")
+                    continue
+                busy = self._profile_busy_error(e)
+                if busy:
+                    raise busy from e
+                raise
+
+    def _profile_busy_error(self, error):
+        """
+        ProfileBusyError for a launch failure caused by profile contention, else
+        None. The lock keeps our own paths apart, but a Chrome the user opened on
+        that profile by hand holds it too, and "chrome not reachable" otherwise
+        gets reported as a bot wall.
+        """
+        message = str(error)
+        if 'not reachable' in message or 'session not created' in message:
+            return ProfileBusyError(
+                f"Chrome could not start on the profile {self.profile_dir}; another Chrome is most "
+                "likely using it - close any window opened from that profile and retry")
+        return None
+
+    @contextmanager
+    def _browser(self, headless=None, timeout=PROFILE_LOCK_TIMEOUT):
+        """
+        One Chrome session on the shared amazon_profile, launch to quit.
+
+        The driver has to die inside the lock: releasing it any earlier would let
+        the next holder start Chrome while ours is still shutting down.
+
+        Raises:
+            ProfileBusyError: the profile did not come free within `timeout`
+        """
+        with profile_lock(self.profile_dir, timeout=timeout):
+            driver = None
+            try:
+                driver = self._launch(headless)
+                yield driver
+            finally:
+                self._quit(driver)
+
+    @staticmethod
+    def _quit(driver):
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
     
     def scrape_product(self, url):
         """
@@ -78,169 +250,320 @@ class AmazonScraper:
     
     def add_to_cart(self, url, quantity=1):
         """
-        Add a product to the Amazon cart
-        
+        Add an Amazon product to the cart, and verify that it actually landed there.
+
+        Success requires this product's own ASIN among the ACTIVE cart's line
+        items. Two things that look like proof and are not: the add-to-cart side
+        sheet, which is rendered on the product page before the cart is written
+        and survives a wall or a sign-in redirect afterwards; and "the cart has
+        items in it", which the user's cart usually does anyway.
+
         Args:
             url: The product URL to add to cart
             quantity: Quantity to add to cart (default: 1)
-            
+
         Returns:
-            dict: A dictionary with cart status information
+            {'success': bool, 'message': str, 'cart_url': str|None, 'screenshot': base64|None}
         """
-        logger.info(f"Adding Amazon product to cart: {url}, quantity: {quantity}")
-        
-        try:
-            # Create a new undetected-chromedriver instance
-            logger.debug("Starting undetected-chromedriver for Amazon add to cart")
-            options = uc.ChromeOptions()
-            options.add_argument("--headless")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            
-            # Proxy setup if needed
-            # options.add_argument('--proxy-server=your-proxy-server')
-            
-            driver = uc.Chrome(options=options, version_main=detect_chrome_major())
-            
-            try:
-                # Set window size
-                driver.set_window_size(1366, 768)
-                
-                # Navigate to the product page
-                logger.debug(f"Navigating to {url}")
-                driver.get(url)
-                
-                # Wait for the page to load
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "body"))
-                )
-                
-                # Update quantity if needed (only if quantity > 1)
-                if quantity > 1:
-                    try:
-                        logger.debug(f"Setting quantity to {quantity}")
-                        quantity_dropdown = WebDriverWait(driver, 5).until(
-                            EC.presence_of_element_located((By.ID, "quantity"))
-                        )
-                        quantity_dropdown.click()
-                        time.sleep(1)
-                        
-                        # Find and click the desired quantity option
-                        # This works for quantities up to 10 which Amazon typically shows in dropdown
-                        if quantity <= 10:
-                            quantity_option = WebDriverWait(driver, 5).until(
-                                EC.element_to_be_clickable((By.XPATH, f"//select[@id='quantity']/option[@value='{quantity}']"))
-                            )
-                            quantity_option.click()
-                            time.sleep(1)
-                    except (TimeoutException, NoSuchElementException) as e:
-                        logger.warning(f"Could not set quantity: {str(e)}")
-                
-                # Check if there's an "Add to Cart" button
-                try:
-                    add_to_cart_button = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((By.ID, "add-to-cart-button"))
-                    )
-                    logger.debug("Found Add to Cart button, clicking...")
-                    add_to_cart_button.click()
-                    
-                    # Wait for the cart confirmation
-                    try:
-                        WebDriverWait(driver, 10).until(
-                            EC.presence_of_element_located((By.ID, "attach-sidesheet-checkout-button"))
-                        )
-                        logger.debug("Product successfully added to cart")
-                        
-                        # Take a screenshot
-                        screenshot = self._take_screenshot(driver)
-                        
-                        # Get the cart URL
-                        driver.get("https://www.amazon.com/gp/cart/view.html")
-                        time.sleep(2)
-                        cart_url = driver.current_url
-                        
-                        return {
-                            'success': True,
-                            'message': "Product successfully added to cart",
-                            'cart_url': cart_url,
-                            'screenshot': screenshot
-                        }
-                    except TimeoutException:
-                        # Sometimes Amazon doesn't show the checkout sheet, try another approach
-                        logger.debug("No side checkout sheet, trying to proceed to cart")
-                        
-                        try:
-                            # Try to click "Cart" button if available
-                            cart_button = WebDriverWait(driver, 5).until(
-                                EC.element_to_be_clickable((By.ID, "nav-cart"))
-                            )
-                            cart_button.click()
-                            time.sleep(2)
-                            
-                            # Check if the product is in cart
-                            items_in_cart = len(driver.find_elements(By.CSS_SELECTOR, ".sc-list-item"))
-                            if items_in_cart > 0:
-                                logger.debug(f"Found {items_in_cart} items in cart")
-                                screenshot = self._take_screenshot(driver)
-                                return {
-                                    'success': True,
-                                    'message': f"Product added to cart ({items_in_cart} items in cart)",
-                                    'cart_url': driver.current_url,
-                                    'screenshot': screenshot
-                                }
-                            else:
-                                return {
-                                    'success': False,
-                                    'message': "Product could not be added to cart",
-                                    'cart_url': driver.current_url,
-                                    'screenshot': self._take_screenshot(driver)
-                                }
-                        except TimeoutException:
-                            logger.warning("Could not verify if product was added to cart")
-                            screenshot = self._take_screenshot(driver)
-                            return {
-                                'success': False,
-                                'message': "Could not verify if product was added to cart",
-                                'cart_url': None,
-                                'screenshot': screenshot
-                            }
-                except TimeoutException:
-                    logger.warning("Could not find Add to Cart button")
-                    
-                    # Try to find "Buy Now" button instead
-                    try:
-                        buy_now_button = WebDriverWait(driver, 3).until(
-                            EC.element_to_be_clickable((By.ID, "buy-now-button"))
-                        )
-                        logger.debug("Found Buy Now button but not Add to Cart - product may require special handling")
-                        screenshot = self._take_screenshot(driver)
-                        return {
-                            'success': False,
-                            'message': "Product requires special handling (only Buy Now available)",
-                            'cart_url': None,
-                            'screenshot': screenshot
-                        }
-                    except TimeoutException:
-                        logger.error("No Add to Cart or Buy Now buttons found")
-                        screenshot = self._take_screenshot(driver)
-                        return {
-                            'success': False,
-                            'message': "No Add to Cart or Buy Now buttons found - product may be unavailable",
-                            'cart_url': None,
-                            'screenshot': screenshot
-                        }
-            finally:
-                driver.quit()
-                
-        except Exception as e:
-            logger.error(f"Error adding Amazon product to cart: {str(e)}", exc_info=True)
+        quantity = max(1, int(quantity or 1))
+        asin = self.extract_asin(url)
+        if not asin:
+            # Refused up front rather than clicked and then unverifiable: there
+            # would be nothing to look for on the cart page afterwards.
+            logger.warning(f"No ASIN in {url}; not adding a product the cart cannot be checked for")
             return {
                 'success': False,
-                'message': f"Error: {str(e)}",
+                'message': ("Could not read an ASIN from the product URL, so an add could not be "
+                            "verified against the cart. Use the /dp/<ASIN> form of the link"),
                 'cart_url': None,
-                'screenshot': None
+                'screenshot': None,
             }
-            
+
+        logger.info(f"Adding Amazon product {asin} to cart (qty={quantity}): {url}")
+        try:
+            with self._browser() as driver:
+                try:
+                    return self._add_to_cart_with_driver(driver, url, asin, quantity)
+                except Exception as e:
+                    # Inside the session on purpose: a screenshot can only be
+                    # taken while the driver is still alive.
+                    logger.error(f"Error adding Amazon product to cart: {e}", exc_info=True)
+                    return {
+                        'success': False,
+                        'message': f"Error adding to cart: {e}",
+                        'cart_url': None,
+                        'screenshot': self._take_screenshot(driver),
+                    }
+        except ProfileBusyError as e:
+            logger.warning(f"Not adding to cart: {e}")
+            return {
+                'success': False,
+                'message': f"Chrome profile is busy: {e}",
+                'cart_url': None,
+                'screenshot': None,
+            }
+        except Exception as e:
+            # Chrome never started, so there is no driver to photograph.
+            logger.error(f"Could not start Chrome for the Amazon cart: {e}", exc_info=True)
+            return {
+                'success': False,
+                'message': f"Error: {e}",
+                'cart_url': None,
+                'screenshot': None,
+            }
+
+    def _add_to_cart_with_driver(self, driver, url, asin, quantity):
+        """The cart flow with the driver supplied, so the fakes can drive it."""
+        logger.debug(f"Navigating to {url}")
+        driver.get(url)
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+
+        blocked = detect_block_page(driver.page_source)
+        if blocked:
+            logger.warning(f"Amazon served a block page for {url}: {blocked}")
+            return {
+                'success': False,
+                'message': f"Amazon served a block page instead of the product ({blocked})",
+                'cart_url': None,
+                'screenshot': self._take_screenshot(driver),
+            }
+
+        if quantity > 1:
+            self._set_quantity(driver, quantity)
+
+        button, reason = self._find_add_to_cart_button(driver, asin)
+        if button is None:
+            logger.warning(f"Not adding {asin} to cart: {reason}")
+            return {
+                'success': False,
+                'message': reason,
+                'cart_url': None,
+                'screenshot': self._take_screenshot(driver),
+            }
+
+        button.click()
+        logger.info(f"Clicked the buy box's Add to Cart for {asin}")
+
+        acknowledged = self._await_click_acknowledgement(driver)
+        return self._verify_cart(driver, asin, quantity, acknowledged)
+
+    def _find_add_to_cart_button(self, driver, asin):
+        """
+        (button, None) for the buy box's own Add to Cart, or (None, reason).
+
+        Two gates, in this order.
+
+        The id. A product page renders several add-to-cart forms: the buy box's,
+        `add-to-cart-button-ubb` for the other-sellers box, and
+        `add-to-cart-item-0/1/2` for the "Buy it with" bundle, whose items are
+        different products. A saved page here carries six <form id="addToCart">.
+        `#add-to-cart-button` is the buy box's alone - but that is a naming
+        convention, so:
+
+        The ASIN. Each of those forms carries a hidden field naming what it
+        adds, which is what actually attributes a button to a product. A foreign
+        ASIN is proof the button belongs to something else and is never a
+        candidate; one naming the right ASIN beats one naming none.
+
+        A button naming no ASIN at all is still usable - the hidden field is
+        markup Amazon could rename - but only when nothing better is on the page.
+        """
+        buttons = driver.find_elements(By.ID, ADD_TO_CART_BUTTON_ID)
+        if not buttons:
+            # Both of these are clean failures, and neither is retried by
+            # reaching for another control: #buy-now-button starts an order, so
+            # it is on NEVER_CLICK_IDS and is only ever read for the message.
+            if driver.find_elements(By.ID, BUY_NOW_BUTTON_ID):
+                return None, "Product offers Buy Now but no Add to Cart, so it was left alone"
+            return None, ("No Add to Cart button on the page - the listing is unavailable, or sold "
+                          "by a third party with no Amazon offer")
+
+        fallback = None
+        for button in buttons:
+            if not (button.is_enabled() and button.is_displayed()):
+                logger.debug("Ignoring a disabled or hidden add-to-cart button")
+                continue
+            found = self._asin_from_button(button)
+            if found == asin:
+                return button, None
+            if found:
+                logger.debug(f"Ignoring an add-to-cart button: it adds ASIN {found}, not {asin}")
+                continue
+            if fallback is None:
+                fallback = button
+
+        if fallback is not None:
+            logger.debug(f"Using an add-to-cart button that names no ASIN for {asin}")
+            return fallback, None
+        return None, f"No usable Add to Cart button on the page adds ASIN {asin}"
+
+    @staticmethod
+    def _asin_from_button(button):
+        """
+        The ASIN this button's own form will add, or None.
+
+        <form id="addToCart"> carries <input type="hidden" name="ASIN" value="...">.
+        Confirmed against saved product pages for both an ordinary ASIN
+        (B09B8V1LZ3) and a 10-digit ISBN one (1546179437).
+        """
+        try:
+            form = button.find_element(By.XPATH, 'ancestor::form[1]')
+        except (NoSuchElementException, WebDriverException):
+            return None
+        for field in form.find_elements(By.CSS_SELECTOR, BUTTON_ASIN_SELECTOR):
+            value = (field.get_attribute('value') or '').strip().upper()
+            if value:
+                return value
+        return None
+
+    @staticmethod
+    def _await_click_acknowledgement(driver):
+        """
+        True when Amazon acknowledged the click on the product page.
+
+        Logged, never returned as success. The side sheet is rendered before the
+        cart is written, so a wall or a sign-in redirect on the cart afterwards
+        carries it just as happily as a real add. Its checkout button is on
+        NEVER_CLICK_IDS: this scraper adds to the cart and stops there.
+        """
+        try:
+            WebDriverWait(driver, 10).until(EC.any_of(
+                EC.presence_of_element_located((By.ID, 'attach-sidesheet-checkout-button')),
+                EC.presence_of_element_located((By.ID, 'sw-atc-details-single-container')),
+                EC.presence_of_element_located((By.ID, 'NATC_SMART_WAGON_CONF_MSG_SUCCESS')),
+            ))
+            logger.debug("Amazon acknowledged the add on the product page")
+            return True
+        except TimeoutException:
+            logger.warning("No add-to-cart confirmation on the product page; checking the cart anyway")
+            return False
+
+    def _verify_cart(self, driver, asin, quantity, acknowledged):
+        """
+        Read the cart and decide, on positive evidence only.
+
+        Every failure below is a distinct message on purpose: at a drop the log
+        line is all anyone gets, and "blocked", "empty", "holds something else"
+        and "could not read the cart" call for four different responses.
+        """
+        driver.get(AMAZON_CART_URL)
+        page = driver.page_source
+        screenshot = self._take_screenshot(driver)
+        cart_url = driver.current_url
+
+        blocked = detect_block_page(page, expect_product=False)
+        if blocked:
+            logger.warning(f"Amazon served a block page on the cart ({blocked}); cannot verify the add")
+            return {
+                'success': False,
+                'message': (f"Amazon served a block page on the cart ({blocked}), so the add could not "
+                            "be verified. The item may or may not be in the cart - check it before retrying"),
+                'cart_url': cart_url,
+                'screenshot': screenshot,
+            }
+
+        # The one positive test, run first and on its own: the ASIN is a line
+        # item in the active cart. Everything below it only decides which
+        # failure to report, so no wording on the page can turn into a success.
+        in_cart = self._cart_asins(driver)
+        if in_cart and asin in in_cart:
+            return {
+                'success': True,
+                'message': f"Successfully added {quantity} item(s) to the Amazon cart",
+                'cart_url': cart_url,
+                'screenshot': screenshot,
+            }
+
+        if CART_EMPTY_RE.search(page):
+            logger.warning(f"Add to cart not verified: the cart is empty "
+                           f"(acknowledged on the product page: {acknowledged})")
+            return {
+                'success': False,
+                'message': "Item did not appear in the cart (the cart is empty)",
+                'cart_url': cart_url,
+                'screenshot': screenshot,
+            }
+
+        if in_cart is None:
+            # Not "the item is missing": the cart section this reads was not
+            # found at all, so there is no evidence either way. Fails closed,
+            # and says which of the two things went wrong.
+            logger.warning("No recognisable cart line items on the cart page; cannot verify the add")
+            return {
+                'success': False,
+                'message': ("Could not find the cart's line items, so the add could not be verified. "
+                            "Check the cart before retrying"),
+                'cart_url': cart_url,
+                'screenshot': screenshot,
+            }
+
+        logger.warning(f"Add to cart not verified: the cart holds {in_cart or 'nothing'} but not "
+                       f"{asin} (acknowledged on the product page: {acknowledged})")
+        return {
+            'success': False,
+            'message': f"Item did not appear in the cart (it does not list ASIN {asin})",
+            'cart_url': cart_url,
+            'screenshot': screenshot,
+        }
+
+    def _cart_asins(self, driver):
+        """
+        The ASINs of the ACTIVE cart's line items, or None when the page carries
+        no cart section this recognises.
+
+        Scoped deliberately. The cart page also renders "Saved for later" and a
+        recommendation rail; an ASIN in either is not an item in the cart, and
+        the rail is quite capable of showing the very product whose add just
+        failed. Counting line items instead - which is what this method
+        replaces - answers "is there anything in the cart", which is true of
+        most people's carts before the app touches them.
+        """
+        asins = set()
+        found_cart = False
+
+        for element in driver.find_elements(By.CSS_SELECTOR, CART_ITEM_SELECTOR):
+            found_cart = True
+            value = (element.get_attribute('data-asin') or '').strip().upper()
+            if value:
+                asins.add(value)
+
+        # Amazon has moved the item's ASIN between a data attribute and the
+        # product link more than once; both are inside the active cart.
+        for link in driver.find_elements(By.CSS_SELECTOR, CART_ITEM_LINK_SELECTOR):
+            found_cart = True
+            value = self.extract_asin(link.get_attribute('href') or '')
+            if value:
+                asins.add(value)
+
+        return sorted(asins) if found_cart else None
+
+    @staticmethod
+    def extract_asin(url):
+        """The ASIN out of an Amazon product URL, uppercased, or None."""
+        match = ASIN_RE.search(url or '')
+        return match.group(1).upper() if match else None
+
+    def _set_quantity(self, driver, quantity):
+        """Best-effort quantity select on the product page. A failure here is not fatal."""
+        try:
+            logger.debug(f"Setting quantity to {quantity}")
+            quantity_dropdown = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.ID, "quantity"))
+            )
+            quantity_dropdown.click()
+            time.sleep(1)
+
+            # Amazon's dropdown only offers up to 10
+            if quantity <= 10:
+                quantity_option = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable(
+                        (By.XPATH, f"//select[@id='quantity']/option[@value='{quantity}']"))
+                )
+                quantity_option.click()
+                time.sleep(1)
+        except (TimeoutException, NoSuchElementException, WebDriverException) as e:
+            logger.warning(f"Could not set quantity: {e}")
+
     def _take_screenshot(self, driver):
         """Take a screenshot and convert it to base64 for embedding in HTML"""
         try:
