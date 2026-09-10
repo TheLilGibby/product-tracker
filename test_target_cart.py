@@ -63,6 +63,7 @@ HOME_URL = "https://www.target.com/"
 # set it before the scraper module reads the variable at import time
 LOGIN_MODE = '--login' in sys.argv
 IMPORT_MODE = '--import-cookies' in sys.argv
+FIXTURE_MODE = '--fixtures' in sys.argv
 if LOGIN_MODE or IMPORT_MODE:
     os.environ['TARGET_HEADLESS'] = '0'
 
@@ -197,6 +198,92 @@ def _save_jar(driver):
     print("  the repo, so no branch can commit it and every worktree finds the same one.")
 
 
+# An empty Target cart, trimmed to the shape that matters: a few hundred bytes,
+# no product markers, no challenge wording. Before expect_product=False this was
+# reported as a bot-protection page.
+EMPTY_CART_HTML = """<!DOCTYPE html><html><head><title>Cart : Target</title></head>
+<body><div data-test="cart-empty"><h1>Your cart is empty</h1>
+<a href="/">Continue shopping</a></div></body></html>"""
+
+# The same cart page, but served as the PerimeterX challenge. Must still be a wall.
+BLOCKED_CART_HTML = """<!DOCTYPE html><html><head><title>Cart : Target</title></head>
+<body><div id="px-captcha"></div><p>Press &amp; Hold to confirm you are
+a human (and not a bot).</p></body></html>"""
+
+
+class FakeElement:
+    def __init__(self, text=''):
+        self.text = text
+
+
+class FakeDriver:
+    """Enough driver for _page_obstacle: page source, body text, url, no elements."""
+
+    def __init__(self, html, body_text='', current_url='https://www.target.com/cart'):
+        self.page_source = html
+        self.current_url = current_url
+        self._body = FakeElement(body_text)
+
+    def find_element(self, *args):
+        return self._body
+
+    def find_elements(self, *args):
+        return []
+
+
+def fixtures():
+    """Offline checks for the empty-cart / bot-wall distinction. No network, no Chrome."""
+    from app.scrapers.common import detect_block_page
+
+    passed, failed = [], []
+
+    def check_that(name, condition):
+        (passed if condition else failed).append(name)
+        print(('  ok   ' if condition else '  FAIL ') + name)
+
+    print("\ndetect_block_page")
+    check_that("an empty cart is a bot wall when a product was expected",
+               detect_block_page(EMPTY_CART_HTML) is not None)
+    check_that("...and is not one when it was not",
+               detect_block_page(EMPTY_CART_HTML, expect_product=False) is None)
+    check_that("the default is unchanged, so no existing caller shifts",
+               detect_block_page(EMPTY_CART_HTML)
+               == detect_block_page(EMPTY_CART_HTML, expect_product=True))
+    check_that("a challenge served as the cart is still a wall",
+               detect_block_page(BLOCKED_CART_HTML, expect_product=False) is not None)
+    check_that("...and says which marker caught it",
+               'px-captcha' in (detect_block_page(BLOCKED_CART_HTML, expect_product=False) or ''))
+    check_that("an empty body is still a failed load either way",
+               detect_block_page('', expect_product=False) == 'empty response')
+    check_that("a real product page is unaffected",
+               detect_block_page('<html><head><title>Thing : Target</title></head>'
+                                 '<body>' + 'x' * 6000 + '<script type="application/ld+json">{}'
+                                 '</script></body></html>') is None)
+
+    print("\n_page_obstacle")
+    scraper = TargetScraper()
+    check_that("the cart call reports no obstacle on an empty cart",
+               scraper._page_obstacle(FakeDriver(EMPTY_CART_HTML), expect_product=False) is None)
+    check_that("the product-page call still reports one",
+               scraper._page_obstacle(FakeDriver(EMPTY_CART_HTML)) is not None)
+    check_that("a challenge on the cart is still reported",
+               scraper._page_obstacle(FakeDriver(BLOCKED_CART_HTML),
+                                      expect_product=False) is not None)
+    check_that("press-and-hold wording in the body is still caught on the cart",
+               scraper._page_obstacle(
+                   FakeDriver(EMPTY_CART_HTML, body_text='Press & Hold to confirm you are a human'),
+                   expect_product=False) is not None)
+    check_that("a sign-in redirect is still caught on the cart",
+               scraper._page_obstacle(
+                   FakeDriver(EMPTY_CART_HTML, current_url='https://login.target.com/'),
+                   expect_product=False) is not None)
+
+    print(f"\n{len(passed)} passed, {len(failed)} failed")
+    for name in failed:
+        print(f"  FAILED: {name}")
+    return 1 if failed else 0
+
+
 def check(url):
     tcin = TargetScraper.extract_tcin(url)
     print(f"\nURL: {url}")
@@ -230,7 +317,9 @@ def _cookie_path():
 
 
 if __name__ == '__main__':
-    if IMPORT_MODE:
+    if FIXTURE_MODE:
+        sys.exit(fixtures())
+    elif IMPORT_MODE:
         import_cookies(_cookie_path())
     elif LOGIN_MODE:
         login()
