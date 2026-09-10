@@ -6,7 +6,7 @@ from flask import current_app
 from app import db
 from app.models.product import Product, PriceHistory
 from app.scrapers import get_scraper
-from app.notifications.discord import DiscordNotifier
+from app.notifications import send_product_alert
 import urllib.parse
 import threading
 import atexit
@@ -129,38 +129,21 @@ def check_all_products():
                         db.session.add(history)
                         logger.info(f"Price changed for product {product.id}: {old_price} -> {product.current_price}")
                     
-                    # Send notifications if configured
-                    if product.discord_webhook_url:
-                        # Price drop notification
-                        if (product.notify_on_price_drop and 
-                            product.current_price is not None and 
-                            old_price is not None and 
-                            product.current_price < old_price):
-                            DiscordNotifier.send_notification(
-                                product.discord_webhook_url,
-                                product.name,
-                                product.url,
-                                product.current_price,
-                                old_price,
-                                is_availability_alert=False,
-                                image_url=product.image_url
-                            )
-                            logger.info(f"Price drop notification for product {product.id}: {product.current_price} -> {old_price}")
-                        
-                        # Availability notification
-                        if (product.notify_on_availability and 
-                            product.available and 
-                            not old_availability):
-                            DiscordNotifier.send_notification(
-                                product.discord_webhook_url,
-                                product.name,
-                                product.url,
-                                product.current_price,
-                                old_price,
-                                is_availability_alert=True,
-                                image_url=product.image_url
-                            )
-                            logger.info(f"Availability notification for product {product.id}: {product.current_price} -> {old_price}")
+                    # Send notifications to every configured channel (Discord webhook, Telegram)
+                    # Price drop notification
+                    if (product.notify_on_price_drop and 
+                        product.current_price is not None and 
+                        old_price is not None and 
+                        product.current_price < old_price):
+                        send_product_alert(product, old_price=old_price, is_availability_alert=False)
+                        logger.info(f"Price drop notification for product {product.id}: {product.current_price} -> {old_price}")
+                    
+                    # Availability notification
+                    if (product.notify_on_availability and 
+                        product.available and 
+                        not old_availability):
+                        send_product_alert(product, old_price=old_price, is_availability_alert=True)
+                        logger.info(f"Availability notification for product {product.id}: {product.current_price} -> {old_price}")
                     
                     # Commit changes
                     db.session.commit()
@@ -351,19 +334,7 @@ def check_auto_cart_opportunities():
                     had_successful_cart = True
                     
                     # Send notification about auto-cart success
-                    if product.discord_webhook_url:
-                        from app.notifications.discord import DiscordNotifier
-                        
-                        # Send auto-cart notification
-                        DiscordNotifier.send_notification(
-                            webhook_url=product.discord_webhook_url,
-                            product_name=product.name,
-                            product_url=product.url,
-                            current_price=product.current_price,
-                            is_auto_cart=True,
-                            cart_url=result.get('cart_url'),
-                            image_url=product.image_url
-                        )
+                    send_product_alert(product, is_auto_cart=True, cart_url=result.get('cart_url'))
                 else:
                     logger.warning(f"Failed to add product {product.id} to cart: {result.get('message', 'Unknown error')}")
             except Exception as e:
