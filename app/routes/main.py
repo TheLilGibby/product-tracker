@@ -738,39 +738,59 @@ def update_newegg_cookies():
     """Update Newegg cookies for auto-cart functionality"""
     if request.method == 'POST':
         cookies = request.form.get('newegg_cookies', '')
-        
+
+        # This value is written into .env verbatim, and .env is line-oriented:
+        # a newline in the middle of it appends whatever follows as its own
+        # setting. That is enough to overwrite SECRET_KEY, API_TOKEN or
+        # DATABASE_URI from a settings form. Refuse rather than sanitise, so a
+        # paste that meant something is never silently changed into something
+        # else.
+        if any(char in cookies for char in ('\r', '\n', '\x00')):
+            flash('Newegg cookies cannot contain line breaks. Paste the Cookie '
+                  'header as a single line.', 'error')
+            return redirect(url_for('main.settings'))
+        if "'" in cookies:
+            flash("Newegg cookies cannot contain a single quote.", 'error')
+            return redirect(url_for('main.settings'))
+
         try:
             # Save the cookies to environment variable for the current process
             os.environ['NEWEGG_COOKIES'] = cookies
-            
+
             # Write to .env file for persistence across restarts
             env_path = os.path.join(os.getcwd(), '.env')
-            
+
             # Read existing .env file or create new one
             env_lines = []
             if os.path.exists(env_path):
                 with open(env_path, 'r') as f:
                     env_lines = f.readlines()
-            
-            # Update or add NEWEGG_COOKIES line
+
+            # Single-quoted so a value with spaces or '#' survives the round
+            # trip; python-dotenv takes single-quoted contents literally.
+            cookie_line = f"NEWEGG_COOKIES='{cookies}'\n"
             cookie_line_found = False
             for i, line in enumerate(env_lines):
                 if line.startswith('NEWEGG_COOKIES='):
-                    env_lines[i] = f'NEWEGG_COOKIES={cookies}\n'
+                    env_lines[i] = cookie_line
                     cookie_line_found = True
                     break
-            
+
             if not cookie_line_found:
-                env_lines.append(f'NEWEGG_COOKIES={cookies}\n')
-            
-            # Write back to .env file
-            with open(env_path, 'w') as f:
+                env_lines.append(cookie_line)
+
+            # Write a temp file alongside and rename over the original, so a
+            # crash mid-write cannot leave a half-written .env - which would
+            # take out every other setting in it, not just this one.
+            temp_path = env_path + '.tmp'
+            with open(temp_path, 'w') as f:
                 f.writelines(env_lines)
-            
+            os.replace(temp_path, env_path)
+
             flash('Newegg cookies updated successfully.', 'success')
         except Exception as e:
             flash(f'Error updating Newegg cookies: {str(e)}', 'error')
-        
+
         return redirect(url_for('main.settings'))
 
 @main_bp.route('/auto-cart-testing')
