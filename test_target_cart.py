@@ -231,6 +231,67 @@ class FakeDriver:
         return []
 
 
+# A preorder PDP: the buy box is a preorder button, which carries no TCIN in
+# its id - that is exactly why BUY_BUTTON_SELECTORS has a preorderButton entry.
+# Below it, a recommendation carousel renders add-to-cart buttons for OTHER
+# products. Those DO carry a TCIN in the id, which is what identifies them as
+# belonging to something else.
+PREORDER_PDP_HTML = """<html><body>
+  <div data-test="buy-box">
+    <h1 data-test="product-title">Zelda 40th Switch 2 Console</h1>
+    <button data-test="preorderButton" id="preorder-btn">Preorder</button>
+  </div>
+  <div data-test="recommendations">
+    <button data-test="addToCartButton" id="addToCartButtonOrTextIdFor88888888">Add to cart</button>
+    <button data-test="shippingButton" id="addToCartButtonOrTextIdFor99999999">Ship it</button>
+  </div>
+</body></html>"""
+
+# The ordinary case: the buy box carries our own TCIN in the button id.
+IN_STOCK_PDP_HTML = """<html><body>
+  <div data-test="buy-box">
+    <button data-test="shippingButton" id="addToCartButtonOrTextIdFor1013321666">Ship it</button>
+  </div>
+  <div data-test="recommendations">
+    <button data-test="addToCartButton" id="addToCartButtonOrTextIdFor88888888">Add to cart</button>
+  </div>
+</body></html>"""
+
+
+class SoupElement:
+    """A found element, backed by a real parsed tag rather than a stub"""
+
+    def __init__(self, tag, displayed=True):
+        self.tag = tag
+        self._displayed = displayed
+        self.text = tag.get_text(strip=True)
+
+    def is_displayed(self):
+        return self._displayed
+
+    def get_attribute(self, name):
+        return self.tag.get(name)
+
+
+class SoupDriver:
+    """
+    find_elements backed by BeautifulSoup's CSS engine.
+
+    Worth the extra lines over a hand-stubbed driver: the bug being pinned here
+    is about which selector matches what, so the selector semantics have to be
+    real rather than my reading of them.
+    """
+
+    def __init__(self, html, hidden_ids=()):
+        from bs4 import BeautifulSoup
+        self.soup = BeautifulSoup(html, 'html.parser')
+        self.hidden_ids = set(hidden_ids)
+
+    def find_elements(self, by, selector):
+        return [SoupElement(tag, displayed=tag.get('id') not in self.hidden_ids)
+                for tag in self.soup.select(selector)]
+
+
 def fixtures():
     """Offline checks for the empty-cart / bot-wall distinction. No network, no Chrome."""
     from app.scrapers.common import detect_block_page
@@ -277,6 +338,29 @@ def fixtures():
                scraper._page_obstacle(
                    FakeDriver(EMPTY_CART_HTML, current_url='https://login.target.com/'),
                    expect_product=False) is not None)
+
+    print("\n_find_buy_button")
+    ours = '1013321666'
+    picked = TargetScraper._find_buy_button(SoupDriver(PREORDER_PDP_HTML), ours)
+    check_that("a preorder buy box wins over a carousel add-to-cart button",
+               picked is not None and picked.get_attribute('data-test') == 'preorderButton')
+    check_that("...so another product's button is never the one clicked",
+               picked is not None
+               and not (picked.get_attribute('id') or '').endswith(('88888888', '99999999')))
+
+    picked = TargetScraper._find_buy_button(SoupDriver(IN_STOCK_PDP_HTML), ours)
+    check_that("the ordinary in-stock buy box is still found",
+               picked is not None
+               and picked.get_attribute('id') == 'addToCartButtonOrTextIdFor' + ours)
+
+    check_that("a page carrying only other products' buttons finds nothing",
+               TargetScraper._find_buy_button(SoupDriver(IN_STOCK_PDP_HTML),
+                                              '2222222222') is None)
+    check_that("a hidden buy box is still skipped, as before",
+               TargetScraper._find_buy_button(
+                   SoupDriver(IN_STOCK_PDP_HTML,
+                              hidden_ids=['addToCartButtonOrTextIdFor' + ours]),
+                   ours) is None)
 
     print(f"\n{len(passed)} passed, {len(failed)} failed")
     for name in failed:
