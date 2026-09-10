@@ -11,6 +11,14 @@ A web application that tracks product prices and availability from various e-com
 - Configure check intervals
 - Timezone support
 
+## Notifications
+
+- **Discord** — set a webhook URL per product on the add/edit product form.
+- **Telegram** — set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` once and every product's alerts
+  (price drop, back in stock, auto-cart) are posted to that channel. Open **Telegram** in the nav bar to
+  check status and send a test alert, or run `python test_telegram.py`. Other tools can push messages via
+  `POST /api/telegram/send` with `{"message": "..."}`. Full walkthrough: [docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md).
+
 ## Dockerized Setup
 
 The application is containerized using Docker for easy deployment and management.
@@ -30,6 +38,8 @@ You can customize the application by setting the following environment variables
 - `CHECK_INTERVAL_MINUTES`: How often to check products in minutes (default: `15`)
 - `CHECK_INTERVAL_SECONDS`: Additional seconds for check interval (default: `0`)
 - `DEFAULT_TIMEZONE`: Default timezone for displaying times (default: `UTC`)
+- `TELEGRAM_BOT_TOKEN`: Bot token from @BotFather (optional; enables Telegram alerts)
+- `TELEGRAM_CHAT_ID`: Telegram channel to post alerts to, e.g. `-1001234567890` or `@channelname` (optional)
 
 ### Building and Running
 

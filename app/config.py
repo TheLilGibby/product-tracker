@@ -35,6 +35,10 @@ class Config:
     # Options: '24h' or '12h'
     TIME_FORMAT = os.environ.get('TIME_FORMAT', '24h')
     
+    # Telegram alerts: one global channel for every product (leave blank to disable)
+    TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+    TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+    
     @staticmethod
     def init_app(app):
         """Initialize app with this configuration."""

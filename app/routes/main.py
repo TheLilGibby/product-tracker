@@ -3,6 +3,8 @@ from app import db
 from app.models.product import Product, PriceHistory
 from app.scrapers import get_scraper, add_to_cart
 from app.tasks import check_all_products
+from app.notifications import send_product_alert
+from app.notifications.telegram import TelegramNotifier, get_telegram_settings
 from datetime import datetime, timedelta
 import logging
 import re
@@ -18,6 +20,7 @@ from pytz import all_timezones
 from sqlalchemy import desc
 from werkzeug.utils import secure_filename
 import json
+import html
 import markdown
 import uuid
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
@@ -445,38 +448,19 @@ def update_product(product_id):
         )
         db.session.add(history)
     
-    # Send notifications if configured
-    if product.discord_webhook_url:
-        from app.notifications.discord import DiscordNotifier
-        
-        # Price drop notification
-        if (product.notify_on_price_drop and 
-            product.current_price is not None and 
-            old_price is not None and 
-            product.current_price < old_price):
-            DiscordNotifier.send_notification(
-                product.discord_webhook_url,
-                product.name,
-                product.url,
-                product.current_price,
-                old_price,
-                is_availability_alert=False,
-                image_url=product.image_url
-            )
-        
-        # Availability notification
-        if (product.notify_on_availability and 
-            product.available and 
-            not old_availability):
-            DiscordNotifier.send_notification(
-                product.discord_webhook_url,
-                product.name,
-                product.url,
-                product.current_price,
-                old_price,
-                is_availability_alert=True,
-                image_url=product.image_url
-            )
+    # Send notifications to every configured channel (Discord webhook, Telegram)
+    # Price drop notification
+    if (product.notify_on_price_drop and 
+        product.current_price is not None and 
+        old_price is not None and 
+        product.current_price < old_price):
+        send_product_alert(product, old_price=old_price, is_availability_alert=False)
+    
+    # Availability notification
+    if (product.notify_on_availability and 
+        product.available and 
+        not old_availability):
+        send_product_alert(product, old_price=old_price, is_availability_alert=True)
     
     # Commit changes
     db.session.commit()
@@ -971,4 +955,65 @@ def update_cart_count():
     
     # Store the count in the session
     session['cart_count'] = count
-    return count 
+    return count
+
+
+@main_bp.route('/telegram')
+def telegram_settings():
+    """Display Telegram alert channel status and a test-message form."""
+    bot_token, chat_id = get_telegram_settings()
+    if bot_token and len(bot_token) > 12:
+        masked_token = f"{bot_token[:6]}…{bot_token[-4:]}"
+    else:
+        masked_token = '(set)' if bot_token else None
+    return render_template(
+        'telegram.html',
+        configured=bool(bot_token and chat_id),
+        masked_token=masked_token,
+        chat_id=chat_id,
+    )
+
+
+@main_bp.route('/telegram/test', methods=['POST'])
+def telegram_test():
+    """Send a test alert to the configured Telegram channel."""
+    if not TelegramNotifier.is_configured():
+        flash('Telegram is not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in your .env file and restart.', 'danger')
+        return redirect(url_for('main.telegram_settings'))
+
+    message = request.form.get('message', '').strip()
+    if message:
+        success = TelegramNotifier.send_message(html.escape(message))
+    else:
+        # No custom text: send a realistic sample price-drop alert
+        success = TelegramNotifier.send_notification(
+            product_name='Test Product (Product Tracker)',
+            product_url=url_for('main.index', _external=True),
+            current_price=79.99,
+            old_price=99.99,
+        )
+
+    if success:
+        flash('Test alert sent to Telegram.', 'success')
+    else:
+        flash('Telegram rejected the message. Check the bot token, that the bot is an admin of the channel, and app.log for details.', 'danger')
+    return redirect(url_for('main.telegram_settings'))
+
+
+@main_bp.route('/api/telegram/send', methods=['POST'])
+def api_telegram_send():
+    """
+    JSON endpoint to forward an arbitrary alert to the Telegram channel.
+
+    Body: {"message": "text", "image_url": "https://..." (optional)}
+    """
+    data = request.get_json(silent=True) or {}
+    message = (data.get('message') or request.form.get('message') or '').strip()
+    if not message:
+        return jsonify({'success': False, 'error': 'message is required'}), 400
+
+    if not TelegramNotifier.is_configured():
+        return jsonify({'success': False, 'error': 'Telegram is not configured'}), 503
+
+    success = TelegramNotifier.send_message(html.escape(message), image_url=data.get('image_url'))
+    return jsonify({'success': success}), (200 if success else 502)
