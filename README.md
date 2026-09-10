@@ -32,6 +32,9 @@ You can customize the application by setting the following environment variables
 - `DEFAULT_TIMEZONE`: Default timezone for displaying times (default: `UTC`)
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token from @BotFather (optional, enables Telegram alerts)
 - `TELEGRAM_CHAT_ID`: Chat/channel/group id the bot posts alerts to (required with `TELEGRAM_BOT_TOKEN`)
+- `DASHBOARD_PASSWORD`: HTTP Basic password for every page (any username). Blank means no login, which is fine on localhost but **required before exposing the app publicly**
+- `PUBLIC_URL`: Externally reachable base URL used for links in Telegram messages (ignored while `DASHBOARD_PASSWORD` is blank)
+- `SNAPSHOT_INTERVAL_MINUTES`: Post a dashboard screenshot to Telegram every N minutes (`0` = off)
 
 The easiest way to set these is a `.env` file next to `docker-compose.yml` (copy `.env.example`);
 Docker Compose reads it automatically. Never commit `.env`.
@@ -72,6 +75,33 @@ The application data is stored in Docker volumes to ensure persistence across co
 
 - `app_data`: Contains the SQLite database
 - `app_logs`: Contains the application logs
+- `chrome_profiles`: Chrome profiles for the browser scrapers, so retailer logins survive restarts
+
+### Dashboard snapshots in Telegram
+
+With Telegram configured, the **Telegram** page has a *Send Dashboard Snapshot* button that renders the
+dashboard with headless Chrome inside the container and posts the PNG to your channel, so you can check
+on tracked products from your phone. `POST /api/telegram/snapshot` does the same (optional JSON body
+`{"path": "/product/3"}`), and `SNAPSHOT_INTERVAL_MINUTES=30` in `.env` sends one automatically.
+
+To make the caption link open the live dashboard from your phone, expose the app with the optional
+Cloudflare quick-tunnel sidecar (no account needed). **Set `DASHBOARD_PASSWORD` in `.env` first.**
+The dashboard has no accounts: anyone who can reach it can add or delete tracked products, trigger
+cart attempts and rewrite `.env`. With the password set, every page asks for HTTP Basic credentials
+(any username, that password); while it is blank the app refuses to put the public link in Telegram
+messages.
+
+```
+docker compose --profile tunnel up -d
+docker compose --profile tunnel logs tunnel | grep trycloudflare
+```
+
+Copy the printed `https://<random>.trycloudflare.com` URL into `.env` as `PUBLIC_URL=...` and run
+`docker compose up -d` again. The quick-tunnel URL changes every time the tunnel container restarts;
+for a stable hostname create a named tunnel in your Cloudflare account and use `tunnel run --token ...`
+as the sidecar command. ngrok (`ngrok http 5000`) works the same way if you prefer it.
+
+Quick check from the shell: `docker compose exec app-tracker python test_snapshot.py --send`.
 
 ### Updating
 

@@ -1026,3 +1026,29 @@ def api_telegram_send():
 
     success = TelegramNotifier.send_message(html.escape(message), image_url=data.get('image_url'))
     return jsonify({'success': success}), (200 if success else 502)
+
+
+@main_bp.route('/telegram/snapshot', methods=['POST'])
+def telegram_snapshot():
+    """Screenshot the dashboard and post it to the Telegram channel (button on /telegram)."""
+    from app.snapshot import send_dashboard_snapshot
+    result = send_dashboard_snapshot()
+    flash(result['message'], 'success' if result['success'] else 'danger')
+    return redirect(url_for('main.telegram_settings'))
+
+
+@main_bp.route('/api/telegram/snapshot', methods=['POST'])
+def api_telegram_snapshot():
+    """
+    JSON endpoint: capture the dashboard and send it to Telegram.
+
+    Body (all optional): {"path": "/product/3", "caption": "text"}
+    `path` must be an app-relative path; it is resolved against the dashboard URL.
+    """
+    from app.snapshot import send_dashboard_snapshot, resolve_dashboard_path
+    data = request.get_json(silent=True) or {}
+    caption = data.get('caption')
+    if caption:
+        caption = html.escape(str(caption))
+    result = send_dashboard_snapshot(url=resolve_dashboard_path(data.get('path')), caption=caption)
+    return jsonify(result), (200 if result['success'] else 502)

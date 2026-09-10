@@ -43,6 +43,20 @@ class Config:
     # Minimum minutes between auto-cart attempts for the same product
     AUTO_CART_COOLDOWN_MINUTES = int(os.environ.get('AUTO_CART_COOLDOWN_MINUTES', 30))
 
+    # HTTP Basic password for the whole dashboard (any username). Blank = no gate.
+    # REQUIRED before exposing the app publicly: the UI can add/delete products,
+    # trigger cart attempts and rewrite .env, and has no other access control.
+    DASHBOARD_PASSWORD = os.environ.get('DASHBOARD_PASSWORD', '').strip()
+
+    # Public base URL of this app (e.g. a Cloudflare tunnel) used for links in Telegram; blank = none
+    PUBLIC_URL = os.environ.get('PUBLIC_URL', '').strip().rstrip('/')
+    
+    # Post a dashboard screenshot to Telegram every N minutes (0 = off)
+    try:
+        SNAPSHOT_INTERVAL_MINUTES = int(os.environ.get('SNAPSHOT_INTERVAL_MINUTES', 0) or 0)
+    except ValueError:
+        SNAPSHOT_INTERVAL_MINUTES = 0
+    
     @staticmethod
     def init_app(app):
         """Initialize app with this configuration."""
