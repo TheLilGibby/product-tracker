@@ -201,7 +201,9 @@ def add_product():
                     
                     if product_data:
                         # Update product details
-                        product.name = product_data.get('name') or product.name
+                        scraped_name = product_data.get('name')
+                        if scraped_name and scraped_name != "Unknown Product":
+                            product.name = scraped_name
                         product.current_price = product_data.get('price')
                         product.available = product_data.get('available', False)
                         product.image_url = product_data.get('image_url')
@@ -429,8 +431,11 @@ def update_product(product_id):
     old_price = product.current_price
     old_availability = product.available
     
-    # Update product details
-    product.name = product_data.get('name') or product.name
+    # Update product details. Only accept a real name; scrapers return
+    # "Unknown Product" when extraction fails
+    scraped_name = product_data.get('name')
+    if scraped_name and scraped_name != "Unknown Product":
+        product.name = scraped_name
     product.current_price = product_data.get('price') or product.current_price
     product.available = product_data.get('available', False)
     product.image_url = product_data.get('image_url') or product.image_url

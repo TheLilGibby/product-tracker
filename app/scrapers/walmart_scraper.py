@@ -1,10 +1,17 @@
 import re
+import json
 import logging
 import requests
 from bs4 import BeautifulSoup
+from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text
 
 # Set up logging
 logger = logging.getLogger('app.scrapers.walmart')
+
+# availabilityStatus values from __NEXT_DATA__ that mean the item can be ordered now.
+# A pre-order whose allocation is gone still reports OUT_OF_STOCK, so preOrder.isPreOrder
+# alone is not treated as available.
+WALMART_AVAILABLE_STATUSES = ('IN_STOCK', 'PREORDER', 'LIMITED_STOCK')
 
 class WalmartScraper:
     """Scraper specifically for Walmart products"""
@@ -12,9 +19,7 @@ class WalmartScraper:
     def __init__(self):
         """Initialize the Walmart scraper."""
         logger.debug("Initializing WalmartScraper")
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
+        self.headers = dict(DEFAULT_HEADERS)
     
     def scrape_product(self, url):
         """
@@ -27,9 +32,19 @@ class WalmartScraper:
             dict: Product information including name, price, availability, and image URL
         """
         try:
-            response = requests.get(url, headers=self.headers)
+            response = requests.get(url, headers=self.headers, timeout=REQUEST_TIMEOUT)
+            block_reason = detect_block_page(response.text)
+            if block_reason:
+                logger.warning(f"Walmart returned a block page for {url} (HTTP {response.status_code}): {block_reason}")
+                return None
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Walmart is a Next.js app: the server-rendered product state is the
+            # reliable source; the DOM selectors below are the legacy fallback
+            product_data = self.extract_from_next_data(soup)
+            if product_data:
+                return product_data
             
             return {
                 'name': self.extract_name(soup),
@@ -39,6 +54,50 @@ class WalmartScraper:
             }
         except Exception as e:
             logger.error(f"Error scraping Walmart product: {str(e)}")
+            return None
+    
+    def extract_from_next_data(self, soup):
+        """
+        Extract product data from the <script id="__NEXT_DATA__"> JSON.
+        
+        Returns:
+            dict with name, price, available and image_url, or None if the page has
+            no product node there (older layouts, search pages, block pages)
+        """
+        logger.debug("WalmartScraper: Extracting from __NEXT_DATA__")
+        try:
+            script = soup.find('script', id='__NEXT_DATA__')
+            if not script or not script.string:
+                logger.debug("No __NEXT_DATA__ script on page")
+                return None
+            
+            data = json.loads(script.string)
+            product = data.get('props', {}).get('pageProps', {}).get('initialData', {}).get('data', {}).get('product')
+            if not product or not product.get('name'):
+                logger.debug("__NEXT_DATA__ has no product node")
+                return None
+            
+            status = (product.get('availabilityStatus') or '').upper()
+            is_pre_order = bool((product.get('preOrder') or {}).get('isPreOrder'))
+            available = status in WALMART_AVAILABLE_STATUSES
+            logger.debug(f"__NEXT_DATA__ availabilityStatus={status} isPreOrder={is_pre_order} -> available={available}")
+            
+            price = None
+            current_price = (product.get('priceInfo') or {}).get('currentPrice') or {}
+            if current_price.get('price') is not None:
+                price = float(current_price['price'])
+                logger.debug(f"Found price from __NEXT_DATA__: ${price}")
+            
+            image_url = (product.get('imageInfo') or {}).get('thumbnailUrl')
+            
+            return {
+                'name': product['name'].strip(),
+                'price': price,
+                'available': available,
+                'image_url': image_url
+            }
+        except Exception as e:
+            logger.error(f"Error extracting from __NEXT_DATA__: {str(e)}")
             return None
     
     def extract_name(self, soup):
@@ -122,7 +181,13 @@ class WalmartScraper:
             if add_to_cart:
                 logger.debug("Found enabled add to cart button")
                 return True
-                
+
+            # A pre-order button or message counts as available
+            for element in soup.select('button, .prod-ProductOffer-availabilityMsg, [data-testid="availability-message"]'):
+                if is_preorder_text(element.get_text()) and not element.has_attr('disabled'):
+                    logger.debug("Found pre-order indicator, treating as available")
+                    return True
+
             # Check availability text
             availability = soup.select_one('.prod-ProductOffer-availabilityMsg')
             if availability:
