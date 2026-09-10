@@ -385,3 +385,149 @@ def import_cookies_txt(driver, path, domain_suffix):
             logger.debug(f"Chrome rejected the cookie {cookie['name']}: {str(e)}")
     logger.info(f"Imported {added}/{len(cookies)} {domain_suffix} cookies from {path}")
     return added, rejected
+
+
+# ------------------------------------------------------------- cookie jar cache
+# Importing cookies fixes the BROWSER path, but the browser is the expensive part:
+# a Chrome launch per check, a profile lock held for its duration, and on Target a
+# fresh chance of a press-and-hold every time. The same session works over plain
+# HTTP - Redsky answers a client that carries a valid _px3 - so the import also
+# writes the cookies to a small JSON cache that the requests path can load. When
+# the cache is good, tracking never opens a browser at all and the profile is only
+# touched for cart attempts.
+#
+# The file is a live login. It is written 0600, it lives under data/ (git-ignored
+# in its entirety), and nothing here logs a cookie value.
+
+# Cookies whose absence means the cheap path will not work. _px3 is the PerimeterX
+# clearance token: without it Redsky answers 403 with a captchaRelativeURL.
+CRITICAL_COOKIE_NAMES = ('_px3',)
+
+
+def save_cookie_jar(path, cookies, critical_names=CRITICAL_COOKIE_NAMES):
+    """
+    Persist cookies for reuse by a requests-based path.
+
+    Args:
+        path: destination JSON file; parent directories are created
+        cookies: selenium-shaped cookie dicts (driver.get_cookies())
+        critical_names: names to report on, so the caller can tell the user the
+                        cheap path will not work before they delete their export
+
+    Returns:
+        (written, missing_critical) - the number of cookies stored and the tuple
+        of critical names that were not among them.
+    """
+    stored = []
+    for cookie in cookies or []:
+        name = cookie.get('name')
+        if not name:
+            continue
+        stored.append({
+            'name': name,
+            'value': cookie.get('value') or '',
+            # Kept verbatim, leading dot and all. parse_cookie_file strips the
+            # dot because chromedriver dislikes it, but http.cookiejar needs it:
+            # ".target.com" is sent to redsky.target.com while a dotless
+            # "target.com" is host-only and would strand _px3 on the wrong host.
+            'domain': cookie.get('domain') or '',
+            'path': cookie.get('path') or '/',
+            'expires': _as_epoch(cookie.get('expiry') if 'expiry' in cookie else cookie.get('expires')),
+            'secure': bool(cookie.get('secure')),
+            'httpOnly': bool(cookie.get('httpOnly')),
+        })
+
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    payload = {'saved_at': int(time.time()), 'stale': False, 'cookies': stored}
+    # Create it 0600 before anything is written, so the session is never briefly
+    # world-readable. os.open's mode is ignored on Windows, where the file
+    # inherits the directory's ACL instead - the chmod below is the portable half.
+    handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(handle, 'w', encoding='utf-8') as f:
+        json.dump(payload, f)
+    try:
+        os.chmod(path, 0o600)
+    except OSError as e:
+        logger.debug(f"Could not chmod {path}: {str(e)}")
+
+    missing = tuple(name for name in critical_names
+                    if not any(c['name'] == name for c in stored))
+    logger.info(f"Saved {len(stored)} cookies to {path}"
+                + (f" (missing {', '.join(missing)})" if missing else ""))
+    return len(stored), missing
+
+
+def load_cookie_jar(path, now=None):
+    """
+    Read back a saved cookie jar, dropping anything that has expired.
+
+    Returns:
+        a list of cookie dicts, or None when there is nothing usable - the file
+        is absent, unreadable, marked stale, or every cookie in it has expired.
+        None is the signal to use the browser path; it is never an error.
+    """
+    now = time.time() if now is None else now
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+    except FileNotFoundError:
+        logger.debug(f"No cookie jar at {path}")
+        return None
+    except (OSError, ValueError) as e:
+        logger.warning(f"Could not read the cookie jar at {path}: {str(e)}")
+        return None
+
+    if payload.get('stale'):
+        logger.debug(f"Cookie jar at {path} is marked stale; using the browser path")
+        return None
+
+    live, expired = [], 0
+    for cookie in payload.get('cookies') or []:
+        expires = _as_epoch(cookie.get('expires'))
+        if expires and expires <= now:
+            expired += 1
+            continue
+        live.append(cookie)
+
+    if not live:
+        logger.info(f"Every cookie in {path} has expired; re-import to restore the cheap path")
+        return None
+    logger.debug(f"Loaded {len(live)} cookies from {path} ({expired} expired)")
+    return live
+
+
+def mark_cookie_jar_stale(path):
+    """
+    Flag a saved jar as no longer working, so the next check goes straight to the
+    browser instead of spending a request on a cookie the retailer has retired.
+
+    The cookies are flagged rather than deleted: replacing them costs the user a
+    manual export, and a jar that failed once is worth being able to look at. A
+    fresh import overwrites the file and clears the flag.
+
+    Returns:
+        True if the file was flagged, False if there was nothing to flag (already
+        stale, missing, or unreadable) - so the caller can log it exactly once.
+    """
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if payload.get('stale'):
+        return False
+
+    payload['stale'] = True
+    payload['stale_at'] = int(time.time())
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f)
+        os.chmod(path, 0o600)
+    except OSError as e:
+        logger.warning(f"Could not mark the cookie jar at {path} stale: {str(e)}")
+        return False
+    logger.warning(f"Marked the cookie jar at {path} stale; re-import to restore the cheap path")
+    return True
