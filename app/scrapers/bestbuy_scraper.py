@@ -61,6 +61,11 @@ BESTBUY_CART = 'https://www.bestbuy.com/cart'
 
 # Primary call-to-action on the product page: <button data-testid="pdp-<state>-<sku>">
 PDP_BUTTON_SELECTOR = 'button[data-testid^="pdp-"]'
+# Best Buy ids each add-to-cart control by the SKU it adds, buy box and
+# recommendation rail alike ("pdp-add-to-cart-6691852",
+# "carousel-add-to-cart-6641469"). That makes a foreign SKU proof that a button
+# belongs to another product - see _find_buy_button.
+BUTTON_SKU_RE = re.compile(r'-(\d{7})$')
 IN_STOCK_STATES = ('add-to-cart', 'pre-order', 'preorder')
 OUT_OF_STOCK_STATES = ('sold-out', 'coming-soon', 'unavailable', 'check-stores', 'notify')
 
@@ -698,14 +703,43 @@ class BestBuyScraper:
         return last
 
     def _find_buy_button(self, driver):
-        """Return (button, state, label) for the pdp CTA; state is True/False/None as in _classify_button."""
+        """
+        Return (button, state, label) for the pdp CTA; state is True/False/None
+        as in _classify_button.
+
+        A button whose test id names a different SKU is never a candidate, and
+        one that names the right SKU wins over one that names none. The saved
+        product page carries nine working add-to-cart buttons for recommended
+        products; they are ids'd "carousel-" rather than "pdp-" today, so the
+        selector alone excludes them - but that is a naming convention, and this
+        selector sweeps the whole document, so "the first match" is document
+        order rather than the buy box. The SKU in the id is the part that
+        actually attributes a button to a product.
+
+        Clicking a recommendation's button would add someone else's product and
+        then report this one as missing from the cart: it fails closed, but it
+        blames the wrong thing while another item sits in the cart.
+        """
+        fallback = None
         for button in driver.find_elements(By.CSS_SELECTOR, PDP_BUTTON_SELECTOR):
             testid = (button.get_attribute('data-testid') or '').lower()
             label = (button.text or '').strip().lower()
             state = self._classify_button(testid, label, enabled=button.is_enabled())
-            if state is not None:
-                return button, state, label or testid
-        return None, None, None
+            if state is None:
+                continue
+
+            sku = self._sku_from_button(button)
+            if self.current_sku and sku:
+                if sku == self.current_sku:
+                    return button, state, label or testid
+                logger.debug(f"Ignoring pdp button {testid!r}: it adds SKU {sku}, not {self.current_sku}")
+                continue
+
+            # Either the button names no SKU or this scrape has none to compare
+            # it against. Usable, but only if nothing better turns up.
+            if fallback is None:
+                fallback = (button, state, label or testid)
+        return fallback or (None, None, None)
 
     @staticmethod
     def _sku_from_button(button):
@@ -718,7 +752,7 @@ class BestBuyScraper:
         page-wide fallback lands on the right one only because the page's own
         happens to come first in the document.
         """
-        match = re.search(r'-(\d{7})$', button.get_attribute('data-testid') or '')
+        match = BUTTON_SKU_RE.search(button.get_attribute('data-testid') or '')
         return match.group(1) if match else None
 
     def _add_to_cart_with_driver(self, driver, quantity):
