@@ -304,9 +304,10 @@ price until the browser-based scraper is in the running image.
 **There is no Telegram inbox.** Alerts go out; nothing reads replies. Commands sent
 back to the bot are not processed.
 
-**Adding a product does not announce itself.** Despite what older notes say, no
-alert fires when a product starts being tracked. Only price drops, restocks and
-successful cart attempts notify.
+**Adding a product from the dashboard does not announce itself.** Only price drops,
+restocks and successful cart attempts notify. Notes elsewhere describe a
+"now tracking" alert; it is sent only by the JSON API route, which the dashboard
+form never calls, and it does not exist on `integration` at all.
 
 ## Morning-of checklist
 
