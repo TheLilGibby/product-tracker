@@ -13,12 +13,21 @@ from logging.handlers import RotatingFileHandler
 db = SQLAlchemy()
 migrate = Migrate()
 
+# Windows consoles default to cp1252; product names carry characters like ™ and –
+# which would raise UnicodeEncodeError inside the handler ("--- Logging error ---")
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, 'reconfigure'):
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except (ValueError, OSError):
+            pass
+
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('app.log'),
+        logging.FileHandler('app.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -50,7 +59,7 @@ def create_app(config_name='default'):
     # Set up logging
     if not app.debug:
         # Configure file handler
-        file_handler = RotatingFileHandler('app.log', maxBytes=10240, backupCount=10)
+        file_handler = RotatingFileHandler('app.log', maxBytes=10240, backupCount=10, encoding='utf-8')
         file_handler.setFormatter(logging.Formatter(
             '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
         ))
