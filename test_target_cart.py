@@ -30,6 +30,17 @@ That loads your own cookies into ~/.chrome_profiles/target_profile and reports
 whether a challenge or sign-in wall is still in the way. Treat the file as a
 password: it is your live session. Delete it afterwards.
 
+It also writes ~/.chrome_profiles/target_profile/cookies.json (0600), which the
+Redsky path reads. With a valid _px3 in there, scheduled Target checks answer
+from one HTTP request and open no browser at all - so the profile, and its risk
+of being flagged, is only spent on cart attempts. PX tokens are short-lived;
+when it goes cold the checks quietly return to the browser path and re-running
+--import-cookies restores it.
+
+The jar sits beside the profile, not in the checkout, so it does not matter which
+worktree you run this from - the app finds the same file either way. Set
+TARGET_COOKIE_JAR to override. The run prints the resolved path at the end.
+
 The app must run as the SAME OS user, since it reads that same profile directory.
 
 Expected once set up: the carrying case (pre-order open) lands in the cart; the
@@ -38,6 +49,7 @@ Screenshots are written to target_cart_<tcin>.png.
 """
 import base64
 import os
+import stat
 import sys
 
 CASE_URL = ("https://www.target.com/p/nintendo-8482-switch-2-the-legend-of-zelda-40th-anniversary-edition-"
@@ -51,11 +63,12 @@ HOME_URL = "https://www.target.com/"
 # set it before the scraper module reads the variable at import time
 LOGIN_MODE = '--login' in sys.argv
 IMPORT_MODE = '--import-cookies' in sys.argv
+FIXTURE_MODE = '--fixtures' in sys.argv
 if LOGIN_MODE or IMPORT_MODE:
     os.environ['TARGET_HEADLESS'] = '0'
 
-from app.scrapers.target_scraper import TargetScraper, TARGET_CART_URL  # noqa: E402
-from app.scrapers.common import profile_lock, import_cookies_txt  # noqa: E402
+from app.scrapers.target_scraper import TargetScraper, TARGET_CART_URL, TARGET_COOKIE_JAR  # noqa: E402
+from app.scrapers.common import profile_lock, import_cookies_txt, save_cookie_jar  # noqa: E402
 
 # Product names contain ™ / –; keep printing on cp1252 Windows consoles
 if hasattr(sys.stdout, 'reconfigure'):
@@ -136,13 +149,139 @@ def import_cookies(path):
                 print(f"  sign-in wall:      {'yes' if signed_out else 'no'}")
                 if not challenge and not signed_out:
                     print("  clear")
+
+            # Save the session for the requests path as well. These are the
+            # cookies as they stand AFTER the reloads above, so any PX token
+            # Target refreshed during them is the one that gets stored.
+            _save_jar(driver)
+
             print("\nIf both pages are clear, headless runs will reuse this session.")
-            print("Delete the cookie file now - it is a live login.")
+            print(f"Saved session: {TARGET_COOKIE_JAR}")
+            print(f"Chrome profile: {scraper.profile_dir}")
+            print("Delete the cookie EXPORT you passed in now - it is a live login.")
         finally:
             try:
                 driver.quit()
             except Exception:
                 pass
+
+
+def _save_jar(driver):
+    """
+    Persist the browser's target.com cookies where the requests path can find
+    them, so tracking stops needing a browser at all while they are valid.
+    """
+    try:
+        cookies = [c for c in driver.get_cookies()
+                   if (c.get('domain') or '').lstrip('.').endswith('target.com')]
+        written, missing = save_cookie_jar(TARGET_COOKIE_JAR, cookies)
+    except Exception as e:
+        print(f"\nCould not save the cookie jar: {e}")
+        print("The profile still has the session; only the browser-free path is unavailable.")
+        return
+
+    print(f"\nSaved {written} cookies to {TARGET_COOKIE_JAR}")
+    # The file is opened 0600. On Windows that mode is ignored and the file
+    # inherits the profile directory's ACL instead, so do not promise a mode we did not set.
+    print(f"  permissions: {oct(stat.S_IMODE(os.stat(TARGET_COOKIE_JAR).st_mode))}"
+          + (" (Windows applies the profile directory's inherited ACL, not the mode)"
+             if os.name == "nt" else ""))
+    if missing:
+        print(f"  WARNING: no {', '.join(missing)} among them.")
+        print("  _px3 is the PerimeterX clearance token; without it Redsky will keep")
+        print("  answering 403 and every check will fall back to opening Chrome.")
+    else:
+        print("  Redsky checks will use this and skip the browser entirely.")
+    print("  It expires on its own; when it does, checks quietly go back to the")
+    print("  browser path and you can re-run --import-cookies to restore it.")
+    print("  This file is a live login. It lives beside the Chrome profile, outside")
+    print("  the repo, so no branch can commit it and every worktree finds the same one.")
+
+
+# An empty Target cart, trimmed to the shape that matters: a few hundred bytes,
+# no product markers, no challenge wording. Before expect_product=False this was
+# reported as a bot-protection page.
+EMPTY_CART_HTML = """<!DOCTYPE html><html><head><title>Cart : Target</title></head>
+<body><div data-test="cart-empty"><h1>Your cart is empty</h1>
+<a href="/">Continue shopping</a></div></body></html>"""
+
+# The same cart page, but served as the PerimeterX challenge. Must still be a wall.
+BLOCKED_CART_HTML = """<!DOCTYPE html><html><head><title>Cart : Target</title></head>
+<body><div id="px-captcha"></div><p>Press &amp; Hold to confirm you are
+a human (and not a bot).</p></body></html>"""
+
+
+class FakeElement:
+    def __init__(self, text=''):
+        self.text = text
+
+
+class FakeDriver:
+    """Enough driver for _page_obstacle: page source, body text, url, no elements."""
+
+    def __init__(self, html, body_text='', current_url='https://www.target.com/cart'):
+        self.page_source = html
+        self.current_url = current_url
+        self._body = FakeElement(body_text)
+
+    def find_element(self, *args):
+        return self._body
+
+    def find_elements(self, *args):
+        return []
+
+
+def fixtures():
+    """Offline checks for the empty-cart / bot-wall distinction. No network, no Chrome."""
+    from app.scrapers.common import detect_block_page
+
+    passed, failed = [], []
+
+    def check_that(name, condition):
+        (passed if condition else failed).append(name)
+        print(('  ok   ' if condition else '  FAIL ') + name)
+
+    print("\ndetect_block_page")
+    check_that("an empty cart is a bot wall when a product was expected",
+               detect_block_page(EMPTY_CART_HTML) is not None)
+    check_that("...and is not one when it was not",
+               detect_block_page(EMPTY_CART_HTML, expect_product=False) is None)
+    check_that("the default is unchanged, so no existing caller shifts",
+               detect_block_page(EMPTY_CART_HTML)
+               == detect_block_page(EMPTY_CART_HTML, expect_product=True))
+    check_that("a challenge served as the cart is still a wall",
+               detect_block_page(BLOCKED_CART_HTML, expect_product=False) is not None)
+    check_that("...and says which marker caught it",
+               'px-captcha' in (detect_block_page(BLOCKED_CART_HTML, expect_product=False) or ''))
+    check_that("an empty body is still a failed load either way",
+               detect_block_page('', expect_product=False) == 'empty response')
+    check_that("a real product page is unaffected",
+               detect_block_page('<html><head><title>Thing : Target</title></head>'
+                                 '<body>' + 'x' * 6000 + '<script type="application/ld+json">{}'
+                                 '</script></body></html>') is None)
+
+    print("\n_page_obstacle")
+    scraper = TargetScraper()
+    check_that("the cart call reports no obstacle on an empty cart",
+               scraper._page_obstacle(FakeDriver(EMPTY_CART_HTML), expect_product=False) is None)
+    check_that("the product-page call still reports one",
+               scraper._page_obstacle(FakeDriver(EMPTY_CART_HTML)) is not None)
+    check_that("a challenge on the cart is still reported",
+               scraper._page_obstacle(FakeDriver(BLOCKED_CART_HTML),
+                                      expect_product=False) is not None)
+    check_that("press-and-hold wording in the body is still caught on the cart",
+               scraper._page_obstacle(
+                   FakeDriver(EMPTY_CART_HTML, body_text='Press & Hold to confirm you are a human'),
+                   expect_product=False) is not None)
+    check_that("a sign-in redirect is still caught on the cart",
+               scraper._page_obstacle(
+                   FakeDriver(EMPTY_CART_HTML, current_url='https://login.target.com/'),
+                   expect_product=False) is not None)
+
+    print(f"\n{len(passed)} passed, {len(failed)} failed")
+    for name in failed:
+        print(f"  FAILED: {name}")
+    return 1 if failed else 0
 
 
 def check(url):
@@ -178,7 +317,9 @@ def _cookie_path():
 
 
 if __name__ == '__main__':
-    if IMPORT_MODE:
+    if FIXTURE_MODE:
+        sys.exit(fixtures())
+    elif IMPORT_MODE:
         import_cookies(_cookie_path())
     elif LOGIN_MODE:
         login()

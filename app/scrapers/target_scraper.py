@@ -8,6 +8,11 @@ answers non-browser clients with a captcha challenge (HTTP 403, JSON body with
 "captchaRelativeURL"). So this scraper:
 
 1. Tries the Redsky JSON API first (cheap, and it works from some networks).
+   That is two requests, not one: pdp_client_v1 carries the title and price but
+   returns no fulfillment block at all for these items, so availability comes
+   from product_fulfillment_and_variation_hierarchy_v1. Availability is asked
+   for first, and if it cannot be determined the whole Redsky path gives up
+   rather than hand back a product with a guessed stock answer.
 2. Falls back to undetected-chromedriver and reads the rendered DOM: the price
    sits in span[data-test="product-price"] and the buy button is
    button#addToCartButtonOrTextIdFor<tcin> (data-test preorderButton /
@@ -24,9 +29,28 @@ from any product page:
     re.search(r'(?:apiKey|key)["\\']?\\s*[:=]\\s*["\\']([0-9a-f]{40})', html)
 
 The TCIN (Target item number) is the trailing /A-<tcin> segment of the URL.
+
+The saved session (~/.chrome_profiles/target_profile/cookies.json)
+------------------------------------------------------------------
+Redsky's 403 is PerimeterX refusing a client with no clearance token, not Target
+withholding the data - the same request carrying a valid _px3 is answered 200. So
+`test_target_cart.py --import-cookies` now writes the browser's target.com
+cookies to cookies.json beside the profile they came from - opened 0600, though
+on Windows that mode is ignored and the file inherits the profile directory's
+ACL instead - and step 1 loads them. It lives with the profile rather than in
+the checkout because the repo has several worktrees and the session belongs to
+neither of them; being outside the repo, it also cannot be committed. While that session is good, tracking Target costs one HTTP
+request and never opens Chrome; the profile is only touched for cart attempts,
+which is also the only thing that can get it flagged.
+
+PX tokens are short-lived, so the jar going cold is the normal case, not a
+failure: an expired cookie is dropped on load and a rejected one is flagged
+stale, and either way step 2 runs exactly as it does today. Nothing here solves
+a challenge - it carries a session the user established themselves.
 """
 
 import re
+import html
 import logging
 import os
 import time
@@ -39,7 +63,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from app.scrapers.common import (DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text,
-                                 detect_chrome_major, profile_lock, ProfileBusyError)
+                                 detect_chrome_major, profile_lock, ProfileBusyError,
+                                 load_cookie_jar, mark_cookie_jar_stale)
 
 # Set up logging
 logger = logging.getLogger('app.scrapers.target')
@@ -47,11 +72,56 @@ logger = logging.getLogger('app.scrapers.target')
 # Public key from Target's web bundle (see module docstring)
 REDSKY_API_KEY = '9f36aeafbe60771e321a7cc95a78140772ab3e96'
 REDSKY_PDP_URL = 'https://redsky.target.com/redsky_aggregations/v1/web/pdp_client_v1'
+# pdp_client_v1 carries the title and price but no fulfillment block whatsoever
+# for these items, so availability comes from its own aggregation.
+REDSKY_FULFILLMENT_URL = ('https://redsky.target.com/redsky_aggregations/v1/web/'
+                          'product_fulfillment_and_variation_hierarchy_v1')
 # Pricing is national for the items we track; any store id satisfies the API
 REDSKY_STORE_ID = '3991'
+# ...but the fulfillment aggregation rejects 3991 outright ("Parameter store_id
+# cannot be digital store 3991", HTTP 206) because "can I have this" is a
+# question about a real building. 1751 is a physical store, taken from the store
+# list Target's own product page embeds. Which one it is barely matters: the
+# answer we read is shipping_options.availability_status, which is national. If
+# Target ever closes it, the aggregation says so in an errors[] message - which
+# is logged - rather than quietly reporting the item as unavailable.
+REDSKY_FULFILLMENT_STORE_ID = '1751'
+REDSKY_FULFILLMENT_LOCATION = {
+    'zip': '55403', 'state': 'MN', 'latitude': '44.98', 'longitude': '-93.27',
+}
 
 # Redsky shipping availability_status values that mean the item can be ordered
 REDSKY_ORDERABLE_STATUSES = ('IN_STOCK', 'PRE_ORDER_SELLABLE', 'LIMITED_STOCK')
+
+# Responses that mean the saved session is no longer accepted, as opposed to
+# Redsky being briefly unwell. A 5xx or a timeout leaves the jar alone.
+REDSKY_STALE_SESSION_STATUSES = (401, 403)
+
+# The persistent Chrome profile Target's bot checks are meant to recognise.
+TARGET_PROFILE_DIR = os.path.join(os.path.expanduser("~"), ".chrome_profiles", "target_profile")
+
+# Where --import-cookies leaves the session for the requests path to reuse. It sits
+# beside the profile rather than in the checkout, because it IS that profile's
+# session: the repo is cloned into several worktrees, and a per-checkout path meant
+# importing from one and running the app from another silently wrote the session
+# where nothing would look for it. Being outside the repo entirely, it also cannot
+# be committed by any branch. TARGET_COOKIE_JAR overrides it.
+TARGET_COOKIE_JAR = os.environ.get('TARGET_COOKIE_JAR') or os.path.join(
+    TARGET_PROFILE_DIR, 'cookies.json')
+
+# Redsky is an XHR from the product page. With a cookie jar attached the request
+# has to look like that XHR and not like a bare script, so it carries the client
+# hints and fetch metadata a Chrome tab would send. These are only added on the
+# cookie path: sending them without cookies changes nothing (Redsky 403s a bare
+# client either way) and would only make the plain attempt harder to read in logs.
+REDSKY_BROWSER_HEADERS = {
+    'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-site',
+}
 
 TCIN_RE = re.compile(r'/A-(\d+)')
 PRICE_RE = re.compile(r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)')
@@ -96,7 +166,7 @@ class TargetScraper:
         self.headers = dict(DEFAULT_HEADERS)
 
         # Persistent profile so Target's bot checks see a returning browser
-        self.profile_dir = os.path.join(os.path.expanduser("~"), ".chrome_profiles", "target_profile")
+        self.profile_dir = TARGET_PROFILE_DIR
         os.makedirs(self.profile_dir, exist_ok=True)
 
         # Store the most recent product URL for parity with the other browser scrapers
@@ -147,14 +217,101 @@ class TargetScraper:
         return None
 
     # ------------------------------------------------------------------ Redsky
+    def _redsky_get(self, aggregation_url, params, tcin, url, what):
+        """
+        One Redsky request, carrying the saved session when there is one.
+
+        Returns the decoded payload, or None for anything that is not a clean
+        200 - which always means "ask the browser", never "unavailable".
+        """
+        headers = dict(self.headers)
+        headers.update({
+            'Accept': 'application/json',
+            'Origin': 'https://www.target.com',
+            'Referer': url,
+        })
+
+        # The user's imported session, if --import-cookies has left one. With a
+        # valid _px3 Redsky answers 200 and no browser is needed for tracking at
+        # all; without one it 403s exactly as it does today and the caller falls
+        # through to the browser.
+        cookies = self._redsky_cookies()
+        if cookies is not None:
+            headers.update(REDSKY_BROWSER_HEADERS)
+            logger.info(f"Attempting Redsky {what} for TCIN {tcin} with the saved session "
+                        f"({len(cookies)} cookies)")
+        else:
+            logger.info(f"Attempting Redsky {what} for TCIN {tcin} (no saved session)")
+
+        response = requests.get(aggregation_url, params=params, headers=headers,
+                                cookies=cookies, timeout=REQUEST_TIMEOUT)
+        if response.status_code != 200:
+            # 403 with a "captchaRelativeURL" body is Target's bot wall for non-browser
+            # clients. A 206 is a partial GraphQL answer whose errors[] explains itself.
+            logger.warning(f"Redsky {what} returned HTTP {response.status_code} for TCIN "
+                           f"{tcin}: {response.text[:120]!r}")
+            if cookies is not None and response.status_code in REDSKY_STALE_SESSION_STATUSES:
+                # The cookies were rejected, so they will be rejected next cycle too.
+                # Flag them once and let every later check go straight to the browser
+                # rather than spending a doomed request on them every minute.
+                mark_cookie_jar_stale(TARGET_COOKIE_JAR)
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            logger.warning(f"Redsky {what} returned a 200 that is not JSON for TCIN {tcin}")
+            return None
+        for error in payload.get('errors') or []:
+            logger.warning(f"Redsky {what} reported an error for TCIN {tcin}: "
+                           f"{error.get('message')!r}")
+        return payload
+
+    def availability_via_redsky(self, tcin, url):
+        """
+        Ask the fulfillment aggregation whether the item can be ordered.
+
+        Returns True, False, or None when Redsky did not answer usefully.
+        """
+        store = REDSKY_FULFILLMENT_STORE_ID
+        params = {
+            'key': REDSKY_API_KEY,
+            'tcin': tcin,
+            'is_bot': 'false',
+            'store_id': store,
+            'pricing_store_id': store,
+            'has_pricing_store_id': 'true',
+            'scheduled_delivery_store_id': store,
+            'required_store_id': store,
+            'has_required_store_id': 'true',
+            'channel': 'WEB',
+            'page': f'/p/A-{tcin}',
+            **REDSKY_FULFILLMENT_LOCATION,
+        }
+        payload = self._redsky_get(REDSKY_FULFILLMENT_URL, params, tcin, url, 'fulfillment')
+        if payload is None:
+            return None
+        product = (payload.get('data') or {}).get('product') or {}
+        return self._availability_from_redsky(product)
+
     def scrape_via_redsky(self, tcin, url):
         """
-        Fetch the product from Redsky's pdp_client_v1 aggregation.
+        Fetch the product from Redsky: availability from the fulfillment
+        aggregation, then title and price from pdp_client_v1.
+
+        Availability is asked for first because it is the answer that can be
+        missing, and a name and a price with no stock answer are of no use to
+        the caller - it would have to guess, and a wrong guess is either a false
+        sold-out on drop day or a false back-in-stock alert.
 
         Returns:
             dict, or None when Redsky blocks the client or returns no product
         """
-        logger.info(f"Attempting Redsky API for TCIN {tcin}")
+        available = self.availability_via_redsky(tcin, url)
+        if available is None:
+            logger.warning(f"Redsky gave no availability for TCIN {tcin}; deferring to the browser")
+            return None
+
         params = {
             'key': REDSKY_API_KEY,
             'tcin': tcin,
@@ -163,31 +320,23 @@ class TargetScraper:
             'channel': 'WEB',
             'page': f'/p/A-{tcin}',
         }
-        headers = dict(self.headers)
-        headers.update({
-            'Accept': 'application/json',
-            'Origin': 'https://www.target.com',
-            'Referer': url,
-        })
-
-        response = requests.get(REDSKY_PDP_URL, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
-        if response.status_code != 200:
-            # 403 with a "captchaRelativeURL" body is Target's bot wall for non-browser clients
-            logger.warning(f"Redsky returned HTTP {response.status_code} for TCIN {tcin}: {response.text[:120]!r}")
+        payload = self._redsky_get(REDSKY_PDP_URL, params, tcin, url, 'PDP')
+        if payload is None:
             return None
 
-        payload = response.json()
         product = (payload.get('data') or {}).get('product') or {}
         item = product.get('item') or {}
 
-        name = ((item.get('product_description') or {}).get('title') or '').strip()
+        # Redsky returns raw HTML-entity text: "Nintendo&#8482; Switch 2 ..."
+        name = html.unescape(((item.get('product_description') or {}).get('title') or '')).strip()
         if not name:
             logger.warning(f"Redsky response for TCIN {tcin} has no product title")
             return None
 
         price = self._price_from_redsky(product.get('price') or {})
-        available = self._availability_from_redsky(product)
         image_url = ((item.get('enrichment') or {}).get('images') or {}).get('primary_image_url')
+        if image_url:
+            image_url = html.unescape(image_url)
 
         logger.info(f"Redsky extracted: name={name}, price={price}, available={available}")
         return {
@@ -196,6 +345,49 @@ class TargetScraper:
             'available': available,
             'image_url': image_url
         }
+
+    @staticmethod
+    def _redsky_cookies():
+        """
+        Build a requests cookie jar from the session --import-cookies saved, or
+        return None when there is no usable one.
+
+        None means "ask the browser", never "the product is unavailable".
+
+        Domain scoping is done properly rather than by shoving every cookie at
+        every host: _px3 is set on .target.com and must reach redsky.target.com,
+        while a www.target.com cookie must not. http.cookiejar decides that from
+        the leading dot, so a dotless "target.com" - which some exporters write,
+        and which parse_cookie_file deliberately produces for chromedriver - is
+        promoted back to ".target.com" here. Without that promotion the one
+        cookie that matters would be silently left behind and every request
+        would 403 with a jar that looks perfectly healthy on disk.
+        """
+        saved = load_cookie_jar(TARGET_COOKIE_JAR)
+        if not saved:
+            return None
+
+        jar = requests.cookies.RequestsCookieJar()
+        for cookie in saved:
+            domain = cookie.get('domain') or ''
+            if domain.lstrip('.') == 'target.com':
+                domain = '.target.com'
+            try:
+                jar.set_cookie(requests.cookies.create_cookie(
+                    name=cookie['name'],
+                    value=cookie.get('value') or '',
+                    domain=domain,
+                    path=cookie.get('path') or '/',
+                    secure=bool(cookie.get('secure')),
+                    expires=cookie.get('expires'),
+                ))
+            except Exception as e:
+                # One malformed entry must not cost us the whole session
+                logger.debug(f"Skipping saved cookie {cookie.get('name')!r}: {str(e)}")
+        if not len(jar):
+            logger.warning("The saved Target session held no usable cookies; using the browser path")
+            return None
+        return jar
 
     @staticmethod
     def _price_from_redsky(price):
@@ -213,7 +405,19 @@ class TargetScraper:
 
     @staticmethod
     def _availability_from_redsky(product):
-        """Derive availability from Redsky's fulfillment block (pre-order sellable counts as available)"""
+        """
+        Derive availability from Redsky's fulfillment block, or return None when
+        the payload does not say.
+
+        None is not False. Redsky answers 200 for these tcins with no
+        product.fulfillment key at all, and reporting that as "unavailable"
+        would mark an orderable item sold out on every cheap-path cycle - and
+        then fire a bogus back-in-stock alert the moment the browser path
+        disagreed. Unknown belongs to the browser path, which can actually see
+        the buy box.
+
+        Pre-order sellable counts as available.
+        """
         fulfillment = product.get('fulfillment') or {}
         if fulfillment.get('sold_out') is True:
             logger.debug("Redsky fulfillment.sold_out is true")
@@ -230,8 +434,10 @@ class TargetScraper:
             logger.debug("Redsky reports stock in stores")
             return True
 
-        logger.warning("Could not determine availability from Redsky fulfillment data")
-        return False
+        logger.warning(
+            "Could not determine availability from Redsky fulfillment data; "
+            f"product keys={sorted(product.keys())}, fulfillment keys={sorted(fulfillment.keys())}")
+        return None
 
     # ----------------------------------------------------------------- browser
     def _start_driver(self):
@@ -524,7 +730,8 @@ class TargetScraper:
             # Verify on the cart page rather than trusting the side sheet
             driver.get(TARGET_CART_URL)
             time.sleep(4)
-            obstacle = self._page_obstacle(driver)
+            # An empty cart here means the click did not take - not a bot wall
+            obstacle = self._page_obstacle(driver, expect_product=False)
             if obstacle:
                 return self._cart_result(False, obstacle, driver=driver)
 
@@ -571,9 +778,15 @@ class TargetScraper:
             'screenshot': screenshot
         }
 
-    def _page_obstacle(self, driver):
-        """Return a failure message if the current page is a bot wall or a login wall, else None"""
-        block_reason = detect_block_page(driver.page_source)
+    def _page_obstacle(self, driver, expect_product=True):
+        """
+        Return a failure message if the current page is a bot wall or a login wall, else None.
+
+        Pass expect_product=False when the page is the cart rather than a
+        product page: an empty cart is small and names no product, and would
+        otherwise be reported as bot protection.
+        """
+        block_reason = detect_block_page(driver.page_source, expect_product=expect_product)
         if block_reason:
             return f"Target showed a bot-protection page ({block_reason}); try again later or run with TARGET_HEADLESS=0"
         challenge = self._challenge_present(driver)
