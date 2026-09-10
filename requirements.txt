@@ -14,4 +14,3 @@ pytz==2024.1
 Pillow==10.2.0
 markdown==3.5.2
 undetected-chromedriver==3.5.5
-chromedriver-py==114.0.5735.90 
