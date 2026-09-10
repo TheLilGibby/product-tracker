@@ -1,7 +1,7 @@
 from flask import Blueprint, render_template, redirect, url_for, flash, request, jsonify, current_app, session
 from app import db
 from app.models.product import Product, PriceHistory
-from app.scrapers import get_scraper, add_to_cart
+from app.scrapers import add_to_cart, detect_store_type, get_scraper
 from app.tasks import check_all_products
 from datetime import datetime, timedelta
 import logging
@@ -136,6 +136,18 @@ def add_product():
         
     if not store_type:
         flash('Please select a store/website type', 'danger')
+        return redirect(url_for('main.add_product'))
+    
+    # The scheduler decides which scraper to use from the URL alone, so a hand-picked
+    # store that disagrees with the URL would scrape once here and then be skipped on
+    # every scheduled check. Reject the mismatch instead of tracking a dead product.
+    detected_store = detect_store_type(url)
+    if detected_store is None:
+        flash('That URL is not on a supported store domain, so it cannot be tracked.', 'danger')
+        return redirect(url_for('main.add_product'))
+    if detected_store != store_type:
+        flash(f'That URL points at {detected_store}, but "{store_type}" was selected. '
+              f'Pick {detected_store} or supply a {store_type} URL.', 'danger')
         return redirect(url_for('main.add_product'))
         
     # Check if product already exists
@@ -373,31 +385,8 @@ def update_product(product_id):
     """Manually update a product."""
     product = Product.query.get_or_404(product_id)
     
-    # Map domains to store types
-    domain_to_store = {
-        'amazon.com': 'amazon',
-        'www.amazon.com': 'amazon',
-        'walmart.com': 'walmart',
-        'www.walmart.com': 'walmart',
-        'newegg.com': 'newegg',
-        'www.newegg.com': 'newegg',
-        'microcenter.com': 'microcenter',
-        'www.microcenter.com': 'microcenter',
-        'bestbuy.com': 'bestbuy',
-        'www.bestbuy.com': 'bestbuy',
-        'bhphotovideo.com': 'bh',
-        'www.bhphotovideo.com': 'bh',
-        'test-store.example.com': 'test',
-    }
-    
-    # Get store type from URL domain
-    from urllib.parse import urlparse
-    domain = urlparse(product.url).netloc.lower()
-    store_type = None
-    for d, s in domain_to_store.items():
-        if d in domain:
-            store_type = s
-            break
+    # Store detection lives in app/scrapers; see STORE_DOMAINS there.
+    store_type = detect_store_type(product.url)
     
     if not store_type:
         flash('Could not determine store type from URL', 'danger')
@@ -637,32 +626,8 @@ def add_product_to_cart(product_id):
         quantity = request.form.get('quantity', '1')
         quantity = int(quantity) if quantity.isdigit() and int(quantity) > 0 else 1
         
-        # Get store type from URL
-        from urllib.parse import urlparse
-        domain = urlparse(product.url).netloc.lower()
-        
-        # Map domains to store types
-        domain_to_store = {
-            'amazon.com': 'amazon',
-            'www.amazon.com': 'amazon',
-            'walmart.com': 'walmart',
-            'www.walmart.com': 'walmart',
-            'newegg.com': 'newegg',
-            'www.newegg.com': 'newegg',
-            'microcenter.com': 'microcenter',
-            'www.microcenter.com': 'microcenter',
-            'bestbuy.com': 'bestbuy',
-            'www.bestbuy.com': 'bestbuy',
-            'bhphotovideo.com': 'bh',
-            'www.bhphotovideo.com': 'bh',
-            'test-store.example.com': 'test',
-        }
-        
-        store_type = None
-        for d, s in domain_to_store.items():
-            if d in domain:
-                store_type = s
-                break
+        # Store detection lives in app/scrapers; see STORE_DOMAINS there.
+        store_type = detect_store_type(product.url)
         
         if not store_type:
             flash('Could not determine store type from URL', 'danger')

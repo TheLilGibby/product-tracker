@@ -4,6 +4,8 @@ Provides direct access to store-specific scrapers based on store type.
 """
 
 import logging
+from urllib.parse import urlparse
+
 from app.scrapers.base_scraper import BaseScraper
 from app.scrapers.amazon_scraper import AmazonScraper
 from app.scrapers.walmart_scraper import WalmartScraper
@@ -16,6 +18,77 @@ from app.scrapers.adorama_scraper import AdoramaScraper
 
 # Set up logging
 logger = logging.getLogger('app.scrapers')
+
+# Registered hostname -> store key. Single source of truth for turning a product
+# URL into the key get_scraper() understands; app/tasks.py and app/routes/main.py
+# both go through detect_store_type() rather than keeping their own copies.
+#
+# 'test-store.example.com' is not a real retailer. It stays registered because
+# /add-test-product mints URLs on that host and the scheduler has to route them
+# to TestScraper.
+STORE_DOMAINS = {
+    'amazon.com': 'amazon',
+    'walmart.com': 'walmart',
+    'newegg.com': 'newegg',
+    'microcenter.com': 'microcenter',
+    'bestbuy.com': 'bestbuy',
+    'bhphotovideo.com': 'bh',
+    'adorama.com': 'adorama',
+    # TargetScraper arrives on feature/target-scraper; registering the domain
+    # early is harmless because get_scraper() raises for a key it has no class for.
+    'target.com': 'target',
+    'test-store.example.com': 'test',
+}
+
+
+def detect_store_type(url):
+    """
+    Determine which store a product URL belongs to.
+
+    Matching is on the parsed hostname and is exact or a true subdomain: a URL is
+    'amazon' only when its host is amazon.com or something.amazon.com. Substring
+    matching was used here before, which let an attacker-controlled host pose as a
+    supported store and get fetched, because both
+
+        https://amazon.com.evil.example/p/1
+        https://amazon.com@evil.example/p/1
+
+    contain 'amazon.com' while resolving to evil.example. urlparse().hostname is
+    used rather than .netloc because it already strips userinfo and the port.
+
+    Args:
+        url: The product URL
+
+    Returns:
+        The store key (e.g. 'newegg'), or None when no registered store matches.
+    """
+    if not url:
+        return None
+
+    try:
+        host = urlparse(url).hostname
+    except ValueError:
+        # urlparse raises on a malformed IPv6 literal or a non-numeric port.
+        logger.debug(f"Could not parse a hostname out of URL: {url!r}")
+        return None
+
+    if not host:
+        return None
+
+    # A trailing dot is the DNS root label and addresses the same host.
+    host = host.lower().rstrip('.')
+
+    for domain, store in STORE_DOMAINS.items():
+        if host == domain or host.endswith('.' + domain):
+            return store
+
+    logger.debug(f"No registered store matched host: {host}")
+    return None
+
+
+def supported_stores():
+    """Return the sorted store keys detect_store_type() can return."""
+    return sorted(set(STORE_DOMAINS.values()))
 
 def get_scraper(store_type):
     """
