@@ -17,6 +17,8 @@ from app.scrapers.bh_scraper import BHScraper
 from app.scrapers.test_scraper import TestScraper
 from app.scrapers.adorama_scraper import AdoramaScraper
 from app.scrapers.target_scraper import TargetScraper
+from app.scrapers.gamestop_scraper import GameStopScraper
+from app.scrapers.nintendo_scraper import NintendoScraper
 
 # Set up logging
 logger = logging.getLogger('app.scrapers')
@@ -36,6 +38,11 @@ STORE_DOMAINS = {
     'bestbuy.com': 'bestbuy',
     'bhphotovideo.com': 'bh',
     'adorama.com': 'adorama',
+    'gamestop.com': 'gamestop',
+    # The My Nintendo Store. Only /us/store/products/ URLs are product pages;
+    # detect_store_type routes on the host, and NintendoScraper returns None for
+    # anything without a SKU in the path.
+    'nintendo.com': 'nintendo',
     # TargetScraper arrives on feature/target-scraper; registering the domain
     # early is harmless because get_scraper() raises for a key it has no class for.
     'target.com': 'target',
@@ -105,6 +112,8 @@ STORE_LABELS = {
     'bh': 'B&H Photo Video',
     'adorama': 'Adorama',
     'target': 'Target',
+    'gamestop': 'GameStop',
+    'nintendo': 'My Nintendo Store',
     'test': 'Test Store',
 }
 
@@ -149,6 +158,8 @@ def get_scraper(store_type):
         'test': TestScraper,
         'adorama': AdoramaScraper,
         'target': TargetScraper,
+        'gamestop': GameStopScraper,
+        'nintendo': NintendoScraper,
     }
     
     if store_type not in scrapers:

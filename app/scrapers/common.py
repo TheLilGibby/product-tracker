@@ -41,6 +41,8 @@ BLOCK_PAGE_TITLE_MARKERS = (
     'robot check',         # Amazon
     'px-captcha',
     'automated access',
+    'attention required',  # Cloudflare ("Attention Required! | Cloudflare")
+    'just a moment',       # Cloudflare interstitial while its JS challenge runs
 )
 
 # Phrases specific enough to trust anywhere in the body. "access denied" is
@@ -53,6 +55,11 @@ BLOCK_PAGE_BODY_MARKERS = (
     "id='px-captcha'",
     'automated access',    # Amazon "To discuss automated access to Amazon data..."
     'robot check',
+    # Cloudflare's block page container. Note there is deliberately NO marker for
+    # /cdn-cgi/challenge-platform/ here: that script is served on every page behind
+    # Cloudflare, healthy ones included, and matching it flagged all three real
+    # GameStop product pages as blocked. The <title> markers catch the actual wall.
+    'cf-error-details',
 )
 
 # Any of these means we are looking at a real product page, so a small body is
