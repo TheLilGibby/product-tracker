@@ -64,6 +64,26 @@ BUY_BUTTON_SELECTORS = (
 )
 ORDERABLE_BUTTON_TEXTS = ('add to cart', 'ship it', 'pick up', 'pickup', 'add for')
 
+TARGET_CART_URL = 'https://www.target.com/cart'
+
+# Side-sheet controls that appear after "Add to cart": decline add-ons, confirm a
+# fulfillment choice. Nothing here proceeds to checkout.
+SIDE_SHEET_DISMISS_SELECTORS = (
+    '[data-test="espModalDeclineButton"]',
+    '[data-test="declineCoverage"]',
+    '[data-test="content-wrapper"] button[data-test="shippingButton"]',
+)
+SIDE_SHEET_DISMISS_TEXTS = {'decline coverage', 'no thanks', 'decline', 'continue', 'ship it', 'add to cart', 'view cart'}
+
+# Target intermittently serves a PerimeterX press-and-hold challenge instead of the
+# page (most often on /cart, and more readily to an aged automation profile). It is
+# only detected here so the caller fails cleanly - solving it is a person's job, in a
+# visible window (TARGET_HEADLESS=0).
+CHALLENGE_TEXT_MARKERS = ('press & hold', 'press and hold', 'quick verification', "confirm you're a human")
+# The challenge lives in this iframe. It exists on ordinary pages too, so its presence
+# is not the signal - its contents are.
+CHALLENGE_IFRAME_SELECTOR = 'iframe[id*="px-captcha"]'
+
 
 class TargetScraper:
     """Scraper for Target products: Redsky JSON API with an undetected-chromedriver fallback"""
@@ -239,6 +259,7 @@ class TargetScraper:
         logger.info(f"Attempting browser scrape for Target TCIN {tcin}")
         driver = None
         html = None
+        challenge = None
         try:
             options = self._get_chrome_options()
             driver = uc.Chrome(options=options, version_main=detect_chrome_major())
@@ -253,12 +274,19 @@ class TargetScraper:
             # The buy box hydrates shortly after first paint
             time.sleep(2)
             html = driver.page_source
+            # Must be read before the driver is torn down below
+            challenge = self._challenge_present(driver)
         finally:
             if driver:
                 try:
                     driver.quit()
                 except Exception:
                     pass
+
+        if challenge:
+            logger.warning(f"Target showed a human-verification challenge ({challenge}) for {url}; "
+                           "run test_target_cart.py --login to clear it in a visible window")
+            return None
 
         if html is None:
             # uc.Chrome() or driver.get() raised before the page source was captured
@@ -391,3 +419,273 @@ class TargetScraper:
         except Exception as e:
             logger.error(f"Error extracting image URL: {str(e)}")
             return None
+
+    # --------------------------------------------------------------- auto-cart
+    def add_to_cart(self, quantity=1):
+        """
+        Add the most recently scraped product to the Target cart. Cart only - this
+        never proceeds to checkout or payment.
+
+        Requires scrape_product() to have run first so current_product_url is set
+        (app.scrapers.add_to_cart pre-scrapes 'target' the way it does Newegg). Uses
+        the persistent target_profile: if Target asks for a sign-in, run once with
+        TARGET_HEADLESS=0, sign in to the window that opens, and retry.
+
+        Args:
+            quantity: Quantity to add to cart (default: 1)
+
+        Returns:
+            dict: A dictionary with cart status information
+            {
+                'success': True/False,
+                'message': str,
+                'cart_url': str or None,
+                'screenshot': base64 PNG or None,
+            }
+        """
+        url = self.current_product_url
+        if not url:
+            return self._cart_result(False, "No product URL set - call scrape_product() first")
+        tcin = self.extract_tcin(url)
+        if not tcin:
+            return self._cart_result(False, f"Could not find a TCIN (/A-<number>) in Target URL: {url}")
+
+        logger.info(f"Adding Target product to cart: {url} (TCIN {tcin}), quantity: {quantity}")
+        driver = None
+        try:
+            driver = uc.Chrome(options=self._get_chrome_options(), version_main=detect_chrome_major())
+            driver.set_page_load_timeout(45)
+            driver.get(url)
+            try:
+                WebDriverWait(driver, 15).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '[data-test="product-title"], [data-test="product-price"]'))
+                )
+            except TimeoutException:
+                logger.warning("Timed out waiting for Target product markup")
+            time.sleep(2)
+
+            obstacle = self._page_obstacle(driver)
+            if obstacle:
+                return self._cart_result(False, obstacle, driver=driver)
+
+            button = self._find_buy_button(driver, tcin)
+            if button is None:
+                return self._cart_result(False, "No add-to-cart / preorder button on the page - product may be unavailable", driver=driver)
+
+            data_test = (button.get_attribute('data-test') or '').lower()
+            text = (button.text or '').strip()
+            if button.get_attribute('disabled') is not None or 'disabled' in data_test or not button.is_enabled():
+                reason = self._sold_out_reason(driver) or f'the "{text}" button is disabled'
+                return self._cart_result(False, f"Cannot add to cart: {reason}", driver=driver)
+
+            logger.debug(f"Clicking buy button data-test={data_test!r} text={text!r}")
+            self._click(driver, button)
+            time.sleep(3)
+            self._dismiss_side_sheet(driver)
+
+            obstacle = self._page_obstacle(driver)
+            if obstacle:
+                return self._cart_result(False, obstacle, driver=driver)
+
+            # Verify on the cart page rather than trusting the side sheet
+            driver.get(TARGET_CART_URL)
+            time.sleep(4)
+            obstacle = self._page_obstacle(driver)
+            if obstacle:
+                return self._cart_result(False, obstacle, driver=driver)
+
+            if not self._cart_contains(driver, tcin):
+                return self._cart_result(False, "Item was not found in the Target cart after clicking the button", driver=driver)
+
+            note = ""
+            if quantity > 1:
+                if self._set_cart_quantity(driver, quantity):
+                    note = f" (quantity set to {quantity})"
+                else:
+                    note = f" (quantity 1 - could not set quantity to {quantity})"
+
+            logger.info(f"Target product {tcin} is in the cart")
+            return self._cart_result(True, f"Product added to Target cart{note}", driver=driver, cart_url=driver.current_url)
+        except Exception as e:
+            logger.error(f"Error adding Target product to cart: {str(e)}", exc_info=True)
+            return self._cart_result(False, f"Error: {str(e)}", driver=driver)
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _cart_result(success, message, driver=None, cart_url=None):
+        """Build the add_to_cart result dict, grabbing a screenshot while the driver is alive"""
+        screenshot = None
+        if driver is not None:
+            try:
+                screenshot = driver.get_screenshot_as_base64()
+            except Exception as e:
+                logger.debug(f"Could not take screenshot: {str(e)}")
+        if not success:
+            logger.warning(f"Target add_to_cart failed: {message}")
+        return {
+            'success': success,
+            'message': message,
+            'cart_url': cart_url,
+            'screenshot': screenshot
+        }
+
+    def _page_obstacle(self, driver):
+        """Return a failure message if the current page is a bot wall or a login wall, else None"""
+        block_reason = detect_block_page(driver.page_source)
+        if block_reason:
+            return f"Target showed a bot-protection page ({block_reason}); try again later or run with TARGET_HEADLESS=0"
+        challenge = self._challenge_present(driver)
+        if challenge:
+            return (f"Target showed a human-verification challenge ({challenge}). Run with TARGET_HEADLESS=0 and complete "
+                    "it once in the browser window (profile ~/.chrome_profiles/target_profile), then retry")
+        if self._login_wall_present(driver):
+            return ("Target is asking for a sign-in. Run once with TARGET_HEADLESS=0, sign in to the browser window "
+                    "that opens (profile ~/.chrome_profiles/target_profile), then retry")
+        return None
+
+    @staticmethod
+    def _challenge_present(driver):
+        """
+        Target's press-and-hold verification, by its own wording. Returns the phrase
+        that matched, or None. Detection only - the challenge is never automated.
+
+        The challenge renders inside the PerimeterX iframe (#px-captcha-modal), which
+        is present on ordinary pages too, so the top-level body text never contains it
+        and the iframe's mere existence proves nothing: look at what is inside it.
+        """
+        def matched(text):
+            lowered = (text or '').lower()
+            for marker in CHALLENGE_TEXT_MARKERS:
+                if marker in lowered:
+                    return f'"{marker}"'
+            return None
+
+        try:
+            found = matched(driver.find_element(By.TAG_NAME, 'body').text)
+            if found:
+                return found
+        except Exception:
+            pass
+
+        for frame in driver.find_elements(By.CSS_SELECTOR, CHALLENGE_IFRAME_SELECTOR):
+            try:
+                driver.switch_to.frame(frame)
+            except Exception:
+                continue
+            try:
+                found = matched(driver.find_element(By.TAG_NAME, 'body').text)
+            except Exception:
+                found = None
+            finally:
+                try:
+                    driver.switch_to.default_content()
+                except Exception:
+                    pass
+            if found:
+                return found
+        return None
+
+    @staticmethod
+    def _login_wall_present(driver):
+        """True when Target redirected to its sign-in flow or rendered a login form"""
+        current_url = (driver.current_url or '').lower()
+        if '/login' in current_url or 'login.target.com' in current_url or '/account/signin' in current_url:
+            return True
+        return bool(driver.find_elements(By.CSS_SELECTOR, 'form#login, [data-test="login-form"], input#username, input[name="username"]'))
+
+    @staticmethod
+    def _find_buy_button(driver, tcin):
+        """The buy-box button for this TCIN, or the first generic buy button, or None"""
+        selectors = [f'button#addToCartButtonOrTextIdFor{tcin}'] + list(BUY_BUTTON_SELECTORS)
+        for selector in selectors:
+            for element in driver.find_elements(By.CSS_SELECTOR, selector):
+                if element.is_displayed():
+                    return element
+        return None
+
+    @staticmethod
+    def _sold_out_reason(driver):
+        """Target's own wording for why the buy button is disabled, if visible"""
+        try:
+            body = driver.find_element(By.TAG_NAME, 'body').text.lower()
+        except Exception:
+            return None
+        for phrase in ('preorders have sold out', 'sold out', 'out of stock'):
+            if phrase in body:
+                return f'Target reports "{phrase}"'
+        return None
+
+    @staticmethod
+    def _click(driver, element):
+        """Scroll into view and click, falling back to a JS click when something overlays the element"""
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+        time.sleep(0.5)
+        try:
+            element.click()
+        except Exception as e:
+            logger.debug(f"Native click failed ({str(e)}); using JS click")
+            driver.execute_script("arguments[0].click();", element)
+
+    def _dismiss_side_sheet(self, driver):
+        """
+        After adding, Target opens a side sheet that may offer a protection plan or ask
+        for a fulfillment choice. Decline extras / confirm, up to a few rounds. Never
+        clicks anything that reads like checkout.
+        """
+        for _ in range(3):
+            clicked = False
+            for selector in SIDE_SHEET_DISMISS_SELECTORS:
+                for element in driver.find_elements(By.CSS_SELECTOR, selector):
+                    if element.is_displayed():
+                        logger.debug(f"Side sheet: clicking {selector}")
+                        self._click(driver, element)
+                        clicked = True
+                        break
+                if clicked:
+                    break
+            if not clicked:
+                for dialog in driver.find_elements(By.CSS_SELECTOR, '[role="dialog"]'):
+                    for button in dialog.find_elements(By.TAG_NAME, 'button'):
+                        label = (button.text or '').strip().lower()
+                        if label in SIDE_SHEET_DISMISS_TEXTS and button.is_displayed():
+                            logger.debug(f"Side sheet: clicking button {label!r}")
+                            self._click(driver, button)
+                            clicked = True
+                            break
+                    if clicked:
+                        break
+            if not clicked:
+                return
+            time.sleep(2)
+
+    @staticmethod
+    def _cart_contains(driver, tcin):
+        """True when the cart page lists this TCIN and is not the empty-cart view"""
+        html = driver.page_source
+        try:
+            body = driver.find_element(By.TAG_NAME, 'body').text.lower()
+        except Exception:
+            body = ''
+        if 'your cart is empty' in body:
+            logger.debug("Cart page says the cart is empty")
+            return False
+        return f'/A-{tcin}' in html or f'cartItem-{tcin}' in html
+
+    @staticmethod
+    def _set_cart_quantity(driver, quantity):
+        """Best effort: pick the quantity in the cart item's <select>"""
+        try:
+            from selenium.webdriver.support.ui import Select
+            for select in driver.find_elements(By.CSS_SELECTOR, 'select[data-test*="qty"], select[data-test*="uantity"], select[aria-label*="uantity"]'):
+                if select.is_displayed():
+                    Select(select).select_by_value(str(quantity))
+                    time.sleep(2)
+                    return True
+        except Exception as e:
+            logger.debug(f"Could not set cart quantity: {str(e)}")
+        return False
