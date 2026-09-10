@@ -11,6 +11,12 @@ A web application that tracks product prices and availability from various e-com
 - Configure check intervals
 - Timezone support
 
+## Documentation
+
+- [Drop day runbook](docs/DROP_DAY.md) - setup, settings and the morning-of checklist for the Zelda 40th Anniversary Switch 2 drop
+- [Telegram setup](docs/TELEGRAM_SETUP.md) - creating the bot and finding the chat id
+- [Bot protection notes](docs/bot_protection_bypass.md) - how each retailer blocks scrapers and what the code does about it
+
 ## Polling & backoff
 
 The scheduler checks every tracked product on one global interval
