@@ -126,9 +126,14 @@ REDSKY_BROWSER_HEADERS = {
 TCIN_RE = re.compile(r'/A-(\d+)')
 PRICE_RE = re.compile(r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)')
 
+# Target ids every add-to-cart button by the TCIN it adds, buy box and
+# recommendation carousel alike. That makes a different TCIN in the id positive
+# proof the button belongs to another product.
+BUY_BUTTON_ID_PREFIX = 'addToCartButtonOrTextIdFor'
+
 # Buy-box buttons on the rendered page, in preference order
 BUY_BUTTON_SELECTORS = (
-    'button[id^="addToCartButtonOrTextIdFor"]',
+    f'button[id^="{BUY_BUTTON_ID_PREFIX}"]',
     '[data-test="shippingButton"]',
     '[data-test="orderPickupButton"]',
     '[data-test="preorderButton"]',
@@ -850,12 +855,34 @@ class TargetScraper:
 
     @staticmethod
     def _find_buy_button(driver, tcin):
-        """The buy-box button for this TCIN, or the first generic buy button, or None"""
-        selectors = [f'button#addToCartButtonOrTextIdFor{tcin}'] + list(BUY_BUTTON_SELECTORS)
-        for selector in selectors:
+        """
+        The buy-box button for this TCIN, or a generic buy button, or None.
+
+        The exact-id selector is tried first, but it misses whenever Target
+        leaves the TCIN out of the id - a preorder button is the case that
+        matters, and a preorder is how a console drop usually opens. The
+        generic selectors then take over, and they also match the
+        recommendation carousels further down the page, which render their own
+        add-to-cart buttons for other products. The loop is selector-major, so
+        a carousel button matching an earlier selector beats the real buy box
+        matching a later one: on a preorder page the carousel wins.
+
+        So skip any button whose id names a different TCIN. Such an add was
+        never going to be reported as success - _cart_contains looks for this
+        TCIN and nothing else - but it would leave another product sitting in
+        the cart and report a failure that names the wrong cause.
+        """
+        ours = f'{BUY_BUTTON_ID_PREFIX}{tcin}'
+        for selector in [f'button#{ours}'] + list(BUY_BUTTON_SELECTORS):
             for element in driver.find_elements(By.CSS_SELECTOR, selector):
-                if element.is_displayed():
-                    return element
+                if not element.is_displayed():
+                    continue
+                element_id = element.get_attribute('id') or ''
+                if element_id.startswith(BUY_BUTTON_ID_PREFIX) and element_id != ours:
+                    logger.debug(f"Skipping buy button {element_id!r} - it adds another product")
+                    continue
+                logger.debug(f"Buy button matched {selector!r} (id={element_id!r})")
+                return element
         return None
 
     @staticmethod
