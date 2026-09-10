@@ -32,10 +32,13 @@ BLOCK_PAGE_TITLE_MARKERS = (
 )
 
 # Phrases specific enough to trust anywhere in the body. "access denied" is
-# deliberately not here: it shows up in inline JS on perfectly good pages.
+# deliberately not here: it shows up in inline JS on perfectly good pages, and
+# the bare string "px-captcha" appears in PerimeterX CSS (#px-captcha-modal) on
+# every Target page - only the rendered challenge element counts.
 BLOCK_PAGE_BODY_MARKERS = (
     'robot or human',
-    'px-captcha',          # PerimeterX challenge container
+    'id="px-captcha"',     # PerimeterX challenge container
+    "id='px-captcha'",
     'automated access',    # Amazon "To discuss automated access to Amazon data..."
     'robot check',
 )
