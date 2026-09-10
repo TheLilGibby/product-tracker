@@ -81,9 +81,9 @@ check("Origin wins over Referer when both are present",
 
 print("\nthe documented allow: no browser-set headers at all")
 # A browser always sends Sec-Fetch-Site, so this branch is not reachable from
-# the attack being defended against. It is the runbook's curl, the MCP server,
-# a scheduled job - none of which carry browser-managed credentials.
-check("a header-less client (curl, the MCP server) is allowed through",
+# the attack being defended against - it identifies a non-browser client, which
+# carries no browser-managed credentials to be spent on its behalf.
+check("a header-less client (curl, a script) is allowed through",
       post(client).status_code != 403)
 
 print("\nsafe methods are never blocked")
