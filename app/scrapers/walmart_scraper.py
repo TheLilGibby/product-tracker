@@ -2,6 +2,7 @@ import re
 import logging
 import requests
 from bs4 import BeautifulSoup
+from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text
 
 # Set up logging
 logger = logging.getLogger('app.scrapers.walmart')
@@ -12,9 +13,7 @@ class WalmartScraper:
     def __init__(self):
         """Initialize the Walmart scraper."""
         logger.debug("Initializing WalmartScraper")
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
+        self.headers = dict(DEFAULT_HEADERS)
     
     def scrape_product(self, url):
         """
@@ -27,7 +26,11 @@ class WalmartScraper:
             dict: Product information including name, price, availability, and image URL
         """
         try:
-            response = requests.get(url, headers=self.headers)
+            response = requests.get(url, headers=self.headers, timeout=REQUEST_TIMEOUT)
+            block_reason = detect_block_page(response.text)
+            if block_reason:
+                logger.warning(f"Walmart returned a block page for {url} (HTTP {response.status_code}): {block_reason}")
+                return None
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             
@@ -122,7 +125,13 @@ class WalmartScraper:
             if add_to_cart:
                 logger.debug("Found enabled add to cart button")
                 return True
-                
+
+            # A pre-order button or message counts as available
+            for element in soup.select('button, .prod-ProductOffer-availabilityMsg, [data-testid="availability-message"]'):
+                if is_preorder_text(element.get_text()) and not element.has_attr('disabled'):
+                    logger.debug("Found pre-order indicator, treating as available")
+                    return True
+
             # Check availability text
             availability = soup.select_one('.prod-ProductOffer-availabilityMsg')
             if availability:

@@ -2,6 +2,7 @@ import re
 import logging
 import requests
 from bs4 import BeautifulSoup
+from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text
 import time
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -21,9 +22,7 @@ class AmazonScraper:
     def __init__(self):
         """Initialize the Amazon scraper."""
         logger.debug("Initializing AmazonScraper")
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
+        self.headers = dict(DEFAULT_HEADERS)
     
     def scrape_product(self, url):
         """
@@ -36,7 +35,11 @@ class AmazonScraper:
             dict: Product information including name, price, availability, and image URL
         """
         try:
-            response = requests.get(url, headers=self.headers)
+            response = requests.get(url, headers=self.headers, timeout=REQUEST_TIMEOUT)
+            block_reason = detect_block_page(response.text)
+            if block_reason:
+                logger.warning(f"Amazon returned a block page for {url} (HTTP {response.status_code}): {block_reason}")
+                return None
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             
@@ -288,18 +291,23 @@ class AmazonScraper:
         """Extract product availability from Amazon page"""
         logger.debug("AmazonScraper: Extracting availability")
         try:
+            # Buy box buttons are the most reliable signal; #availability text alone
+            # reads pre-order / "will be released" wording as out of stock
+            for button_id in ('add-to-cart-button', 'buy-now-button'):
+                button = soup.find(id=button_id)
+                if button and not button.has_attr('disabled'):
+                    logger.debug(f"Found enabled #{button_id}, product is available")
+                    return True
+
             availability = soup.find(id='availability')
             if availability:
                 text = availability.get_text().strip().lower()
+                if is_preorder_text(text):
+                    logger.debug("Availability text says pre-order, treating as available")
+                    return True
                 available = 'in stock' in text
                 logger.debug(f"Found availability from availability element: {available}")
                 return available
-                
-            # Check add to cart button existence
-            add_to_cart = soup.find(id='add-to-cart-button')
-            if add_to_cart:
-                logger.debug("Found 'Add to Cart' button, product is available")
-                return True
             
             logger.warning("Could not determine product availability")
             return False
