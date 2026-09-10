@@ -10,17 +10,28 @@ services:
     volumes:
       - app_data:/app/data
       - app_logs:/app/logs
+      # Persistent Chrome profiles (retailer logins / cookies for the undetected-chromedriver
+      # scrapers and auto-cart) survive container restarts and rebuilds.
+      - chrome_profiles:/home/appuser/.chrome_profiles
+    # Chrome crashes with the default 64MB /dev/shm; give it a real shared-memory segment.
+    shm_size: 1g
     deploy:
       resources:
         limits:
           cpus: '2.0'
           memory: 2G
+    # Secrets (TWOCAPTCHA_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) are read straight
+    # from .env next to this file. They are deliberately NOT listed under `environment:`
+    # with ${VAR} interpolation, because shell/Windows-user env vars would take precedence
+    # over .env there. Copy .env.example to .env and fill them in. Never commit .env.
+    env_file:
+      - path: .env
+        required: false
     environment:
       - FLASK_ENV=production
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-here}
       - DATABASE_URI=sqlite:///data/product_tracker.db
       - DEBUG=${DEBUG:-0}
-      - TWOCAPTCHA_API_KEY=${TWOCAPTCHA_API_KEY:-34c6d7576786cffd62e7483403ff6fd1}
       - CHECK_INTERVAL_MINUTES=${CHECK_INTERVAL_MINUTES:-15}
       - CHECK_INTERVAL_SECONDS=${CHECK_INTERVAL_SECONDS:-0}
       - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-UTC}
@@ -35,4 +46,6 @@ volumes:
   app_data:
     driver: local
   app_logs:
+    driver: local
+  chrome_profiles:
     driver: local 
