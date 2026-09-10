@@ -2,7 +2,7 @@ from flask import Blueprint, render_template, redirect, url_for, flash, request,
 from app import db
 from app.models.product import Product, PriceHistory
 from app.scrapers import add_to_cart, detect_store_type, get_scraper, store_choices
-from app.tasks import check_all_products
+from app.tasks import check_all_products, get_store_backoff_state
 from app.notifications import send_product_alert
 from app.notifications.telegram import TelegramNotifier, get_telegram_settings
 from datetime import datetime, timedelta
@@ -110,7 +110,10 @@ def index():
     """Home page showing all tracked products."""
     # Query all products and order by availability (True first, then False)
     products = Product.query.order_by(Product.available.desc()).all()
-    return render_template('index.html', products=products)
+    # Which stores the scheduler is currently backing off from, so a blocked
+    # retailer reads as blocked instead of looking like a dead tracker.
+    return render_template('index.html', products=products,
+                           store_backoff=get_store_backoff_state())
 
 @main_bp.route('/product/add', methods=['GET', 'POST'])
 def add_product():

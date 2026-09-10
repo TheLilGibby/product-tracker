@@ -112,6 +112,57 @@ def reset_store_backoff():
     _store_failures.clear()
     _store_retry_at.clear()
 
+
+# Names for the dashboard. A store missing from here falls back to its key.
+STORE_LABELS = {
+    'amazon': 'Amazon',
+    'walmart': 'Walmart',
+    'newegg': 'Newegg',
+    'microcenter': 'Micro Center',
+    'bestbuy': 'Best Buy',
+    'bh': 'B&H',
+    'test': 'Test store',
+}
+
+
+def _minutes_until(moment, now):
+    """Whole minutes from now until moment, rounded up."""
+    return int(-(-(moment - now).total_seconds() // 60))
+
+
+def get_store_backoff_state(now=None):
+    """
+    One row per store the scheduler is currently having trouble with.
+
+    A store that is answering normally holds no state at all, so an empty list
+    means every store is fine. Each row is:
+
+        {'store_type', 'label', 'backed_off', 'failures',
+         'retry_at' (naive UTC, or None), 'minutes_remaining'}
+
+    Read without check_lock - the scheduler thread may be writing while a
+    request reads. The dict copies below are single C-level operations, and a
+    row that is a few seconds stale only affects what the page says.
+    """
+    now = now or datetime.utcnow()
+    failures = dict(_store_failures)
+    retry_times = dict(_store_retry_at)
+
+    rows = []
+    for store_type in sorted(set(failures) | set(retry_times)):
+        retry_at = retry_times.get(store_type)
+        backed_off = retry_at is not None and now < retry_at
+        rows.append({
+            'store_type': store_type,
+            'label': STORE_LABELS.get(store_type, store_type.title()),
+            'backed_off': backed_off,
+            'failures': failures.get(store_type, 0),
+            'retry_at': retry_at if backed_off else None,
+            # Rounded up, so a store due in 40 seconds reads "1 min", not "0 min".
+            'minutes_remaining': (_minutes_until(retry_at, now) if backed_off else 0),
+        })
+    return rows
+
 def check_all_products():
     """
     Check all products in the database for updates.
