@@ -48,12 +48,17 @@ def _backoff_settings():
     Falls back to the defaults outside an application context so the helpers
     below stay usable from a script or a test.
     """
-    try:
-        config = current_app.config
-    except RuntimeError:
-        config = {}
+    config = _config()
     return (int(config.get('STORE_BACKOFF_FAILURES', DEFAULT_STORE_BACKOFF_FAILURES)),
             float(config.get('STORE_BACKOFF_MINUTES', DEFAULT_STORE_BACKOFF_MINUTES)))
+
+
+def _config():
+    """current_app.config, or an empty mapping outside an app context."""
+    try:
+        return current_app.config
+    except RuntimeError:
+        return {}
 
 
 def store_is_backed_off(store_type, now=None):
@@ -111,6 +116,44 @@ def reset_store_backoff():
     """Forget every store's backoff state. For tests and manual recovery."""
     _store_failures.clear()
     _store_retry_at.clear()
+
+
+# --------------------------------------------------------------------------
+# Per-store check intervals
+#
+# The scheduler runs on one global interval, but not every store can take it.
+# A store listed in STORE_CHECK_INTERVALS is only scraped once its own interval
+# has passed; everything else keeps the global cadence.
+def store_check_interval(store_type):
+    """
+    Minutes between checks for this store, or None when it has no setting of
+    its own and just follows the scheduler's global interval.
+    """
+    intervals = _config().get('STORE_CHECK_INTERVALS') or {}
+    try:
+        return float(intervals[store_type])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def store_check_is_due(store_type, last_checked, now=None):
+    """
+    False only when a store has an interval of its own and was checked inside it.
+
+    A store with no setting is left to the scheduler's cadence rather than
+    gated here. Gating it on the global interval would read the same on a
+    scheduled run and break the "Update All Products" button, which calls
+    check_all_products directly and must still refresh what the user asked for.
+    """
+    interval = store_check_interval(store_type)
+    if interval is None or interval <= 0 or last_checked is None:
+        return True
+
+    # The grace keeps a store whose interval matches the scheduler's own from
+    # slipping a whole cycle when a run starts a moment early.
+    grace = min(60.0, interval * 60.0 * 0.1)
+    elapsed = ((now or datetime.utcnow()) - last_checked).total_seconds()
+    return elapsed >= (interval * 60.0) - grace
 
 
 # Names for the dashboard. A store missing from here falls back to its key.
@@ -232,6 +275,13 @@ def check_all_products():
                     # still shows when the figures were last known good.
                     if store_is_backed_off(store_type):
                         logger.debug(f"Skipping product {product.id}: {store_type} is backing off")
+                        continue
+
+                    # Stores that cannot take the global cadence wait for their
+                    # own interval, again keeping their stored data untouched.
+                    if not store_check_is_due(store_type, product.last_checked):
+                        logger.debug(f"Skipping product {product.id}: {store_type} was checked "
+                                     f"less than {store_check_interval(store_type):g} minutes ago")
                         continue
 
                     # Get appropriate scraper
