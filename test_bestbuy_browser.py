@@ -209,7 +209,9 @@ class FakeElement:
         return True
 
     def click(self):
-        self._driver.clicks.append(self.text or self.get_attribute('data-testid'))
+        # Recorded by test id, not label: the checks below need to tell two
+        # buttons apart that both read "Add to Cart".
+        self._driver.clicks.append(self.get_attribute('data-testid') or self.text)
 
 
 class FakeDriver:
@@ -304,15 +306,17 @@ def run_cart_verification_checks():
          False, "Could not identify"),
     ]
 
-    failures = 0
-    for label, product_page, cart_page, url, expected, fragment in cases:
+    def run(product_page, cart_page, url):
         scraper = BestBuyScraper.__new__(BestBuyScraper)  # skip __init__: no profile dir, no Chrome lookup
         scraper.current_product_url = url
         scraper.current_sku = BestBuyScraper.extract_sku(url)
         scraper._human_pause = lambda *a, **k: None
         driver = FakeDriver(product_page, cart_page, url)
+        return scraper._add_to_cart_with_driver(driver, 1), driver
 
-        result = scraper._add_to_cart_with_driver(driver, 1)
+    failures = 0
+    for label, product_page, cart_page, url, expected, fragment in cases:
+        result, driver = run(product_page, cart_page, url)
         ok = (result['success'] is expected
               and fragment.lower() in result['message'].lower()
               and driver.clicks
@@ -321,6 +325,20 @@ def run_cart_verification_checks():
         failures += 0 if ok else 1
         print(f"  [{'ok' if ok else 'FAIL'}] {label} -> success={result['success']} "
               f"({result['message'][:70]})")
+
+    # A recommendation rail's own add-to-cart button, rendered before the buy
+    # box. Best Buy ids every add-to-cart control by the SKU it adds, so a
+    # foreign SKU is proof the button belongs to another product - which is the
+    # only thing that distinguishes these two, since both read "Add to Cart".
+    pdp_with_rail = PDP_AFTER_CLICK.format(
+        name='Fixture Product', testid=f'pdp-add-to-cart-{sku}', toast=ADDED_TOAST
+    ).replace('<h1>', f'<button data-testid="pdp-add-to-cart-6543210">Add to Cart</button><h1>')
+
+    result, driver = run(pdp_with_rail, cart_with_item, TARGETS[0])
+    ok = result['success'] is True and driver.clicks == [f'pdp-add-to-cart-{sku}']
+    failures += 0 if ok else 1
+    print(f"  [{'ok' if ok else 'FAIL'}] clicks the buy box, not a recommendation's button "
+          f"-> clicked {driver.clicks}")
 
     return failures
 
