@@ -16,6 +16,29 @@ from PIL import Image
 # Set up logging
 logger = logging.getLogger('app.scrapers.amazon')
 
+# Amazon builds the buy box out of one of three feature divs, and which one it
+# picks is the clearest statement of whether the listing can be ordered at all:
+#   desktop_qualifiedBuyBox        - a real offer, in stock or open for pre-order
+#   outOfStockBuyBox_feature_div   - "Currently unavailable"
+#   unqualifiedBuyBox_feature_div  - no offer at all, only "See All Buying Options"
+QUALIFIED_BUY_BOX_ID = 'desktop_qualifiedBuyBox'
+UNORDERABLE_BUY_BOX_IDS = ('outOfStockBuyBox_feature_div', 'unqualifiedBuyBox_feature_div')
+
+# Wording Amazon uses in #availability / #outOfStock when nothing can be ordered
+UNAVAILABLE_MARKERS = (
+    'currently unavailable',
+    'temporarily out of stock',
+    'out of stock',
+    'currently not available',
+    'no longer available',
+    'not available for purchase',
+)
+
+# "in stock" as a claim of its own. Amazon's out-of-stock message ends "...we
+# don't know when or if this item will be back in stock", and a plain substring
+# test on that reported the Zelda 40th console as available.
+IN_STOCK_RE = re.compile(r'(?<!back )\bin stock\b', re.IGNORECASE)
+
 class AmazonScraper:
     """Scraper specifically for Amazon products"""
     
@@ -288,32 +311,102 @@ class AmazonScraper:
             return None
     
     def extract_availability(self, soup):
-        """Extract product availability from Amazon page"""
+        """
+        Extract product availability from an Amazon page.
+
+        "Available" means the listing can be ordered right now - in stock, or open
+        for pre-order. A listing Amazon is not selling reads False even when the
+        page still carries a price, a hidden add-to-cart form or a marketplace
+        offer under "See All Buying Options".
+        """
         logger.debug("AmazonScraper: Extracting availability")
         try:
-            # Buy box buttons are the most reliable signal; #availability text alone
-            # reads pre-order / "will be released" wording as out of stock
-            for button_id in ('add-to-cart-button', 'buy-now-button'):
-                button = soup.find(id=button_id)
-                if button and not button.has_attr('disabled'):
-                    logger.debug(f"Found enabled #{button_id}, product is available")
-                    return True
+            # 1. Which buy box Amazon rendered. The most reliable signal there is,
+            #    and it does not depend on wording.
+            if soup.find(id=QUALIFIED_BUY_BOX_ID) is None:
+                for box_id in UNORDERABLE_BUY_BOX_IDS:
+                    if soup.find(id=box_id) is not None:
+                        logger.debug(f"Page rendered #{box_id} and no qualified buy box; not orderable")
+                        return False
 
-            availability = soup.find(id='availability')
-            if availability:
-                text = availability.get_text().strip().lower()
-                if is_preorder_text(text):
-                    logger.debug("Availability text says pre-order, treating as available")
-                    return True
-                available = 'in stock' in text
-                logger.debug(f"Found availability from availability element: {available}")
-                return available
-            
-            logger.warning("Could not determine product availability")
-            return False
+            # 2. What the page says. Checked before the buttons: Amazon keeps
+            #    rendering add-to-cart markup on listings it will not sell.
+            text = self._availability_text(soup)
+            marker = next((m for m in UNAVAILABLE_MARKERS if m in text), None)
+            if marker:
+                logger.debug(f"Availability text says {marker!r}, product is not orderable")
+                return False
+
+            # 3. A live buy box button. #availability alone reads pre-order /
+            #    "will be released" wording as out of stock, so this comes first
+            #    among the positive signals.
+            button = self._buy_box_button(soup)
+            if button is not None:
+                logger.debug(f"Found a live #{button.get('id')}, product is available")
+                return True
+
+            if not text:
+                logger.warning("Could not determine product availability")
+                return False
+            if is_preorder_text(text):
+                logger.debug("Availability text says pre-order, treating as available")
+                return True
+            available = bool(IN_STOCK_RE.search(text))
+            logger.debug(f"Found availability from availability element: {available}")
+            return available
         except Exception as e:
             logger.error(f"Error extracting availability: {str(e)}")
             return False
+
+    @staticmethod
+    def _availability_text(soup):
+        """Lowercased text of the availability blocks, or '' when the page has none."""
+        parts = []
+        for element_id in ('availability', 'outOfStock'):
+            element = soup.find(id=element_id)
+            if element:
+                parts.append(element.get_text(' ', strip=True))
+        return ' '.join(parts).strip().lower()
+
+    def _buy_box_button(self, soup):
+        """
+        The add-to-cart / buy-now control, but only when it is a live button in a
+        buy box that is actually selling something. Returns None otherwise.
+        """
+        for button_id in ('add-to-cart-button', 'buy-now-button'):
+            for button in soup.find_all(id=button_id):
+                reason = self._button_dead_reason(button)
+                if reason:
+                    logger.debug(f"Ignoring #{button_id}: {reason}")
+                    continue
+                return button
+        return None
+
+    @staticmethod
+    def _button_dead_reason(button):
+        """
+        Why this buy-box button should not count as an offer, or None if it counts.
+
+        Amazon disables the control with either the `disabled` attribute or the
+        a-button-disabled class on the wrapper span, hides the whole form with
+        aok-hidden, and keeps a full add-to-cart form inside the unqualified buy
+        box on listings that have no offer at all.
+        """
+        if button.has_attr('disabled') or button.get('aria-disabled') == 'true':
+            return 'disabled'
+        for element in [button] + list(button.parents):
+            if not hasattr(element, 'get'):
+                continue
+            if (element.get('id') or '') in UNORDERABLE_BUY_BOX_IDS:
+                return f"inside #{element.get('id')}"
+            classes = element.get('class') or []
+            if 'a-button-disabled' in classes:
+                return 'disabled button widget'
+            if 'aok-hidden' in classes or 'a-hidden' in classes:
+                return 'inside a hidden container'
+            if 'display:none' in (element.get('style') or '').replace(' ', ''):
+                return 'inside a display:none container'
+        return None
     
     def extract_image_url(self, soup):
         """Extract product image URL from Amazon page"""
