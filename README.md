@@ -30,6 +30,11 @@ You can customize the application by setting the following environment variables
 - `CHECK_INTERVAL_MINUTES`: How often to check products in minutes (default: `15`)
 - `CHECK_INTERVAL_SECONDS`: Additional seconds for check interval (default: `0`)
 - `DEFAULT_TIMEZONE`: Default timezone for displaying times (default: `UTC`)
+- `TELEGRAM_BOT_TOKEN`: Telegram bot token from @BotFather (optional, enables Telegram alerts)
+- `TELEGRAM_CHAT_ID`: Chat/channel/group id the bot posts alerts to (required with `TELEGRAM_BOT_TOKEN`)
+
+The easiest way to set these is a `.env` file next to `docker-compose.yml` (copy `.env.example`);
+Docker Compose reads it automatically. Never commit `.env`.
 
 ### Building and Running
 

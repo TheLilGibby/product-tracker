@@ -1,0 +1,6 @@
+# Files that are executed inside the Linux container must keep LF line endings,
+# otherwise 'exec /app/start.sh: no such file or directory' (CRLF shebang) on Windows checkouts.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+.dockerignore text eol=lf
+*.py        text eol=lf
