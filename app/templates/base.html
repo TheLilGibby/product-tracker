@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Product Tracker{% endblock %}</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/simple-css-framework@2.0.3/dist/simple.min.css">
+    {# Simple.css 2.3.1 (https://simplecss.org, MIT), vendored: the old CDN package name never existed and 404'd #}
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/simple.min.css') }}">
     <style>
         /* Custom styles to enhance SimpleCSS */
         :root {
@@ -219,7 +220,7 @@
             <nav>
                 <a href="{{ url_for('main.index') }}">Home</a>
                 <a href="{{ url_for('main.add_product') }}">Add Product</a>
-                <a href="{{ url_for('main.add_test_product') }}">Add Test Product</a>
+                <a href="{{ url_for('main.test_auto_cart') }}">Add Test Product</a>
                 <a href="{{ url_for('main.test_cart') }}">Test Auto-Cart</a>
                 <a href="{{ url_for('main.cart_successes') }}" class="cart-link">
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem; vertical-align: text-bottom;">
