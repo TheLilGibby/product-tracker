@@ -409,7 +409,8 @@ class WalmartScraper:
             # Verify on the cart page rather than trusting the confirmation toast
             driver.get(WALMART_CART_URL)
             time.sleep(4)
-            obstacle = self._page_obstacle(driver)
+            # An empty cart here means the click did not take - not a bot wall
+            obstacle = self._page_obstacle(driver, expect_product=False)
             if obstacle:
                 return self._cart_result(False, obstacle, driver=driver)
 
@@ -490,9 +491,15 @@ class WalmartScraper:
             'screenshot': screenshot,
         }
 
-    def _page_obstacle(self, driver):
-        """Return a failure message if the current page is a bot wall or a login wall, else None"""
-        block_reason = detect_block_page(driver.page_source)
+    def _page_obstacle(self, driver, expect_product=True):
+        """
+        Return a failure message if the current page is a bot wall or a login wall, else None.
+
+        Pass expect_product=False when the page is the cart rather than a
+        product page: an empty cart is small and names no product, and would
+        otherwise be reported as bot protection.
+        """
+        block_reason = detect_block_page(driver.page_source, expect_product=expect_product)
         if block_reason:
             return (f"Walmart showed a bot-protection page ({block_reason}). Run "
                     "`python test_walmart_cart.py --login` once to clear it in a visible window")
