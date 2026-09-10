@@ -20,6 +20,98 @@ scheduler = None
 # Lock for check_all_products to prevent concurrent execution
 check_lock = threading.Lock()
 
+# --------------------------------------------------------------------------
+# Per-store backoff
+#
+# The retailers with bot protection answer a burst of failed scrapes by
+# blocking harder and for longer: Best Buy's Akamai starts serving block pages
+# to every request, Target puts up the PX press-and-hold. Retrying that store
+# on every check cycle is what turns a minute of rate limiting into hours of
+# block pages, so a store that keeps failing is left alone for a while.
+#
+# Defaults: two consecutive failures buy 15 minutes of quiet, and each further
+# failure doubles that up to an hour.
+DEFAULT_STORE_BACKOFF_FAILURES = 2
+DEFAULT_STORE_BACKOFF_MINUTES = 15
+STORE_BACKOFF_MAX_MINUTES = 60
+
+# store_type -> consecutive failed scrapes, and the UTC time it may be tried
+# again. Only touched from check_all_products, which check_lock serializes.
+_store_failures = {}
+_store_retry_at = {}
+
+
+def _backoff_settings():
+    """
+    (failures before backing off, first backoff in minutes) from app config.
+
+    Falls back to the defaults outside an application context so the helpers
+    below stay usable from a script or a test.
+    """
+    try:
+        config = current_app.config
+    except RuntimeError:
+        config = {}
+    return (int(config.get('STORE_BACKOFF_FAILURES', DEFAULT_STORE_BACKOFF_FAILURES)),
+            float(config.get('STORE_BACKOFF_MINUTES', DEFAULT_STORE_BACKOFF_MINUTES)))
+
+
+def store_is_backed_off(store_type, now=None):
+    """
+    True when this store failed too often recently and should be skipped.
+
+    Logs one INFO the first time a store comes due again, so the log says why
+    a store went quiet and when it came back.
+    """
+    retry_at = _store_retry_at.get(store_type)
+    if retry_at is None:
+        return False
+
+    now = now or datetime.utcnow()
+    if now < retry_at:
+        return True
+
+    del _store_retry_at[store_type]
+    logger.info(f"Retrying {store_type} after backoff "
+                f"({_store_failures.get(store_type, 0)} consecutive failures so far)")
+    return False
+
+
+def record_store_failure(store_type, reason, now=None):
+    """
+    Count a failed scrape and, once there have been enough, put the store on ice.
+
+    Returns the number of consecutive failures. The WARNING fires only when the
+    store actually enters backoff, so it is one line per cycle at worst.
+    """
+    failures = _store_failures.get(store_type, 0) + 1
+    _store_failures[store_type] = failures
+    threshold, base_minutes = _backoff_settings()
+
+    if failures < threshold:
+        logger.debug(f"{store_type} scrape failed ({reason}); "
+                     f"{failures} of {threshold} before backing off")
+        return failures
+
+    minutes = min(base_minutes * (2 ** (failures - threshold)), STORE_BACKOFF_MAX_MINUTES)
+    _store_retry_at[store_type] = (now or datetime.utcnow()) + timedelta(minutes=minutes)
+    logger.warning(f"{store_type} has failed {failures} scrapes in a row ({reason}); "
+                   f"skipping its products for {minutes:g} minutes")
+    return failures
+
+
+def record_store_success(store_type):
+    """Clear a store's failure history after a scrape that actually worked."""
+    if _store_failures.pop(store_type, None):
+        logger.info(f"{store_type} is answering again; backoff cleared")
+    _store_retry_at.pop(store_type, None)
+
+
+def reset_store_backoff():
+    """Forget every store's backoff state. For tests and manual recovery."""
+    _store_failures.clear()
+    _store_retry_at.clear()
+
 def check_all_products():
     """
     Check all products in the database for updates.
@@ -62,6 +154,13 @@ def check_all_products():
                         logger.error(f"Could not determine store type for URL: {product.url}")
                         continue
                     
+                    # Leave a blocked or rate-limited store alone. The product
+                    # keeps its stored data and its last_checked, so the page
+                    # still shows when the figures were last known good.
+                    if store_is_backed_off(store_type):
+                        logger.debug(f"Skipping product {product.id}: {store_type} is backing off")
+                        continue
+
                     # Get appropriate scraper
                     try:
                         scraper = get_scraper(store_type)
@@ -82,11 +181,15 @@ def check_all_products():
                             
                         if not product_data:
                             logger.error(f"Failed to retrieve data for product {product.id}")
+                            record_store_failure(store_type, 'scrape returned no data')
                             continue
                     except Exception as e:
                         logger.error(f"Error scraping product {product.id}: {str(e)}")
+                        record_store_failure(store_type, f"scrape raised {type(e).__name__}")
                         continue
                     
+                    record_store_success(store_type)
+
                     # Update product with new data
                     old_price = product.current_price
                     old_availability = product.available
