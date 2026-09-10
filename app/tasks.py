@@ -5,7 +5,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from flask import current_app
 from app import db
 from app.models.product import Product, PriceHistory
-from app.scrapers import get_scraper
+from app.scrapers import detect_store_type, get_scraper
 from app.notifications import send_product_alert
 import urllib.parse
 import threading
@@ -53,34 +53,10 @@ def check_all_products():
             products = Product.query.all()
             logger.info(f"Found {len(products)} products to check")
             
-            # Map domains to store types
-            domain_to_store = {
-                'amazon.com': 'amazon',
-                'www.amazon.com': 'amazon',
-                'walmart.com': 'walmart',
-                'www.walmart.com': 'walmart',
-                'newegg.com': 'newegg',
-                'www.newegg.com': 'newegg',
-                'microcenter.com': 'microcenter',
-                'www.microcenter.com': 'microcenter',
-                'bestbuy.com': 'bestbuy',
-                'www.bestbuy.com': 'bestbuy',
-                'bhphotovideo.com': 'bh',
-                'www.bhphotovideo.com': 'bh',
-                'target.com': 'target',
-                'www.target.com': 'target',
-                'test-store.example.com': 'test',
-            }
-            
             for product in products:
                 try:
-                    # Get store type from URL domain
-                    domain = urllib.parse.urlparse(product.url).netloc.lower()
-                    store_type = None
-                    for d, s in domain_to_store.items():
-                        if d in domain:
-                            store_type = s
-                            break
+                    # Store detection lives in app/scrapers; see STORE_DOMAINS there.
+                    store_type = detect_store_type(product.url)
                     
                     if not store_type:
                         logger.error(f"Could not determine store type for URL: {product.url}")
@@ -328,40 +304,14 @@ def check_auto_cart_opportunities():
     logger.info(f"Found {len(eligible_products)} products eligible for auto-cart")
 
     from app.scrapers import add_to_cart
-    from urllib.parse import urlparse
-    
-    # Map domains to store types
-    domain_to_store = {
-        'amazon.com': 'amazon',
-        'www.amazon.com': 'amazon',
-        'walmart.com': 'walmart',
-        'www.walmart.com': 'walmart',
-        'newegg.com': 'newegg',
-        'www.newegg.com': 'newegg',
-        'microcenter.com': 'microcenter',
-        'www.microcenter.com': 'microcenter',
-        'bestbuy.com': 'bestbuy',
-        'www.bestbuy.com': 'bestbuy',
-        'bhphotovideo.com': 'bh',
-        'www.bhphotovideo.com': 'bh',
-        'target.com': 'target',
-        'www.target.com': 'target',
-        'test-store.example.com': 'test',
-    }
     
     # Track if we had any successful cart additions
     had_successful_cart = False
     
     for product in eligible_products:
         try:
-            # Determine store type from URL
-            domain = urlparse(product.url).netloc.lower()
-            
-            store_type = None
-            for d, s in domain_to_store.items():
-                if d in domain:
-                    store_type = s
-                    break
+            # Store detection lives in app/scrapers; see STORE_DOMAINS there.
+            store_type = detect_store_type(product.url)
             
             if not store_type:
                 logger.warning(f"Could not determine store type for {product.url}")
