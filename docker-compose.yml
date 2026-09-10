@@ -42,6 +42,22 @@ services:
       timeout: 10s
       retries: 3
 
+  # Optional: expose the dashboard on the internet through a Cloudflare quick tunnel so the
+  # Telegram snapshot link opens from a phone. Opt-in:  docker compose --profile tunnel up -d
+  # The public https://<random>.trycloudflare.com URL is printed in this container's log:
+  #   docker compose --profile tunnel logs tunnel | grep trycloudflare
+  # Put it in .env as PUBLIC_URL=https://... (it changes every time the tunnel restarts) and
+  # restart app-tracker so the snapshot caption links to it. For a stable hostname use a named
+  # tunnel with a Cloudflare account and replace the command with `tunnel run --token <token>`.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: app-tracker-tunnel
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://app-tracker:5000
+    depends_on:
+      - app-tracker
+
 volumes:
   app_data:
     driver: local

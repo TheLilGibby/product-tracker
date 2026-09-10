@@ -222,6 +222,19 @@ def init_scheduler(app):
             replace_existing=True
         )
         
+        # Optional third job: post a dashboard screenshot to Telegram on an interval (0 = off)
+        snapshot_minutes = app.config.get('SNAPSHOT_INTERVAL_MINUTES', 0) or 0
+        if snapshot_minutes > 0:
+            app.scheduler.add_job(
+                func=lambda: send_dashboard_snapshot_with_context(app),
+                trigger='interval',
+                minutes=snapshot_minutes,
+                id='telegram_snapshot',
+                name='Send dashboard snapshot to Telegram',
+                replace_existing=True
+            )
+            logger.info(f"Dashboard snapshot to Telegram scheduled every {snapshot_minutes} minutes")
+        
         # Start the scheduler
         app.scheduler.start()
         logger.info("Scheduler started")
@@ -254,6 +267,22 @@ def check_auto_cart_opportunities_with_context(app):
             check_auto_cart_opportunities()
         except Exception as e:
             logger.error(f"Error in auto cart opportunity check: {str(e)}", exc_info=True)
+
+def send_dashboard_snapshot_with_context(app):
+    """
+    Run the Telegram dashboard snapshot in the application context.
+    
+    Args:
+        app: Flask application instance
+    """
+    with app.app_context():
+        try:
+            from app.snapshot import send_dashboard_snapshot
+            result = send_dashboard_snapshot()
+            if not result.get('success'):
+                logger.warning(f"Scheduled dashboard snapshot failed: {result.get('message')}")
+        except Exception as e:
+            logger.error(f"Error in scheduled dashboard snapshot: {str(e)}", exc_info=True)
 
 def check_auto_cart_opportunities():
     """

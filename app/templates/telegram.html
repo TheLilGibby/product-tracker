@@ -56,6 +56,21 @@ TELEGRAM_CHAT_ID=-1001234567890</pre>
     </article>
 
     <article style="margin-bottom: 2rem;">
+        <h3>Dashboard Snapshot</h3>
+        <p>Post a screenshot of this dashboard to the channel so you can check on tracked products from your phone.</p>
+        <form method="post" action="{{ url_for('main.telegram_snapshot') }}">
+            <button type="submit" {% if not configured %}disabled{% endif %}>Send Dashboard Snapshot</button>
+        </form>
+        <p style="font-size: 0.875rem; color: #6c757d;">
+            Takes a few seconds (headless Chrome renders the page).
+            Set <code>PUBLIC_URL</code> in <code>.env</code> to add a tap-to-open link (see the Cloudflare tunnel in the README),
+            and <code>SNAPSHOT_INTERVAL_MINUTES</code> to send one automatically on a schedule.
+            JSON: <code>POST {{ url_for('main.api_telegram_snapshot', _external=True) }}</code>
+            with an optional <code>{"path": "/product/3"}</code>.
+        </p>
+    </article>
+
+    <article style="margin-bottom: 2rem;">
         <h3>API</h3>
         <p>Other tools can push alerts into the channel through this endpoint:</p>
         <pre style="font-size: 0.8rem;">POST {{ url_for('main.api_telegram_send', _external=True) }}

@@ -161,3 +161,51 @@ class TelegramNotifier:
         return TelegramNotifier.send_message(
             "\n".join(lines), image_url=image_url, bot_token=bot_token, chat_id=chat_id
         )
+
+    @staticmethod
+    def send_photo_file(image_bytes, caption='', bot_token=None, chat_id=None, filename='snapshot.png'):
+        """
+        Upload an image from memory to the Telegram channel (multipart sendPhoto).
+
+        Use this for locally rendered images such as dashboard screenshots: the
+        image_url path of send_message only works for URLs that Telegram's own
+        servers can fetch, which a localhost page is not.
+
+        Args:
+            image_bytes: PNG/JPEG bytes
+            caption: Optional HTML caption (truncated to Telegram's 1024-char limit)
+            bot_token / chat_id: Optional overrides for the configured channel
+            filename: File name reported to Telegram for the upload
+
+        Returns:
+            Boolean indicating success or failure
+        """
+        default_token, default_chat = get_telegram_settings()
+        bot_token = bot_token or default_token
+        chat_id = chat_id or default_chat
+
+        if not bot_token or not chat_id:
+            logger.debug("Telegram not configured; skipping photo upload")
+            return False
+        if not image_bytes:
+            logger.warning("Telegram photo upload skipped: no image data")
+            return False
+
+        caption = caption or ''
+        if len(caption) > TELEGRAM_CAPTION_LIMIT:
+            caption = caption[:TELEGRAM_CAPTION_LIMIT - 1] + '…'
+
+        try:
+            response = requests.post(
+                f"{TELEGRAM_API_BASE}/bot{bot_token}/sendPhoto",
+                data={"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
+                files={"photo": (filename, image_bytes, "image/png")},
+                timeout=60,
+            )
+            if response.ok and response.json().get("ok"):
+                return True
+            logger.error(f"Telegram sendPhoto (upload) failed ({response.status_code}): {response.text[:200]}")
+            return False
+        except Exception as e:
+            logger.error(f"Error uploading photo to Telegram: {e}")
+            return False

@@ -39,6 +39,15 @@ class Config:
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     
+    # Public base URL of this app (e.g. a Cloudflare tunnel) used for links in Telegram; blank = none
+    PUBLIC_URL = os.environ.get('PUBLIC_URL', '').strip().rstrip('/')
+    
+    # Post a dashboard screenshot to Telegram every N minutes (0 = off)
+    try:
+        SNAPSHOT_INTERVAL_MINUTES = int(os.environ.get('SNAPSHOT_INTERVAL_MINUTES', 0) or 0)
+    except ValueError:
+        SNAPSHOT_INTERVAL_MINUTES = 0
+    
     @staticmethod
     def init_app(app):
         """Initialize app with this configuration."""

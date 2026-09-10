@@ -72,6 +72,29 @@ The application data is stored in Docker volumes to ensure persistence across co
 
 - `app_data`: Contains the SQLite database
 - `app_logs`: Contains the application logs
+- `chrome_profiles`: Chrome profiles for the browser scrapers, so retailer logins survive restarts
+
+### Dashboard snapshots in Telegram
+
+With Telegram configured, the **Telegram** page has a *Send Dashboard Snapshot* button that renders the
+dashboard with headless Chrome inside the container and posts the PNG to your channel, so you can check
+on tracked products from your phone. `POST /api/telegram/snapshot` does the same (optional JSON body
+`{"path": "/product/3"}`), and `SNAPSHOT_INTERVAL_MINUTES=30` in `.env` sends one automatically.
+
+To make the caption link open the live dashboard from your phone, expose the app with the optional
+Cloudflare quick-tunnel sidecar (no account needed):
+
+```
+docker compose --profile tunnel up -d
+docker compose --profile tunnel logs tunnel | grep trycloudflare
+```
+
+Copy the printed `https://<random>.trycloudflare.com` URL into `.env` as `PUBLIC_URL=...` and run
+`docker compose up -d` again. The quick-tunnel URL changes every time the tunnel container restarts;
+for a stable hostname create a named tunnel in your Cloudflare account and use `tunnel run --token ...`
+as the sidecar command. ngrok (`ngrok http 5000`) works the same way if you prefer it.
+
+Quick check from the shell: `docker compose exec app-tracker python test_snapshot.py --send`.
 
 ### Updating
 
