@@ -266,6 +266,30 @@ def check_delay_schedule():
     return failures
 
 
+def check_delay_cap_is_configurable():
+    """STORE_BACKOFF_MAX_MINUTES moves the ceiling the doubling stops at."""
+    print("The cap is configurable")
+    failures = 0
+    tasks.reset_store_backoff()
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    config = current_app.config
+    previous = config.get('STORE_BACKOFF_MAX_MINUTES')
+    config['STORE_BACKOFF_MAX_MINUTES'] = 20
+    try:
+        seen = []
+        for _ in range(4):
+            tasks.record_store_failure('bestbuy', 'unit check', now=now)
+            retry_at = tasks._store_retry_at.get('bestbuy')
+            seen.append(None if retry_at is None else round((retry_at - now).total_seconds() / 60))
+    finally:
+        config['STORE_BACKOFF_MAX_MINUTES'] = previous
+
+    failures += report(seen == [None, 15, 20, 20], 'the doubling stops at the configured 20 minutes',
+                       str(seen))
+    tasks.reset_store_backoff()
+    return failures
+
+
 def check_success_resets():
     """One good scrape wipes the failure history."""
     print("A successful scrape clears the backoff")
@@ -454,6 +478,7 @@ CHECKS = [
     check_backed_off_store_is_skipped,
     check_retry_and_doubling,
     check_delay_schedule,
+    check_delay_cap_is_configurable,
     check_success_resets,
     check_exception_counts_as_failure,
     check_auto_cart_is_untouched,
