@@ -13,6 +13,7 @@ from app.scrapers.bestbuy_scraper import BestBuyScraper
 from app.scrapers.bh_scraper import BHScraper
 from app.scrapers.test_scraper import TestScraper
 from app.scrapers.adorama_scraper import AdoramaScraper
+from app.scrapers.target_scraper import TargetScraper
 
 # Set up logging
 logger = logging.getLogger('app.scrapers')
@@ -41,6 +42,7 @@ def get_scraper(store_type):
         'bh': BHScraper,
         'test': TestScraper,
         'adorama': AdoramaScraper,
+        'target': TargetScraper,
     }
     
     if store_type not in scrapers:

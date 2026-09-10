@@ -67,6 +67,8 @@ def check_all_products():
                 'www.bestbuy.com': 'bestbuy',
                 'bhphotovideo.com': 'bh',
                 'www.bhphotovideo.com': 'bh',
+                'target.com': 'target',
+                'www.target.com': 'target',
                 'test-store.example.com': 'test',
             }
             
@@ -314,6 +316,8 @@ def check_auto_cart_opportunities():
         'www.bestbuy.com': 'bestbuy',
         'bhphotovideo.com': 'bh',
         'www.bhphotovideo.com': 'bh',
+        'target.com': 'target',
+        'www.target.com': 'target',
         'test-store.example.com': 'test',
     }
     
