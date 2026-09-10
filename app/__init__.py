@@ -24,6 +24,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger('app')
 
+# urllib3 logs every request URL at DEBUG, which for the Telegram Bot API means
+# the bot token ends up in app.log. Keep HTTP client logging at INFO.
+logging.getLogger('urllib3').setLevel(logging.INFO)
+
 def create_app(config_name='default'):
     """
     Create and configure the Flask application.
@@ -84,11 +88,9 @@ def create_app(config_name='default'):
     with app.app_context():
         db.create_all()
     
-    # Initialize scheduler for periodic tasks
-    from app.tasks import init_scheduler
-    init_scheduler(app)
-    
-    # Initialize and start the scheduler if not in testing mode
+    # Initialize and start the scheduler if not in testing mode. This must run
+    # exactly once: every init_scheduler() call starts a BackgroundScheduler and
+    # a second one made check_auto_cart_opportunities fire twice per minute.
     if not app.config.get('TESTING', False):
         global scheduler
         from app.tasks import init_scheduler

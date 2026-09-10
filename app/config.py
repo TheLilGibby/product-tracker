@@ -34,7 +34,10 @@ class Config:
     # Time display format preference (24-hour/military or 12-hour/AM-PM)
     # Options: '24h' or '12h'
     TIME_FORMAT = os.environ.get('TIME_FORMAT', '24h')
-    
+
+    # Minimum minutes between auto-cart attempts for the same product
+    AUTO_CART_COOLDOWN_MINUTES = int(os.environ.get('AUTO_CART_COOLDOWN_MINUTES', 30))
+
     @staticmethod
     def init_app(app):
         """Initialize app with this configuration."""
