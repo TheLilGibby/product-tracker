@@ -9,6 +9,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from bs4 import BeautifulSoup
+from app.scrapers.common import CHROME_VERSION, DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text, detect_chrome_major
 import platform
 import os
 import random
@@ -56,7 +57,7 @@ class NeweggScraper:
                 logger.warning("No proxy API URL configured")
                 return []
                 
-            response = requests.get(proxy_url)
+            response = requests.get(proxy_url, timeout=REQUEST_TIMEOUT)
             if response.status_code == 200:
                 # Format depends on your proxy provider
                 return response.json()
@@ -781,7 +782,7 @@ class NeweggScraper:
                 options.page_load_strategy = 'eager'
                 
                 # Create a new browser instance
-                driver = uc.Chrome(options=options)
+                driver = uc.Chrome(options=options, version_main=detect_chrome_major())
                 
                 logger.debug(f"Accessing URL: {url}")
                 
@@ -847,42 +848,30 @@ class NeweggScraper:
         # If all retries failed, use simplified HTTP-based scraping as a fallback
         try:
             logger.info(f"Using HTTP-based fallback scraper for {url}")
-            return self.scrape_via_requests(url, product_id)
+            product_data = self.scrape_via_requests(url, product_id)
+            if product_data:
+                return product_data
         except Exception as e:
             logger.error(f"Error using fallback scraper: {str(e)}")
-        
-        # As a last resort, return basic information based on product ID
-        if product_id:
-            product_name = f"Newegg Product {product_id}"
-            logger.info(f"Using fallback product name: {product_name}")
-            return {
-                'name': product_name,
-                'price': None,
-                'available': False,
-                'image_url': None
-            }
-        
-        # Last resort fallback
-        return {
-            'name': "Newegg Product (URL: " + url.split('/')[-1] + ")",
-            'price': None,
-            'available': False,
-            'image_url': None
-        }
+
+        # Nothing usable was extracted. Return None so callers keep the stored
+        # name/price/availability instead of overwriting them with placeholders.
+        logger.warning(f"Could not extract Newegg product data for {url}; leaving stored data unchanged")
+        return None
     
     def scrape_via_requests(self, url, product_id=None):
         """Simple HTTP-based scraping as a fallback when Selenium fails."""
         logger.info(f"Attempting to scrape Newegg product via direct HTTP request: {url}")
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'User-Agent': DEFAULT_HEADERS['User-Agent'],
+            'Accept': DEFAULT_HEADERS['Accept'],
+            'Accept-Language': DEFAULT_HEADERS['Accept-Language'],
             'Accept-Encoding': 'gzip, deflate, br',
             'Referer': 'https://www.newegg.com/',
             'Cache-Control': 'no-cache',
             'Pragma': 'no-cache',
-            'Sec-Ch-Ua': '"Not A(Brand";v="99", "Google Chrome";v="122", "Chromium";v="122"',
+            'Sec-Ch-Ua': f'"Not A(Brand";v="99", "Google Chrome";v="{CHROME_VERSION}", "Chromium";v="{CHROME_VERSION}"',
             'Sec-Ch-Ua-Mobile': '?0',
             'Sec-Ch-Ua-Platform': '"Windows"',
             'Sec-Fetch-Dest': 'document',
@@ -892,15 +881,14 @@ class NeweggScraper:
         }
         
         try:
-            response = requests.get(url, headers=headers, timeout=10)
+            response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            block_reason = detect_block_page(response.text)
+            if block_reason:
+                logger.warning(f"Newegg returned a block page for {url} (HTTP {response.status_code}): {block_reason}")
+                return None
             if response.status_code != 200:
                 logger.warning(f"Failed to get page, status code: {response.status_code}")
-                return {
-                    'name': f"Newegg Product {product_id if product_id else url.split('/')[-1]}",
-                    'price': None,
-                    'available': False,
-                    'image_url': None
-                }
+                return None
             
             # Parse the HTML
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -914,8 +902,10 @@ class NeweggScraper:
             logger.info(f"HTTP fallback scraper extracted: name={name}, price={price}, available={available}")
             
             if not name or name == "Unknown Product":
-                name = f"Newegg Product {product_id}" if product_id else f"Newegg Product {url.split('/')[-1]}"
-            
+                # No product markup at all - most likely a challenge page we did not recognise
+                logger.warning(f"HTTP fallback found no product name for {url}; not returning placeholder data")
+                return None
+
             return {
                 'name': name,
                 'price': price,
@@ -924,12 +914,7 @@ class NeweggScraper:
             }
         except Exception as e:
             logger.error(f"Error in HTTP-based scraper: {str(e)}")
-            return {
-                'name': f"Newegg Product {product_id if product_id else url.split('/')[-1]}",
-                'price': None,
-                'available': False,
-                'image_url': None
-            }
+            return None
 
     def extract_name_from_html(self, soup):
         """Extract product name from HTML without Selenium."""
@@ -1031,12 +1016,14 @@ class NeweggScraper:
             # Check for "Add to cart" button (enabled)
             add_to_cart_buttons = soup.select('button.btn-primary')
             for button in add_to_cart_buttons:
-                if button.get('disabled') is None and ('add to cart' in button.text.lower() or 'add' in button.text.lower()):
+                if button.get('disabled') is None and ('add to cart' in button.text.lower() or 'add' in button.text.lower() or is_preorder_text(button.text)):
                     return True
             
             # Look for in-stock text
             for element in soup.select('.product-inventory, [data-selenium="inStock"]'):
                 text = element.text.lower()
+                if is_preorder_text(text):
+                    return True
                 if 'in stock' in text and 'out of stock' not in text:
                     return True
                 
@@ -1296,6 +1283,15 @@ class NeweggScraper:
                 except:
                     continue
             
+            # Pre-order buttons and stock text count as available
+            try:
+                for element in driver.find_elements(By.CSS_SELECTOR, "button.btn-primary, .product-inventory"):
+                    if element.is_displayed() and element.is_enabled() and is_preorder_text(element.text):
+                        logger.debug("Found pre-order indicator - treating as available")
+                        return True
+            except:
+                pass
+
             # Check for out-of-stock indicators
             out_of_stock_selectors = [
                 (By.XPATH, "//*[contains(text(), 'OUT OF STOCK')]"),
@@ -1499,7 +1495,7 @@ class NeweggScraper:
             options = self._get_chrome_options()
             
             # Create browser instance
-            driver = uc.Chrome(options=options)
+            driver = uc.Chrome(options=options, version_main=detect_chrome_major())
             
             # Step 1: Load cookies from environment if available
             newegg_cookies = os.environ.get('NEWEGG_COOKIES')
