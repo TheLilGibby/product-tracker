@@ -59,6 +59,7 @@ HOME_URL = "https://www.walmart.com/"
 # set it before the scraper module reads the variable at import time
 LOGIN_MODE = '--login' in sys.argv
 IMPORT_MODE = '--import-cookies' in sys.argv
+FIXTURE_MODE = '--fixtures' in sys.argv
 if LOGIN_MODE or IMPORT_MODE:
     os.environ['WALMART_HEADLESS'] = '0'
 
@@ -150,6 +151,102 @@ def import_cookies(path):
                 pass
 
 
+# An empty Walmart cart, trimmed to the shape that matters: a few hundred bytes,
+# no product markers, no challenge wording. Before expect_product=False this was
+# reported as a bot-protection page.
+EMPTY_CART_HTML = """<!DOCTYPE html><html><head><title>Cart - Walmart.com</title></head>
+<body><div data-testid="empty-cart"><h1>Your cart is empty</h1>
+<a href="/">Continue shopping</a></div></body></html>"""
+
+# The same cart page, but served as Walmart's bot wall. Must still read as blocked.
+BLOCKED_CART_HTML = """<!DOCTYPE html><html><head><title>Robot or human?</title></head>
+<body><div id="px-captcha"></div><p>Activate and hold the button to confirm that
+you are human.</p></body></html>"""
+
+
+class FakeElement:
+    def __init__(self, text=''):
+        self.text = text
+
+
+class FakeDriver:
+    """Enough driver for _page_obstacle: page source, body text, url, no elements."""
+
+    def __init__(self, html, body_text='', current_url='https://www.walmart.com/cart'):
+        self.page_source = html
+        self.current_url = current_url
+        self._body = FakeElement(body_text)
+
+    def find_element(self, *args):
+        return self._body
+
+    def find_elements(self, *args):
+        return []
+
+
+def fixtures():
+    """Offline checks for the empty-cart / bot-wall distinction. No network, no Chrome."""
+    from app.scrapers.common import detect_block_page
+
+    passed, failed = [], []
+
+    def check_that(name, condition):
+        (passed if condition else failed).append(name)
+        print(('  ok   ' if condition else '  FAIL ') + name)
+
+    print("\ndetect_block_page")
+    check_that("an empty cart is a bot wall when a product was expected",
+               detect_block_page(EMPTY_CART_HTML) is not None)
+    check_that("...and is not one when it was not",
+               detect_block_page(EMPTY_CART_HTML, expect_product=False) is None)
+    check_that("the default is unchanged, so no existing caller shifts",
+               detect_block_page(EMPTY_CART_HTML)
+               == detect_block_page(EMPTY_CART_HTML, expect_product=True))
+    check_that("Walmart's own wall is still caught on the cart",
+               detect_block_page(BLOCKED_CART_HTML, expect_product=False) is not None)
+    check_that("...caught by its title, not by its size",
+               'robot or human' in (detect_block_page(BLOCKED_CART_HTML,
+                                                      expect_product=False) or ''))
+    check_that("an empty body is still a failed load either way",
+               detect_block_page('', expect_product=False) == 'empty response')
+
+    print("\n_page_obstacle")
+    scraper = WalmartScraper()
+    check_that("the cart call reports no obstacle on an empty cart",
+               scraper._page_obstacle(FakeDriver(EMPTY_CART_HTML), expect_product=False) is None)
+    check_that("the product-page call still reports one",
+               scraper._page_obstacle(FakeDriver(EMPTY_CART_HTML)) is not None)
+    check_that("Walmart's wall on the cart is still reported",
+               scraper._page_obstacle(FakeDriver(BLOCKED_CART_HTML),
+                                      expect_product=False) is not None)
+    # Walmart reads the rendered body, not the URL, for both of these - unlike
+    # Target's _login_wall_present, which also looks at current_url. So these
+    # drive body text; see the note in the commit message about the asymmetry.
+    check_that("press-and-hold wording in the body is still caught on the cart",
+               scraper._page_obstacle(
+                   FakeDriver(EMPTY_CART_HTML,
+                              body_text='Press & Hold to confirm you are a human (and not a bot)'),
+                   expect_product=False) is not None)
+    check_that("a sign-in wall is still caught on the cart",
+               scraper._page_obstacle(
+                   FakeDriver(EMPTY_CART_HTML,
+                              body_text='Sign in to your account to continue'),
+                   expect_product=False) is not None)
+
+    # The reason a newly-permissive cart check is still safe: verification needs
+    # positive evidence of the item, so a wall that now slips past the block
+    # check fails as "not in the cart" rather than being reported as success.
+    check_that("a wall that slips past still cannot be mistaken for a full cart",
+               scraper._cart_contains(FakeDriver(BLOCKED_CART_HTML), '5564066414') is False)
+    check_that("and an empty cart is not a full one either",
+               scraper._cart_contains(FakeDriver(EMPTY_CART_HTML), '5564066414') is False)
+
+    print(f"\n{len(passed)} passed, {len(failed)} failed")
+    for name in failed:
+        print(f"  FAILED: {name}")
+    return 1 if failed else 0
+
+
 def check(url):
     item_id = WalmartScraper.extract_item_id(url)
     print(f"\nURL: {url}")
@@ -184,7 +281,9 @@ def _cookie_path():
 
 
 if __name__ == '__main__':
-    if IMPORT_MODE:
+    if FIXTURE_MODE:
+        sys.exit(fixtures())
+    elif IMPORT_MODE:
         import_cookies(_cookie_path())
     elif LOGIN_MODE:
         login()
