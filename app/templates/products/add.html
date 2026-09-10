@@ -12,19 +12,21 @@
     <div class="mb-4">
         <label for="url">Product URL <span style="color: red;">*</span></label>
         <input type="url" id="url" name="url" placeholder="https://www.amazon.com/product-page" required>
-        <small>Currently supported sites: Amazon, Walmart, Newegg, Microcenter, Best Buy, and B&H Photo Video</small>
+        <small>Currently supported sites:
+            {%- for _, label in store_choices %}
+            {%- if not loop.first %}{% if loop.last %}{% if loop.length > 2 %},{% endif %} and {% else %}, {% endif %}{% endif -%}
+            {{ label }}
+            {%- endfor %}</small>
     </div>
     
     <div class="mb-4">
         <label for="scraper_type">Store/Website <span style="color: red;">*</span></label>
         <select id="scraper_type" name="scraper_type" required>
             <option value="">-- Select Store --</option>
-            <option value="amazon">Amazon</option>
-            <option value="walmart">Walmart</option>
-            <option value="newegg">Newegg</option>
-            <option value="microcenter">Microcenter</option>
-            <option value="bestbuy">Best Buy</option>
-            <option value="bh">B&H Photo Video</option>
+            {# Built from app.scrapers.store_choices(); registering a domain there is enough. #}
+            {% for value, label in store_choices %}
+            <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
         </select>
         <small>Select the store or website that your product link is from</small>
     </div>

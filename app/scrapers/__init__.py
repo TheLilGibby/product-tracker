@@ -90,6 +90,38 @@ def supported_stores():
     """Return the sorted store keys detect_store_type() can return."""
     return sorted(set(STORE_DOMAINS.values()))
 
+
+# How each store key is written for a human. A key with no entry falls back to a
+# title-cased version of itself, so registering a domain above is enough to make a
+# new store appear in the add-product form without touching the template.
+STORE_LABELS = {
+    'amazon': 'Amazon',
+    'walmart': 'Walmart',
+    'newegg': 'Newegg',
+    'microcenter': 'Micro Center',
+    'bestbuy': 'Best Buy',
+    'bh': 'B&H Photo Video',
+    'adorama': 'Adorama',
+    'target': 'Target',
+    'test': 'Test Store',
+}
+
+# Real stores only. The test store is reachable through /add-test-product and has
+# no business in the store picker.
+HIDDEN_STORES = frozenset({'test'})
+
+
+def store_choices():
+    """
+    Return [(store key, human label)] for the stores a person can pick, A to Z by label.
+
+    The add-product form and its supported-sites hint are both built from this, so
+    adding a retailer means editing STORE_DOMAINS and STORE_LABELS and nothing else.
+    """
+    choices = [(store, STORE_LABELS.get(store, store.title()))
+               for store in supported_stores() if store not in HIDDEN_STORES]
+    return sorted(choices, key=lambda choice: choice[1].lower())
+
 def get_scraper(store_type):
     """
     Get the appropriate scraper based on store type.

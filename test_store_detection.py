@@ -10,7 +10,8 @@ Exit code is non-zero if any case fails.
 
 import sys
 
-from app.scrapers import STORE_DOMAINS, detect_store_type, get_scraper, supported_stores
+from app.scrapers import (HIDDEN_STORES, STORE_DOMAINS, STORE_LABELS, detect_store_type,
+                          get_scraper, store_choices, supported_stores)
 
 # (url, expected store key, note)
 CASES = [
@@ -99,6 +100,24 @@ def main():
     failures += 0 if ok else 1
     print(f"  [{'ok' if ok else 'FAIL'}] {len(STORE_DOMAINS)} domains -> {len(supported_stores())} store keys"
           + (f"; duplicates: {dupes}" if dupes else ""))
+
+    # The add-product form is built from store_choices(), so a store registered above
+    # has to arrive there labelled, in order, and without the test store tagging along.
+    print("\nstore_choices() drives the add-product form:")
+    choices = store_choices()
+    values = [value for value, _ in choices]
+    labels = [label for _, label in choices]
+    for desc, ok in (
+        ("every offered value is a real store key", set(values) <= set(supported_stores())),
+        ("hidden stores are not offered", not set(values) & set(HIDDEN_STORES)),
+        ("every visible store is offered", set(values) == set(supported_stores()) - set(HIDDEN_STORES)),
+        ("no duplicate values", len(values) == len(set(values))),
+        ("every store key has a written label", set(supported_stores()) <= set(STORE_LABELS)),
+        ("labels read A to Z", [l.lower() for l in labels] == sorted(l.lower() for l in labels)),
+    ):
+        failures += 0 if ok else 1
+        print(f"  [{'ok' if ok else 'FAIL'}] {desc}")
+    print(f"       offering: {', '.join(labels)}")
 
     print(f"\n{'PASS' if failures == 0 else 'FAIL'} ({failures} failure(s))")
     return 1 if failures else 0
