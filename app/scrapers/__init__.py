@@ -3,6 +3,7 @@ Scraper module initialization.
 Provides direct access to store-specific scrapers based on store type.
 """
 
+import inspect
 import logging
 from urllib.parse import urlparse
 
@@ -15,6 +16,9 @@ from app.scrapers.bestbuy_scraper import BestBuyScraper
 from app.scrapers.bh_scraper import BHScraper
 from app.scrapers.test_scraper import TestScraper
 from app.scrapers.adorama_scraper import AdoramaScraper
+from app.scrapers.target_scraper import TargetScraper
+from app.scrapers.gamestop_scraper import GameStopScraper
+from app.scrapers.nintendo_scraper import NintendoScraper
 
 # Set up logging
 logger = logging.getLogger('app.scrapers')
@@ -34,6 +38,11 @@ STORE_DOMAINS = {
     'bestbuy.com': 'bestbuy',
     'bhphotovideo.com': 'bh',
     'adorama.com': 'adorama',
+    'gamestop.com': 'gamestop',
+    # The My Nintendo Store. Only /us/store/products/ URLs are product pages;
+    # detect_store_type routes on the host, and NintendoScraper returns None for
+    # anything without a SKU in the path.
+    'nintendo.com': 'nintendo',
     # TargetScraper arrives on feature/target-scraper; registering the domain
     # early is harmless because get_scraper() raises for a key it has no class for.
     'target.com': 'target',
@@ -103,6 +112,8 @@ STORE_LABELS = {
     'bh': 'B&H Photo Video',
     'adorama': 'Adorama',
     'target': 'Target',
+    'gamestop': 'GameStop',
+    'nintendo': 'My Nintendo Store',
     'test': 'Test Store',
 }
 
@@ -146,6 +157,9 @@ def get_scraper(store_type):
         'bh': BHScraper,
         'test': TestScraper,
         'adorama': AdoramaScraper,
+        'target': TargetScraper,
+        'gamestop': GameStopScraper,
+        'nintendo': NintendoScraper,
     }
     
     if store_type not in scrapers:
@@ -186,9 +200,14 @@ def add_to_cart(store_type, url, quantity=1):
         raise ValueError(f"Auto cart functionality not supported for {store_type}")
     
     try:
-        # For Newegg and other scrapers that need to store the URL first,
-        # we need to call scrape_product to set the current_product_url
-        if store_type == 'newegg' and hasattr(scraper, 'scrape_product'):
+        # Scrapers whose add_to_cart takes a url get it directly (test, amazon,
+        # bestbuy); the rest read it off the instance, so pre-scrape to set
+        # current_product_url first (newegg, target, adorama).
+        if 'url' in inspect.signature(scraper.add_to_cart).parameters:
+            logger.debug(f"Passing product URL directly to {store_type} scraper")
+            return scraper.add_to_cart(url=url, quantity=quantity)
+
+        if hasattr(scraper, 'scrape_product'):
             logger.debug(f"Setting product URL for {store_type} scraper")
             try:
                 # Just scrape basic product info to set the URL
@@ -198,17 +217,8 @@ def add_to_cart(store_type, url, quantity=1):
                 # Set the URL directly as fallback
                 if hasattr(scraper, 'current_product_url'):
                     scraper.current_product_url = url
-        
-        # Pass the URL as the first parameter if this is the test scraper
-        if store_type == 'test':
-            result = scraper.add_to_cart(url=url, quantity=quantity)
-        # For Amazon scraper which accepts URL directly
-        elif store_type == 'amazon':
-            result = scraper.add_to_cart(url=url, quantity=quantity)
-        else:
-            # For other scrapers, just pass the quantity (they look up the URL internally)
-            result = scraper.add_to_cart(quantity=quantity)
-        return result
+
+        return scraper.add_to_cart(quantity=quantity)
     except Exception as e:
         logger.error(f"Error adding product to cart: {str(e)}", exc_info=True)
         return {
