@@ -83,12 +83,19 @@ _TITLE_RE = re.compile(r'<title[^>]*>(.*?)</title>', re.IGNORECASE | re.DOTALL)
 _PREORDER_RE = re.compile(r'pre[\s-]?order', re.IGNORECASE)
 
 
-def detect_block_page(html):
+def detect_block_page(html, expect_product=True):
     """
     Decide whether a fetched page is a bot wall rather than a product page.
 
     Args:
         html: Raw response body
+        expect_product: True when the page being checked should be a product
+            page. Pass False for a page that is legitimately small and mentions
+            no product - a cart page with nothing in it is exactly that - so the
+            size heuristic below does not report it as a wall. Everything else
+            still applies: a cart served as a challenge interstitial is still
+            caught by the title and body markers, which is the whole reason to
+            keep calling this on the cart at all.
 
     Returns:
         A short reason string if the page looks blocked, otherwise None
@@ -108,7 +115,14 @@ def detect_block_page(html):
         if marker in sample:
             return f'body contains "{marker}"'
 
-    if len(html) < MIN_PRODUCT_PAGE_BYTES and not any(marker in sample for marker in PRODUCT_PAGE_MARKERS):
+    # Only meaningful when a product was expected. On a cart page this rule
+    # fires on a perfectly good empty cart, and the trade is deliberate: with
+    # expect_product=False a wall that is BOTH tiny AND carries none of the
+    # markers above now reads as "nothing in the cart" instead. The action is
+    # the same either way (the add failed, do not go on), while the false wall
+    # actively sends you to fix the wrong thing.
+    if expect_product and len(html) < MIN_PRODUCT_PAGE_BYTES \
+            and not any(marker in sample for marker in PRODUCT_PAGE_MARKERS):
         return f'body is {len(html)} bytes with no product markers'
 
     return None
