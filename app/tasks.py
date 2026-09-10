@@ -98,7 +98,8 @@ def record_store_failure(store_type, reason, now=None):
                      f"{failures} of {threshold} before backing off")
         return failures
 
-    minutes = min(base_minutes * (2 ** (failures - threshold)), STORE_BACKOFF_MAX_MINUTES)
+    cap = float(_config().get('STORE_BACKOFF_MAX_MINUTES', STORE_BACKOFF_MAX_MINUTES))
+    minutes = min(base_minutes * (2 ** (failures - threshold)), cap)
     _store_retry_at[store_type] = (now or datetime.utcnow()) + timedelta(minutes=minutes)
     logger.warning(f"{store_type} has failed {failures} scrapes in a row ({reason}); "
                    f"skipping its products for {minutes:g} minutes")

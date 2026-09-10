@@ -74,6 +74,7 @@ class Config:
     # blocking us on every cycle only extends the block.
     STORE_BACKOFF_FAILURES = int(os.environ.get('STORE_BACKOFF_FAILURES', 2))
     STORE_BACKOFF_MINUTES = int(os.environ.get('STORE_BACKOFF_MINUTES', 15))
+    STORE_BACKOFF_MAX_MINUTES = int(os.environ.get('STORE_BACKOFF_MAX_MINUTES', 60))
 
     # How often each store may be checked, in minutes, as
     # STORE_CHECK_INTERVALS="gamestop=60,bestbuy=15" or the equivalent JSON
