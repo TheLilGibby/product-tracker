@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from flask import current_app
@@ -19,6 +19,192 @@ scheduler = None
 
 # Lock for check_all_products to prevent concurrent execution
 check_lock = threading.Lock()
+
+# --------------------------------------------------------------------------
+# Per-store backoff
+#
+# The retailers with bot protection answer a burst of failed scrapes by
+# blocking harder and for longer: Best Buy's Akamai starts serving block pages
+# to every request, Target puts up the PX press-and-hold. Retrying that store
+# on every check cycle is what turns a minute of rate limiting into hours of
+# block pages, so a store that keeps failing is left alone for a while.
+#
+# Defaults: two consecutive failures buy 15 minutes of quiet, and each further
+# failure doubles that up to an hour.
+DEFAULT_STORE_BACKOFF_FAILURES = 2
+DEFAULT_STORE_BACKOFF_MINUTES = 15
+STORE_BACKOFF_MAX_MINUTES = 60
+
+# store_type -> consecutive failed scrapes, and the UTC time it may be tried
+# again. Only touched from check_all_products, which check_lock serializes.
+_store_failures = {}
+_store_retry_at = {}
+
+
+def _backoff_settings():
+    """
+    (failures before backing off, first backoff in minutes) from app config.
+
+    Falls back to the defaults outside an application context so the helpers
+    below stay usable from a script or a test.
+    """
+    config = _config()
+    return (int(config.get('STORE_BACKOFF_FAILURES', DEFAULT_STORE_BACKOFF_FAILURES)),
+            float(config.get('STORE_BACKOFF_MINUTES', DEFAULT_STORE_BACKOFF_MINUTES)))
+
+
+def _config():
+    """current_app.config, or an empty mapping outside an app context."""
+    try:
+        return current_app.config
+    except RuntimeError:
+        return {}
+
+
+def store_is_backed_off(store_type, now=None):
+    """
+    True when this store failed too often recently and should be skipped.
+
+    Logs one INFO the first time a store comes due again, so the log says why
+    a store went quiet and when it came back.
+    """
+    retry_at = _store_retry_at.get(store_type)
+    if retry_at is None:
+        return False
+
+    now = now or datetime.utcnow()
+    if now < retry_at:
+        return True
+
+    del _store_retry_at[store_type]
+    logger.info(f"Retrying {store_type} after backoff "
+                f"({_store_failures.get(store_type, 0)} consecutive failures so far)")
+    return False
+
+
+def record_store_failure(store_type, reason, now=None):
+    """
+    Count a failed scrape and, once there have been enough, put the store on ice.
+
+    Returns the number of consecutive failures. The WARNING fires only when the
+    store actually enters backoff, so it is one line per cycle at worst.
+    """
+    failures = _store_failures.get(store_type, 0) + 1
+    _store_failures[store_type] = failures
+    threshold, base_minutes = _backoff_settings()
+
+    if failures < threshold:
+        logger.debug(f"{store_type} scrape failed ({reason}); "
+                     f"{failures} of {threshold} before backing off")
+        return failures
+
+    minutes = min(base_minutes * (2 ** (failures - threshold)), STORE_BACKOFF_MAX_MINUTES)
+    _store_retry_at[store_type] = (now or datetime.utcnow()) + timedelta(minutes=minutes)
+    logger.warning(f"{store_type} has failed {failures} scrapes in a row ({reason}); "
+                   f"skipping its products for {minutes:g} minutes")
+    return failures
+
+
+def record_store_success(store_type):
+    """Clear a store's failure history after a scrape that actually worked."""
+    if _store_failures.pop(store_type, None):
+        logger.info(f"{store_type} is answering again; backoff cleared")
+    _store_retry_at.pop(store_type, None)
+
+
+def reset_store_backoff():
+    """Forget every store's backoff state. For tests and manual recovery."""
+    _store_failures.clear()
+    _store_retry_at.clear()
+
+
+# --------------------------------------------------------------------------
+# Per-store check intervals
+#
+# The scheduler runs on one global interval, but not every store can take it.
+# A store listed in STORE_CHECK_INTERVALS is only scraped once its own interval
+# has passed; everything else keeps the global cadence.
+def store_check_interval(store_type):
+    """
+    Minutes between checks for this store, or None when it has no setting of
+    its own and just follows the scheduler's global interval.
+    """
+    intervals = _config().get('STORE_CHECK_INTERVALS') or {}
+    try:
+        return float(intervals[store_type])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def store_check_is_due(store_type, last_checked, now=None):
+    """
+    False only when a store has an interval of its own and was checked inside it.
+
+    A store with no setting is left to the scheduler's cadence rather than
+    gated here. Gating it on the global interval would read the same on a
+    scheduled run and break the "Update All Products" button, which calls
+    check_all_products directly and must still refresh what the user asked for.
+    """
+    interval = store_check_interval(store_type)
+    if interval is None or interval <= 0 or last_checked is None:
+        return True
+
+    # The grace keeps a store whose interval matches the scheduler's own from
+    # slipping a whole cycle when a run starts a moment early.
+    grace = min(60.0, interval * 60.0 * 0.1)
+    elapsed = ((now or datetime.utcnow()) - last_checked).total_seconds()
+    return elapsed >= (interval * 60.0) - grace
+
+
+# Names for the dashboard. A store missing from here falls back to its key.
+STORE_LABELS = {
+    'amazon': 'Amazon',
+    'walmart': 'Walmart',
+    'newegg': 'Newegg',
+    'microcenter': 'Micro Center',
+    'bestbuy': 'Best Buy',
+    'bh': 'B&H',
+    'test': 'Test store',
+}
+
+
+def _minutes_until(moment, now):
+    """Whole minutes from now until moment, rounded up."""
+    return int(-(-(moment - now).total_seconds() // 60))
+
+
+def get_store_backoff_state(now=None):
+    """
+    One row per store the scheduler is currently having trouble with.
+
+    A store that is answering normally holds no state at all, so an empty list
+    means every store is fine. Each row is:
+
+        {'store_type', 'label', 'backed_off', 'failures',
+         'retry_at' (naive UTC, or None), 'minutes_remaining'}
+
+    Read without check_lock - the scheduler thread may be writing while a
+    request reads. The dict copies below are single C-level operations, and a
+    row that is a few seconds stale only affects what the page says.
+    """
+    now = now or datetime.utcnow()
+    failures = dict(_store_failures)
+    retry_times = dict(_store_retry_at)
+
+    rows = []
+    for store_type in sorted(set(failures) | set(retry_times)):
+        retry_at = retry_times.get(store_type)
+        backed_off = retry_at is not None and now < retry_at
+        rows.append({
+            'store_type': store_type,
+            'label': STORE_LABELS.get(store_type, store_type.title()),
+            'backed_off': backed_off,
+            'failures': failures.get(store_type, 0),
+            'retry_at': retry_at if backed_off else None,
+            # Rounded up, so a store due in 40 seconds reads "1 min", not "0 min".
+            'minutes_remaining': (_minutes_until(retry_at, now) if backed_off else 0),
+        })
+    return rows
 
 def check_all_products():
     """
@@ -84,6 +270,20 @@ def check_all_products():
                         logger.error(f"Could not determine store type for URL: {product.url}")
                         continue
                     
+                    # Leave a blocked or rate-limited store alone. The product
+                    # keeps its stored data and its last_checked, so the page
+                    # still shows when the figures were last known good.
+                    if store_is_backed_off(store_type):
+                        logger.debug(f"Skipping product {product.id}: {store_type} is backing off")
+                        continue
+
+                    # Stores that cannot take the global cadence wait for their
+                    # own interval, again keeping their stored data untouched.
+                    if not store_check_is_due(store_type, product.last_checked):
+                        logger.debug(f"Skipping product {product.id}: {store_type} was checked "
+                                     f"less than {store_check_interval(store_type):g} minutes ago")
+                        continue
+
                     # Get appropriate scraper
                     try:
                         scraper = get_scraper(store_type)
@@ -104,11 +304,15 @@ def check_all_products():
                             
                         if not product_data:
                             logger.error(f"Failed to retrieve data for product {product.id}")
+                            record_store_failure(store_type, 'scrape returned no data')
                             continue
                     except Exception as e:
                         logger.error(f"Error scraping product {product.id}: {str(e)}")
+                        record_store_failure(store_type, f"scrape raised {type(e).__name__}")
                         continue
                     
+                    record_store_success(store_type)
+
                     # Update product with new data
                     old_price = product.current_price
                     old_availability = product.available

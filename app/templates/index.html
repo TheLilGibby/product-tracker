@@ -16,6 +16,35 @@
     </div>
 </header>
 
+{# Store status. Only the stores the scheduler is having trouble with show up
+   here - if a retailer is walling us off, that is worth seeing before you read
+   its stale prices as current. #}
+<section style="margin-bottom: 1.5rem; padding: 0.6rem 0.9rem; border: 1px solid #e5e7eb; border-radius: 6px;">
+    <strong style="font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-light);">Store status</strong>
+    {% if store_backoff %}
+        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; margin-top: 0.4rem;">
+            {% for store in store_backoff %}
+                <span style="font-size: 0.9rem;">
+                    {{ store.label }}
+                    {% if store.backed_off %}
+                        <span class="badge badge-danger" title="Next attempt at {{ format_datetime(store.retry_at, current_timezone) }}">
+                            backing off, retry in {{ store.minutes_remaining }} min
+                            ({{ store.failures }} failure{{ '' if store.failures == 1 else 's' }})
+                        </span>
+                    {% else %}
+                        <span class="badge badge-info">
+                            still checking, {{ store.failures }} recent failure{{ '' if store.failures == 1 else 's' }}
+                        </span>
+                    {% endif %}
+                </span>
+            {% endfor %}
+        </div>
+    {% else %}
+        <span class="badge badge-success" style="margin-left: 0.5rem;">ok</span>
+        <span style="font-size: 0.9rem; color: var(--text-light);">every store is answering</span>
+    {% endif %}
+</section>
+
 {% if products %}
     <div class="table-responsive" style="overflow-x: auto;">
         <table>
