@@ -25,14 +25,16 @@ from any product page:
 
 The TCIN (Target item number) is the trailing /A-<tcin> segment of the URL.
 
-The saved session (data/target_cookies.json)
---------------------------------------------
+The saved session (~/.chrome_profiles/target_profile/cookies.json)
+------------------------------------------------------------------
 Redsky's 403 is PerimeterX refusing a client with no clearance token, not Target
 withholding the data - the same request carrying a valid _px3 is answered 200. So
 `test_target_cart.py --import-cookies` now writes the browser's target.com
-cookies to data/target_cookies.json - opened 0600, though on Windows that mode
-is ignored and the file inherits the ACL of data/, which git ignores in its
-entirety - and step 1 loads them. While that session is good, tracking Target costs one HTTP
+cookies to cookies.json beside the profile they came from - opened 0600, though
+on Windows that mode is ignored and the file inherits the profile directory's
+ACL instead - and step 1 loads them. It lives with the profile rather than in
+the checkout because the repo has several worktrees and the session belongs to
+neither of them; being outside the repo, it also cannot be committed. While that session is good, tracking Target costs one HTTP
 request and never opens Chrome; the profile is only touched for cart attempts,
 which is also the only thing that can get it flagged.
 
@@ -74,11 +76,17 @@ REDSKY_ORDERABLE_STATUSES = ('IN_STOCK', 'PRE_ORDER_SELLABLE', 'LIMITED_STOCK')
 # Redsky being briefly unwell. A 5xx or a timeout leaves the jar alone.
 REDSKY_STALE_SESSION_STATUSES = (401, 403)
 
-# Where --import-cookies leaves the session for the requests path to reuse. Under
-# data/, which .gitignore excludes wholesale, so a live login cannot be committed.
+# The persistent Chrome profile Target's bot checks are meant to recognise.
+TARGET_PROFILE_DIR = os.path.join(os.path.expanduser("~"), ".chrome_profiles", "target_profile")
+
+# Where --import-cookies leaves the session for the requests path to reuse. It sits
+# beside the profile rather than in the checkout, because it IS that profile's
+# session: the repo is cloned into several worktrees, and a per-checkout path meant
+# importing from one and running the app from another silently wrote the session
+# where nothing would look for it. Being outside the repo entirely, it also cannot
+# be committed by any branch. TARGET_COOKIE_JAR overrides it.
 TARGET_COOKIE_JAR = os.environ.get('TARGET_COOKIE_JAR') or os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    'data', 'target_cookies.json')
+    TARGET_PROFILE_DIR, 'cookies.json')
 
 # Redsky is an XHR from the product page. With a cookie jar attached the request
 # has to look like that XHR and not like a bare script, so it carries the client
@@ -137,7 +145,7 @@ class TargetScraper:
         self.headers = dict(DEFAULT_HEADERS)
 
         # Persistent profile so Target's bot checks see a returning browser
-        self.profile_dir = os.path.join(os.path.expanduser("~"), ".chrome_profiles", "target_profile")
+        self.profile_dir = TARGET_PROFILE_DIR
         os.makedirs(self.profile_dir, exist_ok=True)
 
         # Store the most recent product URL for parity with the other browser scrapers

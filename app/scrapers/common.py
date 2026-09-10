@@ -403,8 +403,9 @@ def import_cookies_txt(driver, path, domain_suffix):
 # the cache is good, tracking never opens a browser at all and the profile is only
 # touched for cart attempts.
 #
-# The file is a live login. It is written 0600, it lives under data/ (git-ignored
-# in its entirety), and nothing here logs a cookie value.
+# The file is a live login. It is written 0600, callers put it outside the repo
+# (beside the Chrome profile whose session it is), and nothing here logs a cookie
+# value.
 
 # Cookies whose absence means the cheap path will not work. _px3 is the PerimeterX
 # clearance token: without it Redsky answers 403 with a captchaRelativeURL.
