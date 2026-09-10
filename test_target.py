@@ -1,4 +1,10 @@
+import sys
+
 from app.scrapers.target_scraper import TargetScraper
+
+# Product names contain ™ / –; keep printing on cp1252 Windows consoles
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 # Test URLs (Nintendo Switch 2 Zelda 40th Anniversary drop items)
 urls = [

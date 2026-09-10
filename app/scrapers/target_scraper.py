@@ -29,7 +29,6 @@ The TCIN (Target item number) is the trailing /A-<tcin> segment of the URL.
 import re
 import logging
 import os
-import subprocess
 import time
 import requests
 from bs4 import BeautifulSoup
@@ -38,7 +37,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
-from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text
+from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text, detect_chrome_major
 
 # Set up logging
 logger = logging.getLogger('app.scrapers.target')
@@ -230,38 +229,6 @@ class TargetScraper:
         options.add_argument('--lang=en-US')
         return options
 
-    @staticmethod
-    def _detect_chrome_major():
-        """
-        Major version of the installed Chrome, so undetected-chromedriver fetches a
-        matching driver instead of the newest one. CHROME_MAJOR_VERSION overrides.
-        Returns None to let undetected-chromedriver decide.
-        """
-        override = os.environ.get('CHROME_MAJOR_VERSION', '')
-        if override.isdigit():
-            return int(override)
-
-        for exe in ('google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'):
-            try:
-                output = subprocess.run([exe, '--version'], capture_output=True, text=True, timeout=5).stdout
-            except (OSError, subprocess.SubprocessError):
-                continue
-            match = re.search(r'(\d+)\.\d+\.\d+', output or '')
-            if match:
-                return int(match.group(1))
-
-        # Windows installs keep a <version> directory next to chrome.exe
-        try:
-            exe = uc.find_chrome_executable()
-            if exe:
-                for entry in os.listdir(os.path.dirname(exe)):
-                    match = re.fullmatch(r'(\d+)\.\d+\.\d+\.\d+', entry)
-                    if match:
-                        return int(match.group(1))
-        except Exception as e:
-            logger.debug(f"Could not detect Chrome version from install directory: {str(e)}")
-        return None
-
     def scrape_via_browser(self, url, tcin):
         """
         Render the product page with undetected-chromedriver and parse the DOM.
@@ -271,9 +238,10 @@ class TargetScraper:
         """
         logger.info(f"Attempting browser scrape for Target TCIN {tcin}")
         driver = None
+        html = None
         try:
             options = self._get_chrome_options()
-            driver = uc.Chrome(options=options, version_main=self._detect_chrome_major())
+            driver = uc.Chrome(options=options, version_main=detect_chrome_major())
             driver.set_page_load_timeout(45)
             driver.get(url)
             try:
@@ -291,6 +259,11 @@ class TargetScraper:
                     driver.quit()
                 except Exception:
                     pass
+
+        if html is None:
+            # uc.Chrome() or driver.get() raised before the page source was captured
+            logger.warning(f"Browser did not return a page for {url}")
+            return None
 
         block_reason = detect_block_page(html)
         if block_reason:
