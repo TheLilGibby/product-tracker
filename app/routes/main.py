@@ -1,7 +1,7 @@
 from flask import Blueprint, render_template, redirect, url_for, flash, request, jsonify, current_app, session
 from app import db
 from app.models.product import Product, PriceHistory
-from app.scrapers import add_to_cart, detect_store_type, get_scraper
+from app.scrapers import add_to_cart, detect_store_type, get_scraper, store_choices
 from app.tasks import check_all_products
 from app.notifications import send_product_alert
 from app.notifications.telegram import TelegramNotifier, get_telegram_settings
@@ -117,7 +117,7 @@ def add_product():
     """Add a new product to track."""
     # GET request - just show the form
     if request.method == 'GET':
-        return render_template('products/add.html')
+        return render_template('products/add.html', store_choices=store_choices())
     
     # POST request - process form submission
     url = request.form.get('url')
