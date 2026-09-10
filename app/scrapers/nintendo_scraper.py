@@ -147,6 +147,10 @@ LOGIN_HOSTS = ('accounts.nintendo.com',)
 # nothing inside it is ever clicked.
 CART_DRAWER_SELECTOR = '[data-drawer-id="add-to-cart-drawer"], [role="dialog"]'
 
+# Each cart line item links back to its product page. Used only to read the line
+# item's name; the sku in that href is what _cart_contains prefers anyway.
+CART_PRODUCT_LINK_SELECTOR = 'a[href*="/store/products/"]'
+
 
 class NintendoScraper:
     """Scraper for My Nintendo Store product pages"""
@@ -787,10 +791,14 @@ class NintendoScraper:
         """
         Whether the cart page is showing this sku.
 
-        Checked in the page source rather than the visible text: the cart lists
-        each line item as a link back to the product URL, which ends in -<sku>.
-        The product name is a fallback for a cart layout that links differently.
-        An empty cart is an explicit no, so a failed add cannot read as a success.
+        Only positive evidence counts: the sku, or failing that an exact name
+        match. Anything else - an empty cart, a cart holding other things, a
+        page that is not the cart at all - is a no, so a failed add can never
+        read as a success.
+
+        The sku is looked for in the page source rather than the visible text,
+        because the cart lists each line item as a link back to the product URL,
+        which ends in -<sku>.
         """
         try:
             source = driver.page_source or ''
@@ -807,8 +815,38 @@ class NintendoScraper:
 
         if re.search(r'-%s(?=[/"?#\s])' % re.escape(sku), source):
             return True
-        if product_name and product_name.lower()[:40] in lowered:
-            logger.debug("Matched the cart line by product name rather than SKU")
-            return True
+
+        # Name fallback, for a cart layout that does not link back to the
+        # product URL. It has to be an exact match on the normalised name, not a
+        # substring: Nintendo's product names overlap heavily and share long
+        # prefixes ("Nintendo Switch 2 ..."), and the cart page carries
+        # cross-sell blocks, so a substring test would read a recommendation for
+        # something else as the line item that was just added.
+        wanted = self._normalised_name(product_name)
+        if wanted:
+            for candidate in self._cart_line_names(driver, body):
+                if candidate == wanted:
+                    logger.debug("Matched the cart line by product name rather than SKU")
+                    return True
+
         logger.debug(f"SKU {sku} not found on the cart page")
         return False
+
+    @staticmethod
+    def _normalised_name(text):
+        """Lowercase, punctuation flattened to single spaces - for comparing names."""
+        return re.sub(r'[^a-z0-9]+', ' ', (text or '').lower()).strip()
+
+    def _cart_line_names(self, driver, body):
+        """
+        Names the cart page could be calling its line items.
+
+        The text of every link back to a store product, which is what a real
+        cart renders, plus each individual line of the page's own text as a
+        fallback for a layout this has not been run against. Both are compared
+        whole, so neither can match on a shared prefix.
+        """
+        names = [self._normalised_name(self._text(link))
+                 for link in self._elements(driver, CART_PRODUCT_LINK_SELECTOR)]
+        names.extend(self._normalised_name(line) for line in (body or '').splitlines())
+        return [name for name in names if name]
