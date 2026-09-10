@@ -1,243 +1,706 @@
-import re
+"""
+Best Buy scraper built on undetected-chromedriver.
+
+bestbuy.com sits behind Akamai Bot Manager, which drops plain ``requests``
+connections outright (no HTTP response at all) and, on some networks, also
+drops headless Chrome. This scraper therefore:
+
+* drives a real Chrome via undetected-chromedriver with a persistent profile
+  under ``~/.chrome_profiles/bestbuy_profile`` so a one-time manual login
+  survives between runs;
+* runs ``--headless=new`` by default and, when that is blocked and a display
+  is available, transparently retries with a visible window;
+* keeps ``scrape_via_requests()`` / ``extract_*_from_html()`` as the HTTP
+  fallback path used by the other browser scrapers, even though Akamai will
+  usually refuse it.
+
+Environment knobs (all optional):
+
+``BESTBUY_HEADLESS``        ``1`` (default) or ``0`` to always show the window.
+``BESTBUY_HEADED_FALLBACK`` Retry visibly when headless is blocked. Defaults to
+                            on for ``add_to_cart`` (a window there is expected,
+                            and lets the user log in) and off for
+                            ``scrape_product``, so a scheduled check can never
+                            pop windows on the desktop. Set it to ``1`` to allow
+                            the retry while scraping too, or ``0`` to never open
+                            a window at all.
+``CHROME_MAJOR_VERSION``    Force the chromedriver major version (see
+                            ``common.detect_chrome_major``); otherwise it is
+                            detected from the installed Chrome.
+"""
+
+import json
 import logging
+import os
+import platform
+import random
+import re
+import time
+
 import requests
 from bs4 import BeautifulSoup
-from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text
 
-# Set up logging
+import undetected_chromedriver as uc
+from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import Select, WebDriverWait
+
+from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, detect_chrome_major
+
 logger = logging.getLogger('app.scrapers.bestbuy')
 
+BESTBUY_HOME = 'https://www.bestbuy.com/'
+BESTBUY_CART = 'https://www.bestbuy.com/cart'
+
+# Primary call-to-action on the product page: <button data-testid="pdp-<state>-<sku>">
+PDP_BUTTON_SELECTOR = 'button[data-testid^="pdp-"]'
+IN_STOCK_STATES = ('add-to-cart', 'pre-order', 'preorder')
+OUT_OF_STOCK_STATES = ('sold-out', 'coming-soon', 'unavailable', 'check-stores', 'notify')
+
+PRICE_RE = re.compile(r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+(?:\.\d{2})?)')
+
+USER_AGENT_TEMPLATE = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36'
+)
+DEFAULT_CHROME_MAJOR = 152
+
+
+def _env_flag(name, default):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in ('0', 'false', 'no', 'off', '')
+
+
+def _display_available():
+    """True when a visible Chrome window can be shown on this machine."""
+    if platform.system() in ('Windows', 'Darwin'):
+        return True
+    return bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
+
+
+class BestBuyBlocked(Exception):
+    """Raised when Best Buy served a bot wall / error page instead of the product."""
+
+
 class BestBuyScraper:
-    """Scraper specifically for Best Buy products"""
-    
-    def __init__(self):
-        """Initialize the BestBuy scraper."""
-        logger.debug("Initializing BestBuyScraper")
-        self.headers = dict(DEFAULT_HEADERS)
-    
+    """Scraper for Best Buy product pages using undetected-chromedriver."""
+
+    def __init__(self, headless=None):
+        """
+        Args:
+            headless: True/False to force the mode, or None to read
+                      ``BESTBUY_HEADLESS`` (default: headless).
+        """
+        logger.debug("Initializing BestBuyScraper with undetected-chromedriver")
+
+        self.profile_dir = os.path.join(os.path.expanduser("~"), ".chrome_profiles", "bestbuy_profile")
+        os.makedirs(self.profile_dir, exist_ok=True)
+
+        self.headless = _env_flag('BESTBUY_HEADLESS', True) if headless is None else bool(headless)
+        # Scraping runs unattended on a schedule, so it must not pop windows on the
+        # user's desktop; a cart attempt is user-initiated, so a window is fine there.
+        self.scrape_headed_fallback = _env_flag('BESTBUY_HEADED_FALLBACK', False)
+        self.cart_headed_fallback = _env_flag('BESTBUY_HEADED_FALLBACK', True)
+
+        self.chrome_major = detect_chrome_major()
+        self.user_agent = USER_AGENT_TEMPLATE.format(major=self.chrome_major or DEFAULT_CHROME_MAJOR)
+
+        # Set by scrape_product(); used by add_to_cart() (same convention as Newegg)
+        self.current_product_url = None
+        self.current_sku = None
+
+    # ------------------------------------------------------------------ #
+    # Chrome setup
+    # ------------------------------------------------------------------ #
+    def _get_chrome_options(self, headless=None):
+        """Build fresh ChromeOptions for every launch (reusing an options object raises)."""
+        headless = self.headless if headless is None else headless
+        options = uc.ChromeOptions()
+
+        options.add_argument(f'--user-data-dir={self.profile_dir}')
+        options.add_argument('--profile-directory=Default')
+
+        if headless:
+            options.add_argument('--headless=new')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_argument('--disable-notifications')
+        options.add_argument('--disable-popup-blocking')
+        options.add_argument('--disable-extensions')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--lang=en-US,en')
+
+        width, height = random.choice([(1920, 1080), (1536, 864), (1440, 900), (1366, 768)])
+        options.add_argument(f'--window-size={width},{height}')
+        options.add_argument(f'--user-agent={self.user_agent}')
+        options.page_load_strategy = 'eager'
+        return options
+
+    def _launch(self, headless=None):
+        """Start Chrome, retrying once with the browser-reported major version on a driver mismatch."""
+        headless = self.headless if headless is None else headless
+        version_main = self.chrome_major
+        last_error = None
+
+        for attempt in range(2):
+            try:
+                driver = uc.Chrome(options=self._get_chrome_options(headless), version_main=version_main)
+                driver.set_page_load_timeout(45)
+                driver.set_script_timeout(20)
+                self._apply_stealth(driver)
+                logger.info(f"Chrome launched (headless={headless}, version_main={version_main})")
+                return driver
+            except WebDriverException as e:
+                last_error = e
+                match = re.search(r'Current browser version is (\d+)\.', str(e))
+                if match and attempt == 0:
+                    version_main = int(match.group(1))
+                    self.chrome_major = version_main
+                    logger.warning(f"chromedriver/Chrome mismatch; retrying with version_main={version_main}")
+                    continue
+                raise
+        raise last_error
+
+    @staticmethod
+    def _apply_stealth(driver):
+        try:
+            driver.execute_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                if (!navigator.plugins || navigator.plugins.length === 0) {
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
+                }
+                window.chrome = window.chrome || { runtime: {} };
+            """)
+        except Exception as e:
+            logger.debug(f"Stealth script failed: {e}")
+
+    @staticmethod
+    def _human_pause(low=0.6, high=1.6):
+        time.sleep(random.uniform(low, high))
+
+    def _human_scroll(self, driver):
+        try:
+            for _ in range(random.randint(1, 3)):
+                driver.execute_script(f"window.scrollBy(0, {random.randint(200, 600)});")
+                self._human_pause(0.3, 0.8)
+            driver.execute_script("window.scrollTo(0, 0);")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _quit(driver):
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _take_screenshot(driver):
+        try:
+            return driver.get_screenshot_as_base64()
+        except Exception as e:
+            logger.error(f"Error taking screenshot: {e}")
+            return None
+
+    # ------------------------------------------------------------------ #
+    # Bot wall / error detection
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def is_blocked_html(html, title=''):
+        """
+        Detect Akamai "Access Denied", a JS challenge, or Chrome's own network
+        error page (what a dropped connection looks like from Selenium).
+        """
+        if not html:
+            return True
+        reason = detect_block_page(html)
+        if reason:
+            logger.debug(f"Block page detected: {reason}")
+            return True
+        head = html[:4000]
+        if 'main-frame-error' in head or 'chrome-error://' in head:
+            return True
+        if re.search(r'Reference #\d|Pardon Our Interruption|Request unsuccessful', html[:20000]):
+            return True
+        if re.search(r'Access Denied|Just a moment', title or '', re.I):
+            return True
+        # A real product page always carries the pdp CTA or Product JSON-LD.
+        if 'data-testid="pdp-' not in html and 'application/ld+json' not in html:
+            return True
+        return False
+
+    def _load_product_page(self, driver, url):
+        """Navigate to the product page and return its HTML, raising BestBuyBlocked on a wall."""
+        driver.get(url)
+        try:
+            WebDriverWait(driver, 20).until(
+                EC.any_of(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, PDP_BUTTON_SELECTOR)),
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'script[type="application/ld+json"]')),
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '#main-frame-error')),
+                )
+            )
+        except TimeoutException:
+            logger.warning("Timed out waiting for product markup")
+        self._human_pause()
+        self._human_scroll(driver)
+
+        html = driver.page_source
+        if self.is_blocked_html(html, driver.title):
+            raise BestBuyBlocked(f"Best Buy served a block/error page (title={driver.title!r})")
+        return html
+
+    # ------------------------------------------------------------------ #
+    # Public API
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def extract_sku(url, html=None):
+        """SKU from a /sku/<n> or skuId=<n> URL, else from the pdp button / JSON-LD in the page."""
+        for pattern in (r'/sku/(\d{7})', r'[?&]skuId=(\d{7})', r'/(\d{7})\.p\b'):
+            match = re.search(pattern, url or '')
+            if match:
+                return match.group(1)
+        if html:
+            match = re.search(r'data-testid="pdp-[a-z-]+-(\d{7})"', html)
+            if match:
+                return match.group(1)
+            match = re.search(r'"sku"\s*:\s*"?(\d{7})"?', html)
+            if match:
+                return match.group(1)
+        return None
+
     def scrape_product(self, url):
         """
-        Scrape product information from Best Buy URL
-        
-        Args:
-            url: The product URL to scrape
-            
+        Scrape a Best Buy product page.
+
         Returns:
-            dict: Product information including name, price, availability, and image URL
+            {'name', 'price', 'available', 'image_url'} or None when the page
+            could not be retrieved (bot wall, network failure).
         """
+        self.current_product_url = url
+        self.current_sku = self.extract_sku(url)
+
+        for headless in self._modes(self.scrape_headed_fallback):
+            driver = None
+            try:
+                driver = self._launch(headless)
+                html = self._load_product_page(driver, url)
+                soup = BeautifulSoup(html, 'html.parser')
+                self.current_sku = self.extract_sku(url, html) or self.current_sku
+
+                result = {
+                    'name': self.extract_name(soup, driver),
+                    'price': self.extract_price(soup, driver),
+                    'available': self.extract_availability(soup, driver),
+                    'image_url': self.extract_image_url(soup, driver),
+                }
+                logger.info(f"Scraped Best Buy sku={self.current_sku}: {result['name']!r} "
+                            f"price={result['price']} available={result['available']}")
+                return result
+            except BestBuyBlocked as e:
+                logger.warning(f"{e} (headless={headless})")
+            except Exception as e:
+                logger.error(f"Error scraping Best Buy product with browser (headless={headless}): {e}")
+            finally:
+                self._quit(driver)
+
+        # HTTP fallback (Akamai usually refuses it, but it is cheap to try)
         try:
-            response = requests.get(url, headers=self.headers, timeout=REQUEST_TIMEOUT)
-            block_reason = detect_block_page(response.text)
-            if block_reason:
-                logger.warning(f"Best Buy returned a block page for {url} (HTTP {response.status_code}): {block_reason}")
-                return None
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            return {
-                'name': self.extract_name(soup),
-                'price': self.extract_price(soup),
-                'available': self.extract_availability(soup),
-                'image_url': self.extract_image_url(soup)
-            }
+            return self.scrape_via_requests(url)
         except Exception as e:
-            logger.error(f"Error scraping Best Buy product: {str(e)}")
+            logger.error(f"HTTP fallback failed for {url}: {e}")
             return None
-    
-    def extract_name(self, soup):
-        """Extract product name from Best Buy page"""
-        logger.debug("BestBuyScraper: Extracting name")
+
+    def _modes(self, allow_headed_fallback):
+        """Browser modes to try in order: configured mode, then visible if headless was blocked."""
+        modes = [self.headless]
+        if self.headless and allow_headed_fallback and _display_available():
+            modes.append(False)
+        return modes
+
+    def scrape_via_requests(self, url):
+        """Plain-HTTP fallback. Returns a product dict or None."""
+        logger.info(f"Attempting HTTP fallback for Best Buy product: {url}")
+        headers = dict(DEFAULT_HEADERS)
+        headers.update({
+            'User-Agent': self.user_agent,
+            'Referer': BESTBUY_HOME,
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin',
+            'Upgrade-Insecure-Requests': '1',
+        })
         try:
-            # Try product title element (covering different layouts)
-            title_selectors = [
-                '.sku-title h1',
-                '.heading-5',
-                'h1.v-fw-regular',
-                '[data-testid="heading-product-title"]',
-                '.product-title'
-            ]
-            
-            for selector in title_selectors:
-                title_element = soup.select_one(selector)
-                if title_element:
-                    name = title_element.get_text().strip()
-                    logger.debug(f"Found name: {name}")
-                    return name
-            
-            # Try the meta title
-            meta_title = soup.find('meta', {'property': 'og:title'})
-            if meta_title and meta_title.get('content'):
-                name = meta_title.get('content').strip()
-                logger.debug(f"Found name from meta: {name}")
-                return name
-                
-            # Fallback to any h1
-            title = soup.find('h1')
-            if title:
-                name = title.get_text().strip()
-                logger.debug(f"Found name from h1: {name}")
-                return name
-                
-            logger.warning("Could not find product name")
-            return "Unknown Product"
+            response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+        except requests.RequestException as e:
+            logger.warning(f"HTTP fallback connection failed: {e}")
+            return None
+        if response.status_code != 200:
+            logger.warning(f"HTTP fallback got status {response.status_code}")
+            return None
+        if self.is_blocked_html(response.text):
+            logger.warning("HTTP fallback got a block page")
+            return None
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        self.current_sku = self.extract_sku(url, response.text) or self.current_sku
+        return {
+            'name': self.extract_name_from_html(soup),
+            'price': self.extract_price_from_html(soup),
+            'available': self.extract_availability_from_html(soup),
+            'image_url': self.extract_image_url_from_html(soup),
+        }
+
+    # ------------------------------------------------------------------ #
+    # Extraction: browser path (soup + live driver)
+    # ------------------------------------------------------------------ #
+    def extract_name(self, soup, driver):
+        return self.extract_name_from_html(soup)
+
+    def extract_price(self, soup, driver):
+        price = self.extract_price_from_html(soup)
+        if price is None and driver is not None:
+            try:
+                for element in driver.find_elements(
+                        By.CSS_SELECTOR, '[data-testid="price-block-customer-price"], .price-block-customer-price'):
+                    price = self._parse_price(element.text)
+                    if price is not None:
+                        break
+            except Exception as e:
+                logger.debug(f"Live price lookup failed: {e}")
+        return price
+
+    def extract_availability(self, soup, driver):
+        """Enabled Add to Cart / Pre-Order => True; Sold Out / Coming Soon => False; JSON-LD as backup."""
+        state = self._button_state(soup)
+        if state is None and driver is not None:
+            try:
+                for button in driver.find_elements(By.CSS_SELECTOR, PDP_BUTTON_SELECTOR):
+                    testid = (button.get_attribute('data-testid') or '').lower()
+                    label = (button.text or '').strip().lower()
+                    state = self._classify_button(testid, label, enabled=button.is_enabled())
+                    if state is not None:
+                        break
+            except Exception as e:
+                logger.debug(f"Live button lookup failed: {e}")
+        if state is not None:
+            return state
+        return self._availability_from_jsonld(soup)
+
+    def extract_image_url(self, soup, driver):
+        return self.extract_image_url_from_html(soup)
+
+    # ------------------------------------------------------------------ #
+    # Extraction: HTML-only path (shared by both)
+    # ------------------------------------------------------------------ #
+    def extract_name_from_html(self, soup):
+        try:
+            h1 = soup.find('h1')
+            if h1 and h1.get_text(strip=True):
+                return h1.get_text(' ', strip=True)
+            product = self._jsonld_product(soup)
+            if product and product.get('name'):
+                return str(product['name']).strip()
+            og = soup.find('meta', property='og:title')
+            if og and og.get('content'):
+                return og['content'].strip()
+            if soup.title and soup.title.string:
+                return re.sub(r'\s*-\s*Best Buy\s*$', '', soup.title.string).strip()
         except Exception as e:
-            logger.error(f"Error extracting name: {str(e)}")
-            return "Unknown Product"
-    
-    def extract_price(self, soup):
-        """Extract product price from Best Buy page"""
-        logger.debug("BestBuyScraper: Extracting price")
+            logger.error(f"Error extracting name: {e}")
+        return "Unknown Product"
+
+    def extract_price_from_html(self, soup):
         try:
-            # Try various price selectors (covering different layouts)
-            price_selectors = [
-                '.priceView-customer-price span',
-                '.priceView-hero-price span',
+            for selector in (
+                '[data-testid="price-block-customer-price"]',
+                '.price-block-customer-price',
                 '[data-testid="customer-price"]',
-                '.pricing-price__regular',
-                '.pricing-price__current-price',
-                '.pricing-price__regular-price',
-                '.pricing-price__sale-price'
-            ]
-            
-            for selector in price_selectors:
-                price_element = soup.select_one(selector)
-                if price_element:
-                    price_text = price_element.get_text().strip()
-                    price_match = re.search(r'(\d+\,)?\d+\.\d{2}', price_text)
-                    if price_match:
-                        # Remove commas and convert to float
-                        price = float(price_match.group(0).replace(',', ''))
-                        logger.debug(f"Found price: ${price}")
+                '.priceView-customer-price span',
+            ):
+                for element in soup.select(selector):
+                    price = self._parse_price(element.get_text(' ', strip=True))
+                    if price is not None:
                         return price
-            
-            # Try price in JSON-LD data
-            script_tags = soup.find_all('script', {'type': 'application/ld+json'})
-            for script in script_tags:
-                if script and script.string and ('price' in script.string or 'Product' in script.string):
-                    price_match = re.search(r'"price"\s*:\s*"?(\d+\.?\d*)"?', script.string)
-                    if price_match:
-                        price = float(price_match.group(1))
-                        logger.debug(f"Found price from JSON-LD: ${price}")
-                        return price
-            
-            # Try looking for any number that looks like a price
-            price_regex = re.compile(r'\$\s*(\d+(?:,\d+)*\.?\d*)')
-            for element in soup.find_all(text=price_regex):
-                match = price_regex.search(element)
-                if match:
-                    price_text = match.group(1).replace(',', '')
-                    price = float(price_text)
-                    logger.debug(f"Found price from regex: ${price}")
-                    return price
-            
-            logger.warning("Could not find product price")
-            return None
+            for offer in self._offers(self._jsonld_product(soup)):
+                if offer.get('price') not in (None, ''):
+                    try:
+                        return float(str(offer['price']).replace(',', ''))
+                    except ValueError:
+                        continue
+            meta = soup.find('meta', property='product:price:amount')
+            if meta and meta.get('content'):
+                return float(meta['content'])
         except Exception as e:
-            logger.error(f"Error extracting price: {str(e)}")
-            return None
-    
-    def extract_availability(self, soup):
-        """Extract product availability from Best Buy page"""
-        logger.debug("BestBuyScraper: Extracting availability")
+            logger.error(f"Error extracting price: {e}")
+        return None
+
+    def extract_availability_from_html(self, soup):
         try:
-            # Check for out-of-stock indicators
-            availability_selectors = [
-                '.fulfillment-add-to-cart-button',
-                '.add-to-cart-button',
-                '.fulfillment-fulfillment-summary',
-                '[data-testid="button-state"]',
-                '[data-testid="availability-message"]',
-                '.shop-availability-msg',
-                '.availability'
-            ]
-            
-            for selector in availability_selectors:
-                element = soup.select_one(selector)
-                if element:
-                    text = element.get_text().strip().lower()
-                    is_disabled = 'disabled' in element.get('class', []) or element.has_attr('disabled')
-                    if is_preorder_text(text) and not is_disabled:
-                        logger.debug("Product is available for pre-order (from selector)")
-                        return True
-                    if any(status in text for status in ['sold out', 'unavailable', 'out of stock']):
-                        logger.debug("Product is not available (from selector)")
-                        return False
-                    if 'add to cart' in text and not is_disabled:
-                        logger.debug("Product is available (from add to cart button)")
-                        return True
-
-            # Check for add to cart / pre-order button status
-            for btn_selector in ['.add-to-cart-button', '[data-button-state="ADD_TO_CART"]', '[data-button-state="PRE_ORDER"]', 'button[data-track="Add to Cart"]']:
-                btn = soup.select_one(btn_selector)
-                if btn and 'disabled' not in btn.get('class', []):
-                    if btn.name == 'button' and not btn.has_attr('disabled'):
-                        logger.debug("Product is available (from button)")
-                        return True
-
-            # Deliberately no whole-page text scan here: "unavailable" appears in
-            # unrelated copy (store pickup, protection plans) on in-stock pages.
-
-            # Check JSON-LD data for availability info
-            script_tags = soup.find_all('script', {'type': 'application/ld+json'})
-            for script in script_tags:
-                if script and script.string and 'availability' in script.string:
-                    if 'InStock' in script.string or 'PreOrder' in script.string:
-                        logger.debug("Product is available (from JSON-LD)")
-                        return True
-                    if 'OutOfStock' in script.string:
-                        logger.debug("Product is not available (from JSON-LD)")
-                        return False
-            
-            logger.warning("Could not determine product availability")
-            return False
+            state = self._button_state(soup)
+            if state is not None:
+                return state
+            return self._availability_from_jsonld(soup)
         except Exception as e:
-            logger.error(f"Error extracting availability: {str(e)}")
+            logger.error(f"Error extracting availability: {e}")
             return False
-    
-    def extract_image_url(self, soup):
-        """Extract product image URL from Best Buy page"""
-        logger.debug("BestBuyScraper: Extracting image URL")
+
+    def extract_image_url_from_html(self, soup):
         try:
-            # Try various image selectors (covering different layouts)
-            image_selectors = [
-                '.primary-image',
-                '.carousel-media img',
-                '.product-image img',
-                '[data-testid="carousel-img"]',
-                '.gallery-player-inner img',
-                '.primary-image-wrapper img'
-            ]
-            
-            for selector in image_selectors:
-                img = soup.select_one(selector)
-                if img and img.get('src'):
-                    image_url = img.get('src')
-                    logger.debug(f"Found image URL: {image_url}")
-                    return image_url
-                if img and img.get('data-src'):
-                    image_url = img.get('data-src')
-                    logger.debug(f"Found image URL from data-src: {image_url}")
-                    return image_url
-                
-            # Try meta image
-            meta_img = soup.find('meta', {'property': 'og:image'})
-            if meta_img and meta_img.get('content'):
-                image_url = meta_img.get('content')
-                logger.debug(f"Found image URL from meta: {image_url}")
-                return image_url
-            
-            # Try JSON-LD data for image URL
-            script_tags = soup.find_all('script', {'type': 'application/ld+json'})
-            for script in script_tags:
-                if script and script.string and 'image' in script.string:
-                    image_match = re.search(r'"image"\s*:\s*"(https?://[^"]+)"', script.string)
-                    if image_match:
-                        image_url = image_match.group(1)
-                        logger.debug(f"Found image URL from JSON-LD: {image_url}")
-                        return image_url
-            
-            logger.warning("Could not find product image URL")
-            return None
+            product = self._jsonld_product(soup)
+            if product:
+                images = product.get('image')
+                if isinstance(images, str):
+                    return images
+                if isinstance(images, dict) and images.get('url'):
+                    return images['url']
+                if isinstance(images, list) and images:
+                    first = images[0]
+                    if isinstance(first, str):
+                        return first
+                    if isinstance(first, dict) and first.get('url'):
+                        return first['url']
+            og = soup.find('meta', property='og:image')
+            if og and og.get('content'):
+                return og['content']
+            for img in soup.select('img[src*="pisces.bbystatic.com"]'):
+                src = img.get('src') or img.get('data-src')
+                if src:
+                    return re.sub(r';maxHeight=\d+;maxWidth=\d+', ';maxHeight=640;maxWidth=640', src)
         except Exception as e:
-            logger.error(f"Error extracting image URL: {str(e)}")
-            return None 
+            logger.error(f"Error extracting image URL: {e}")
+        return None
+
+    # ------------------------------------------------------------------ #
+    # Helpers
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _parse_price(text):
+        if not text:
+            return None
+        match = PRICE_RE.search(text)
+        if not match:
+            return None
+        try:
+            return float(match.group(1).replace(',', ''))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _jsonld_product(soup):
+        for script in soup.find_all('script', type='application/ld+json'):
+            raw = script.string or script.get_text()
+            if not raw or 'Product' not in raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                continue
+            candidates = data if isinstance(data, list) else [data]
+            for item in candidates:
+                if not isinstance(item, dict):
+                    continue
+                if item.get('@type') == 'Product':
+                    return item
+                for node in item.get('@graph') or []:
+                    if isinstance(node, dict) and node.get('@type') == 'Product':
+                        return node
+        return None
+
+    @staticmethod
+    def _offers(product):
+        if not product:
+            return []
+        offers = product.get('offers')
+        if isinstance(offers, dict):
+            return [offers]
+        if isinstance(offers, list):
+            return [o for o in offers if isinstance(o, dict)]
+        return []
+
+    @staticmethod
+    def _classify_button(testid, label, enabled):
+        """Map a pdp button to True (buyable), False (not buyable) or None (unknown)."""
+        key = f"{testid} {label}".replace('_', '-')
+        if any(state in key for state in OUT_OF_STOCK_STATES) or 'sold out' in key or 'coming soon' in key:
+            return False
+        if any(state in key for state in IN_STOCK_STATES) or 'add to cart' in key:
+            return bool(enabled)
+        return None
+
+    def _button_state(self, soup):
+        """Availability from the page's own pdp CTA; None when no CTA is present."""
+        for button in soup.select(PDP_BUTTON_SELECTOR):
+            testid = (button.get('data-testid') or '').lower()
+            label = button.get_text(' ', strip=True).lower()
+            enabled = not (button.has_attr('disabled') or button.get('aria-disabled') == 'true')
+            state = self._classify_button(testid, label, enabled)
+            if state is not None:
+                logger.debug(f"pdp button {testid!r} ({label!r}, enabled={enabled}) -> available={state}")
+                return state
+        # Legacy layout
+        for button in soup.select('.fulfillment-add-to-cart-button button, .add-to-cart-button'):
+            label = button.get_text(' ', strip=True).lower()
+            enabled = not (button.has_attr('disabled') or 'disabled' in button.get('class', []))
+            state = self._classify_button('', label, enabled)
+            if state is not None:
+                return state
+        return None
+
+    def _availability_from_jsonld(self, soup):
+        for offer in self._offers(self._jsonld_product(soup)):
+            availability = str(offer.get('availability', ''))
+            if not availability:
+                continue
+            if re.search(r'InStock|PreOrder|LimitedAvailability|OnlineOnly', availability):
+                logger.debug(f"JSON-LD availability {availability} -> True")
+                return True
+            if re.search(r'OutOfStock|SoldOut|Discontinued|PreSale', availability):
+                logger.debug(f"JSON-LD availability {availability} -> False")
+                return False
+        logger.warning("Could not determine availability; defaulting to False")
+        return False
+
+    # ------------------------------------------------------------------ #
+    # Add to cart
+    # ------------------------------------------------------------------ #
+    def add_to_cart(self, quantity=1, url=None):
+        """
+        Add the most recently scraped product (or ``url``) to the Best Buy cart.
+
+        Returns:
+            {'success': bool, 'message': str, 'cart_url': str|None, 'screenshot': base64|None}
+        """
+        if url:
+            self.current_product_url = url
+            self.current_sku = self.extract_sku(url) or self.current_sku
+        if not self.current_product_url:
+            return {
+                'success': False,
+                'message': "No product URL available. Please scrape the product first.",
+                'cart_url': None,
+                'screenshot': None,
+            }
+        url = self.current_product_url
+        quantity = max(1, int(quantity or 1))
+        logger.info(f"Adding Best Buy product to cart (qty={quantity}): {url}")
+
+        last = {'success': False, 'message': 'Could not reach Best Buy', 'cart_url': None, 'screenshot': None}
+        for headless in self._modes(self.cart_headed_fallback):
+            driver = None
+            try:
+                driver = self._launch(headless)
+                self._load_product_page(driver, url)
+                return self._add_to_cart_with_driver(driver, quantity)
+            except BestBuyBlocked as e:
+                logger.warning(f"{e} (headless={headless})")
+                last = {'success': False, 'message': str(e), 'cart_url': None,
+                        'screenshot': self._take_screenshot(driver) if driver else None}
+            except Exception as e:
+                logger.error(f"Error adding to cart (headless={headless}): {e}", exc_info=True)
+                last = {'success': False, 'message': f"Error adding to cart: {e}", 'cart_url': None,
+                        'screenshot': self._take_screenshot(driver) if driver else None}
+            finally:
+                self._quit(driver)
+        return last
+
+    def _find_buy_button(self, driver):
+        """Return (button, state, label) for the pdp CTA; state is True/False/None as in _classify_button."""
+        for button in driver.find_elements(By.CSS_SELECTOR, PDP_BUTTON_SELECTOR):
+            testid = (button.get_attribute('data-testid') or '').lower()
+            label = (button.text or '').strip().lower()
+            state = self._classify_button(testid, label, enabled=button.is_enabled())
+            if state is not None:
+                return button, state, label or testid
+        return None, None, None
+
+    def _add_to_cart_with_driver(self, driver, quantity):
+        button, state, label = self._find_buy_button(driver)
+        if button is None:
+            return {'success': False, 'message': "Could not find the Add to Cart button",
+                    'cart_url': None, 'screenshot': self._take_screenshot(driver)}
+        if not state:
+            return {'success': False, 'message': f"Product is not purchasable ({label})",
+                    'cart_url': None, 'screenshot': self._take_screenshot(driver)}
+
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
+        self._human_pause(0.4, 1.0)
+        try:
+            button.click()
+        except WebDriverException:
+            driver.execute_script("arguments[0].click();", button)
+        logger.info(f"Clicked '{label}' button")
+
+        # Wait for the add-to-cart confirmation (sheet/modal or cart counter)
+        confirmed = False
+        try:
+            WebDriverWait(driver, 15).until(
+                EC.any_of(
+                    EC.presence_of_element_located(
+                        (By.XPATH, "//*[contains(translate(., 'ADED', 'aded'), 'added to')]")),
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, 'a[href*="/cart"] [data-testid*="count"], .cart-count, [data-testid="cart-icon-count"]')),
+                    EC.url_contains('/cart'),
+                )
+            )
+            confirmed = True
+        except TimeoutException:
+            logger.warning("No add-to-cart confirmation detected; checking the cart page anyway")
+        self._human_pause()
+
+        # Dismiss protection-plan / upsell sheets if they appeared
+        for xpath in ("//button[contains(., 'No, thanks')]", "//button[contains(., 'No thanks')]",
+                      "//button[contains(., 'Continue')]", "//button[@aria-label='Close']"):
+            try:
+                for element in driver.find_elements(By.XPATH, xpath):
+                    if element.is_displayed():
+                        element.click()
+                        self._human_pause(0.3, 0.7)
+                        break
+            except Exception:
+                continue
+
+        driver.get(BESTBUY_CART)
+        try:
+            WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
+        except TimeoutException:
+            pass
+        self._human_pause(1.0, 2.0)
+
+        if quantity > 1:
+            self._set_cart_quantity(driver, quantity)
+
+        page = driver.page_source
+        screenshot = self._take_screenshot(driver)
+        empty = bool(re.search(r'cart is empty|nothing in your cart', page, re.I))
+        in_cart = bool(self.current_sku and self.current_sku in page)
+
+        if empty or (not confirmed and not in_cart):
+            return {'success': False, 'message': "Item did not appear in the cart",
+                    'cart_url': driver.current_url, 'screenshot': screenshot}
+        return {'success': True, 'message': f"Successfully added {quantity} item(s) to Best Buy cart",
+                'cart_url': driver.current_url, 'screenshot': screenshot}
+
+    def _set_cart_quantity(self, driver, quantity):
+        """Best-effort quantity change on the cart page."""
+        try:
+            for select in driver.find_elements(
+                    By.CSS_SELECTOR, 'select[aria-label*="uantity"], select[name*="quantity"], select[id*="quantity"]'):
+                Select(select).select_by_value(str(quantity))
+                self._human_pause()
+                logger.info(f"Cart quantity set to {quantity}")
+                return True
+            for field in driver.find_elements(By.CSS_SELECTOR, 'input[aria-label*="uantity"], input[name*="quantity"]'):
+                field.clear()
+                field.send_keys(str(quantity))
+                self._human_pause()
+                return True
+        except Exception as e:
+            logger.warning(f"Could not set cart quantity to {quantity}: {e}")
+        return False
