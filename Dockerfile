@@ -52,15 +52,15 @@ RUN pip install --no-cache-dir undetected-chromedriver
 RUN useradd -m appuser
 
 # Create necessary directories with proper permissions
-RUN mkdir -p /app/data /app/logs \
+RUN mkdir -p /app/data /app/logs /home/appuser/.chrome_profiles \
     && chmod 777 /app/data /app/logs \
-    && chown -R appuser:appuser /app
+    && chown -R appuser:appuser /app /home/appuser/.chrome_profiles
 
 # Copy the application code
 COPY --chown=appuser:appuser . .
 
-# Make the start script executable
-RUN chmod +x /app/start.sh
+# Make the start script executable (and strip any CRLF that a Windows checkout may have introduced)
+RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
 
 # Set up volume mount points
 VOLUME ["/app/data", "/app/logs"]

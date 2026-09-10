@@ -10,29 +10,61 @@ services:
     volumes:
       - app_data:/app/data
       - app_logs:/app/logs
+      # Persistent Chrome profiles (retailer logins / cookies for the undetected-chromedriver
+      # scrapers and auto-cart) survive container restarts and rebuilds.
+      - chrome_profiles:/home/appuser/.chrome_profiles
+    # Chrome crashes with the default 64MB /dev/shm; give it a real shared-memory segment.
+    shm_size: 1g
     deploy:
       resources:
         limits:
           cpus: '2.0'
           memory: 2G
+    # Secrets (TWOCAPTCHA_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) are read straight
+    # from .env next to this file. They are deliberately NOT listed under `environment:`
+    # with ${VAR} interpolation, because shell/Windows-user env vars would take precedence
+    # over .env there. Copy .env.example to .env and fill them in. Never commit .env.
+    env_file:
+      - path: .env
+        required: false
     environment:
       - FLASK_ENV=production
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-here}
       - DATABASE_URI=sqlite:///data/product_tracker.db
       - DEBUG=${DEBUG:-0}
-      - TWOCAPTCHA_API_KEY=${TWOCAPTCHA_API_KEY:-34c6d7576786cffd62e7483403ff6fd1}
       - CHECK_INTERVAL_MINUTES=${CHECK_INTERVAL_MINUTES:-15}
       - CHECK_INTERVAL_SECONDS=${CHECK_INTERVAL_SECONDS:-0}
       - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-UTC}
       - NEWEGG_COOKIES=${NEWEGG_COOKIES:-}
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # Optional: expose the dashboard on the internet through a Cloudflare quick tunnel so the
+  # Telegram snapshot link opens from a phone. Opt-in:  docker compose --profile tunnel up -d
+  # SET DASHBOARD_PASSWORD IN .env FIRST. The dashboard has no accounts: anyone who reaches it
+  # can add or delete tracked products, trigger cart attempts and rewrite .env. Without that
+  # password the app also refuses to put the public link in Telegram messages.
+  # The public https://<random>.trycloudflare.com URL is printed in this container's log:
+  #   docker compose --profile tunnel logs tunnel | grep trycloudflare
+  # Put it in .env as PUBLIC_URL=https://... (it changes every time the tunnel restarts) and
+  # restart app-tracker so the snapshot caption links to it. For a stable hostname use a named
+  # tunnel with a Cloudflare account and replace the command with `tunnel run --token <token>`.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: app-tracker-tunnel
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://app-tracker:5000
+    depends_on:
+      - app-tracker
 
 volumes:
   app_data:
     driver: local
   app_logs:
+    driver: local
+  chrome_profiles:
     driver: local 

@@ -2,6 +2,7 @@ import re
 import logging
 import requests
 from bs4 import BeautifulSoup
+from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text
 
 # Set up logging
 logger = logging.getLogger('app.scrapers.bestbuy')
@@ -12,9 +13,7 @@ class BestBuyScraper:
     def __init__(self):
         """Initialize the BestBuy scraper."""
         logger.debug("Initializing BestBuyScraper")
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
+        self.headers = dict(DEFAULT_HEADERS)
     
     def scrape_product(self, url):
         """
@@ -27,7 +26,11 @@ class BestBuyScraper:
             dict: Product information including name, price, availability, and image URL
         """
         try:
-            response = requests.get(url, headers=self.headers)
+            response = requests.get(url, headers=self.headers, timeout=REQUEST_TIMEOUT)
+            block_reason = detect_block_page(response.text)
+            if block_reason:
+                logger.warning(f"Best Buy returned a block page for {url} (HTTP {response.status_code}): {block_reason}")
+                return None
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             
@@ -152,32 +155,33 @@ class BestBuyScraper:
                 element = soup.select_one(selector)
                 if element:
                     text = element.get_text().strip().lower()
+                    is_disabled = 'disabled' in element.get('class', []) or element.has_attr('disabled')
+                    if is_preorder_text(text) and not is_disabled:
+                        logger.debug("Product is available for pre-order (from selector)")
+                        return True
                     if any(status in text for status in ['sold out', 'unavailable', 'out of stock']):
                         logger.debug("Product is not available (from selector)")
                         return False
-                    if 'add to cart' in text and 'disabled' not in element.get('class', []):
+                    if 'add to cart' in text and not is_disabled:
                         logger.debug("Product is available (from add to cart button)")
                         return True
-            
-            # Check for add to cart button status
-            for btn_selector in ['.add-to-cart-button', '[data-button-state="ADD_TO_CART"]', 'button[data-track="Add to Cart"]']:
+
+            # Check for add to cart / pre-order button status
+            for btn_selector in ['.add-to-cart-button', '[data-button-state="ADD_TO_CART"]', '[data-button-state="PRE_ORDER"]', 'button[data-track="Add to Cart"]']:
                 btn = soup.select_one(btn_selector)
                 if btn and 'disabled' not in btn.get('class', []):
                     if btn.name == 'button' and not btn.has_attr('disabled'):
                         logger.debug("Product is available (from button)")
                         return True
-            
-            # Check for specific unavailable texts
-            for text in soup.find_all(text=True):
-                if any(status in text.lower() for status in ['sold out', 'unavailable', 'out of stock']):
-                    logger.debug("Product is not available (from text)")
-                    return False
-                
+
+            # Deliberately no whole-page text scan here: "unavailable" appears in
+            # unrelated copy (store pickup, protection plans) on in-stock pages.
+
             # Check JSON-LD data for availability info
             script_tags = soup.find_all('script', {'type': 'application/ld+json'})
             for script in script_tags:
                 if script and script.string and 'availability' in script.string:
-                    if 'InStock' in script.string:
+                    if 'InStock' in script.string or 'PreOrder' in script.string:
                         logger.debug("Product is available (from JSON-LD)")
                         return True
                     if 'OutOfStock' in script.string:

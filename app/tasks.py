@@ -6,7 +6,7 @@ from flask import current_app
 from app import db
 from app.models.product import Product, PriceHistory
 from app.scrapers import get_scraper
-from app.notifications.discord import DiscordNotifier
+from app.notifications import send_product_alert
 import urllib.parse
 import threading
 import atexit
@@ -67,6 +67,8 @@ def check_all_products():
                 'www.bestbuy.com': 'bestbuy',
                 'bhphotovideo.com': 'bh',
                 'www.bhphotovideo.com': 'bh',
+                'target.com': 'target',
+                'www.target.com': 'target',
                 'test-store.example.com': 'test',
             }
             
@@ -113,7 +115,10 @@ def check_all_products():
                     old_price = product.current_price
                     old_availability = product.available
                     
-                    product.name = product_data.get('name') or product.name
+                    # Only accept a real name; scrapers return "Unknown Product" when extraction fails
+                    scraped_name = product_data.get('name')
+                    if scraped_name and scraped_name != "Unknown Product":
+                        product.name = scraped_name
                     product.current_price = product_data.get('price') or product.current_price
                     product.available = product_data.get('available', False)
                     product.image_url = product_data.get('image_url') or product.image_url
@@ -129,38 +134,21 @@ def check_all_products():
                         db.session.add(history)
                         logger.info(f"Price changed for product {product.id}: {old_price} -> {product.current_price}")
                     
-                    # Send notifications if configured
-                    if product.discord_webhook_url:
-                        # Price drop notification
-                        if (product.notify_on_price_drop and 
-                            product.current_price is not None and 
-                            old_price is not None and 
-                            product.current_price < old_price):
-                            DiscordNotifier.send_notification(
-                                product.discord_webhook_url,
-                                product.name,
-                                product.url,
-                                product.current_price,
-                                old_price,
-                                is_availability_alert=False,
-                                image_url=product.image_url
-                            )
-                            logger.info(f"Price drop notification for product {product.id}: {product.current_price} -> {old_price}")
-                        
-                        # Availability notification
-                        if (product.notify_on_availability and 
-                            product.available and 
-                            not old_availability):
-                            DiscordNotifier.send_notification(
-                                product.discord_webhook_url,
-                                product.name,
-                                product.url,
-                                product.current_price,
-                                old_price,
-                                is_availability_alert=True,
-                                image_url=product.image_url
-                            )
-                            logger.info(f"Availability notification for product {product.id}: {product.current_price} -> {old_price}")
+                    # Send notifications to every configured channel (Discord webhook, Telegram)
+                    # Price drop notification
+                    if (product.notify_on_price_drop and 
+                        product.current_price is not None and 
+                        old_price is not None and 
+                        product.current_price < old_price):
+                        send_product_alert(product, old_price=old_price, is_availability_alert=False)
+                        logger.info(f"Price drop notification for product {product.id}: {product.current_price} -> {old_price}")
+                    
+                    # Availability notification
+                    if (product.notify_on_availability and 
+                        product.available and 
+                        not old_availability):
+                        send_product_alert(product, old_price=old_price, is_availability_alert=True)
+                        logger.info(f"Availability notification for product {product.id}: {product.current_price} -> {old_price}")
                     
                     # Commit changes
                     db.session.commit()
@@ -234,6 +222,19 @@ def init_scheduler(app):
             replace_existing=True
         )
         
+        # Optional third job: post a dashboard screenshot to Telegram on an interval (0 = off)
+        snapshot_minutes = app.config.get('SNAPSHOT_INTERVAL_MINUTES', 0) or 0
+        if snapshot_minutes > 0:
+            app.scheduler.add_job(
+                func=lambda: send_dashboard_snapshot_with_context(app),
+                trigger='interval',
+                minutes=snapshot_minutes,
+                id='telegram_snapshot',
+                name='Send dashboard snapshot to Telegram',
+                replace_existing=True
+            )
+            logger.info(f"Dashboard snapshot to Telegram scheduled every {snapshot_minutes} minutes")
+        
         # Start the scheduler
         app.scheduler.start()
         logger.info("Scheduler started")
@@ -266,6 +267,22 @@ def check_auto_cart_opportunities_with_context(app):
             check_auto_cart_opportunities()
         except Exception as e:
             logger.error(f"Error in auto cart opportunity check: {str(e)}", exc_info=True)
+
+def send_dashboard_snapshot_with_context(app):
+    """
+    Run the Telegram dashboard snapshot in the application context.
+    
+    Args:
+        app: Flask application instance
+    """
+    with app.app_context():
+        try:
+            from app.snapshot import send_dashboard_snapshot
+            result = send_dashboard_snapshot()
+            if not result.get('success'):
+                logger.warning(f"Scheduled dashboard snapshot failed: {result.get('message')}")
+        except Exception as e:
+            logger.error(f"Error in scheduled dashboard snapshot: {str(e)}", exc_info=True)
 
 def check_auto_cart_opportunities():
     """
@@ -311,6 +328,8 @@ def check_auto_cart_opportunities():
         'www.bestbuy.com': 'bestbuy',
         'bhphotovideo.com': 'bh',
         'www.bhphotovideo.com': 'bh',
+        'target.com': 'target',
+        'www.target.com': 'target',
         'test-store.example.com': 'test',
     }
     
@@ -351,19 +370,7 @@ def check_auto_cart_opportunities():
                     had_successful_cart = True
                     
                     # Send notification about auto-cart success
-                    if product.discord_webhook_url:
-                        from app.notifications.discord import DiscordNotifier
-                        
-                        # Send auto-cart notification
-                        DiscordNotifier.send_notification(
-                            webhook_url=product.discord_webhook_url,
-                            product_name=product.name,
-                            product_url=product.url,
-                            current_price=product.current_price,
-                            is_auto_cart=True,
-                            cart_url=result.get('cart_url'),
-                            image_url=product.image_url
-                        )
+                    send_product_alert(product, is_auto_cart=True, cart_url=result.get('cart_url'))
                 else:
                     logger.warning(f"Failed to add product {product.id} to cart: {result.get('message', 'Unknown error')}")
             except Exception as e:

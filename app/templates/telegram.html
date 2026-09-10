@@ -1,0 +1,83 @@
+{% extends 'base.html' %}
+
+{% block title %}Telegram Alerts - Product Tracker{% endblock %}
+
+{% block content %}
+<header class="mb-4">
+    <h2>Telegram Alerts</h2>
+    <p>Send every price drop, availability and auto-cart alert to a Telegram channel.</p>
+</header>
+
+<div class="settings-container" style="max-width: 800px; margin: 0 auto;">
+    <article style="margin-bottom: 2rem;">
+        <h3>Status</h3>
+        {% if configured %}
+            <p><strong style="color: #28a745;">Configured</strong> — alerts for all tracked products will be sent to this channel.</p>
+            <table>
+                <tr><th style="text-align: left;">Bot token</th><td><code>{{ masked_token }}</code></td></tr>
+                <tr><th style="text-align: left;">Chat ID</th><td><code>{{ chat_id }}</code></td></tr>
+            </table>
+        {% else %}
+            <p><strong style="color: #dc3545;">Not configured.</strong>
+            Set <code>TELEGRAM_BOT_TOKEN</code> and <code>TELEGRAM_CHAT_ID</code> in your <code>.env</code> file and restart the app.</p>
+        {% endif %}
+
+        <details>
+            <summary>How to set up the Telegram channel</summary>
+            <div style="margin-top: 0.5rem; padding: 1rem; background-color: var(--accent-bg); border-radius: 5px;">
+                <ol style="margin-bottom: 0;">
+                    <li>In Telegram, message <strong>@BotFather</strong>, send <code>/newbot</code> and follow the prompts. Copy the bot token.</li>
+                    <li>Create a channel (or open an existing one) and add your bot as an <strong>Administrator</strong> with permission to post messages.</li>
+                    <li>Find the channel's chat ID:
+                        <ul>
+                            <li>Public channel: use its username, e.g. <code>@my_deals_channel</code></li>
+                            <li>Private channel: forward a post from the channel to <strong>@userinfobot</strong> — the ID looks like <code>-1001234567890</code></li>
+                        </ul>
+                    </li>
+                    <li>Add both values to <code>.env</code>:
+                        <pre style="margin: 0.5rem 0;">TELEGRAM_BOT_TOKEN=123456789:ABCdef...
+TELEGRAM_CHAT_ID=-1001234567890</pre>
+                    </li>
+                    <li>Restart the app, then use the test form below.</li>
+                </ol>
+            </div>
+        </details>
+    </article>
+
+    <article style="margin-bottom: 2rem;">
+        <h3>Send a Test Alert</h3>
+        <form method="post" action="{{ url_for('main.telegram_test') }}">
+            <div style="margin-bottom: 1rem;">
+                <label for="message">Custom message (optional)</label>
+                <textarea id="message" name="message" rows="3" placeholder="Leave blank to send a sample price-drop alert"></textarea>
+            </div>
+            <button type="submit" {% if not configured %}disabled{% endif %}>Send Test Alert</button>
+        </form>
+    </article>
+
+    <article style="margin-bottom: 2rem;">
+        <h3>Dashboard Snapshot</h3>
+        <p>Post a screenshot of this dashboard to the channel so you can check on tracked products from your phone.</p>
+        <form method="post" action="{{ url_for('main.telegram_snapshot') }}">
+            <button type="submit" {% if not configured %}disabled{% endif %}>Send Dashboard Snapshot</button>
+        </form>
+        <p style="font-size: 0.875rem; color: #6c757d;">
+            Takes a few seconds (headless Chrome renders the page).
+            Set <code>PUBLIC_URL</code> in <code>.env</code> to add a tap-to-open link (see the Cloudflare tunnel in the README),
+            and <code>SNAPSHOT_INTERVAL_MINUTES</code> to send one automatically on a schedule.
+            JSON: <code>POST {{ url_for('main.api_telegram_snapshot', _external=True) }}</code>
+            with an optional <code>{"path": "/product/3"}</code>.
+        </p>
+    </article>
+
+    <article style="margin-bottom: 2rem;">
+        <h3>API</h3>
+        <p>Other tools can push alerts into the channel through this endpoint:</p>
+        <pre style="font-size: 0.8rem;">POST {{ url_for('main.api_telegram_send', _external=True) }}
+Content-Type: application/json
+
+{"message": "GPU back in stock!", "image_url": "https://example.com/gpu.jpg"}</pre>
+        <p style="font-size: 0.875rem; color: #6c757d;">Returns <code>{"success": true}</code>, or an error with status 400 (missing message), 503 (not configured) or 502 (Telegram rejected it).</p>
+    </article>
+</div>
+{% endblock %}
