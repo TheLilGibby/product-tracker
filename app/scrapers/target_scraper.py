@@ -45,6 +45,7 @@ a challenge - it carries a session the user established themselves.
 """
 
 import re
+import html
 import logging
 import os
 import time
@@ -246,14 +247,24 @@ class TargetScraper:
         product = (payload.get('data') or {}).get('product') or {}
         item = product.get('item') or {}
 
-        name = ((item.get('product_description') or {}).get('title') or '').strip()
+        # Redsky returns raw HTML-entity text: "Nintendo&#8482; Switch 2 ..."
+        name = html.unescape(((item.get('product_description') or {}).get('title') or '')).strip()
         if not name:
             logger.warning(f"Redsky response for TCIN {tcin} has no product title")
             return None
 
-        price = self._price_from_redsky(product.get('price') or {})
         available = self._availability_from_redsky(product)
+        if available is None:
+            # A name and a price with a guessed availability is worse than no
+            # answer: the caller would store the guess. Hand the whole product
+            # to the browser path instead.
+            logger.warning(f"Redsky gave no availability for TCIN {tcin}; deferring to the browser")
+            return None
+
+        price = self._price_from_redsky(product.get('price') or {})
         image_url = ((item.get('enrichment') or {}).get('images') or {}).get('primary_image_url')
+        if image_url:
+            image_url = html.unescape(image_url)
 
         logger.info(f"Redsky extracted: name={name}, price={price}, available={available}")
         return {
@@ -322,7 +333,19 @@ class TargetScraper:
 
     @staticmethod
     def _availability_from_redsky(product):
-        """Derive availability from Redsky's fulfillment block (pre-order sellable counts as available)"""
+        """
+        Derive availability from Redsky's fulfillment block, or return None when
+        the payload does not say.
+
+        None is not False. Redsky answers 200 for these tcins with no
+        product.fulfillment key at all, and reporting that as "unavailable"
+        would mark an orderable item sold out on every cheap-path cycle - and
+        then fire a bogus back-in-stock alert the moment the browser path
+        disagreed. Unknown belongs to the browser path, which can actually see
+        the buy box.
+
+        Pre-order sellable counts as available.
+        """
         fulfillment = product.get('fulfillment') or {}
         if fulfillment.get('sold_out') is True:
             logger.debug("Redsky fulfillment.sold_out is true")
@@ -339,8 +362,10 @@ class TargetScraper:
             logger.debug("Redsky reports stock in stores")
             return True
 
-        logger.warning("Could not determine availability from Redsky fulfillment data")
-        return False
+        logger.warning(
+            "Could not determine availability from Redsky fulfillment data; "
+            f"product keys={sorted(product.keys())}, fulfillment keys={sorted(fulfillment.keys())}")
+        return None
 
     # ----------------------------------------------------------------- browser
     def _start_driver(self):
