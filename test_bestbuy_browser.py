@@ -132,7 +132,8 @@ def main():
 
     urls = args.urls or TARGETS
     scraper = BestBuyScraper(headless=False if args.headed else None)
-    print(f"\nChrome major={scraper.chrome_major} headless={scraper.headless} headed_fallback={scraper.headed_fallback}")
+    print(f"\nChrome major={scraper.chrome_major} headless={scraper.headless} "
+          f"scrape_headed_fallback={scraper.scrape_headed_fallback} cart_headed_fallback={scraper.cart_headed_fallback}")
 
     buyable_url = None
     for url in urls:

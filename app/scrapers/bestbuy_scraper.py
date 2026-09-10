@@ -17,8 +17,13 @@ drops headless Chrome. This scraper therefore:
 Environment knobs (all optional):
 
 ``BESTBUY_HEADLESS``        ``1`` (default) or ``0`` to always show the window.
-``BESTBUY_HEADED_FALLBACK`` ``1`` (default) to retry visibly when headless is
-                            blocked; ``0`` to never open a window.
+``BESTBUY_HEADED_FALLBACK`` Retry visibly when headless is blocked. Defaults to
+                            on for ``add_to_cart`` (a window there is expected,
+                            and lets the user log in) and off for
+                            ``scrape_product``, so a scheduled check can never
+                            pop windows on the desktop. Set it to ``1`` to allow
+                            the retry while scraping too, or ``0`` to never open
+                            a window at all.
 ``CHROME_MAJOR_VERSION``    Force the chromedriver major version (see
                             ``common.detect_chrome_major``); otherwise it is
                             detected from the installed Chrome.
@@ -95,7 +100,10 @@ class BestBuyScraper:
         os.makedirs(self.profile_dir, exist_ok=True)
 
         self.headless = _env_flag('BESTBUY_HEADLESS', True) if headless is None else bool(headless)
-        self.headed_fallback = _env_flag('BESTBUY_HEADED_FALLBACK', True)
+        # Scraping runs unattended on a schedule, so it must not pop windows on the
+        # user's desktop; a cart attempt is user-initiated, so a window is fine there.
+        self.scrape_headed_fallback = _env_flag('BESTBUY_HEADED_FALLBACK', False)
+        self.cart_headed_fallback = _env_flag('BESTBUY_HEADED_FALLBACK', True)
 
         self.chrome_major = detect_chrome_major()
         self.user_agent = USER_AGENT_TEMPLATE.format(major=self.chrome_major or DEFAULT_CHROME_MAJOR)
@@ -278,7 +286,7 @@ class BestBuyScraper:
         self.current_product_url = url
         self.current_sku = self.extract_sku(url)
 
-        for headless in self._modes():
+        for headless in self._modes(self.scrape_headed_fallback):
             driver = None
             try:
                 driver = self._launch(headless)
@@ -309,10 +317,10 @@ class BestBuyScraper:
             logger.error(f"HTTP fallback failed for {url}: {e}")
             return None
 
-    def _modes(self):
+    def _modes(self, allow_headed_fallback):
         """Browser modes to try in order: configured mode, then visible if headless was blocked."""
         modes = [self.headless]
-        if self.headless and self.headed_fallback and _display_available():
+        if self.headless and allow_headed_fallback and _display_available():
             modes.append(False)
         return modes
 
@@ -584,7 +592,7 @@ class BestBuyScraper:
         logger.info(f"Adding Best Buy product to cart (qty={quantity}): {url}")
 
         last = {'success': False, 'message': 'Could not reach Best Buy', 'cart_url': None, 'screenshot': None}
-        for headless in self._modes():
+        for headless in self._modes(self.cart_headed_fallback):
             driver = None
             try:
                 driver = self._launch(headless)
