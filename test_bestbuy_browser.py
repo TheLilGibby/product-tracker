@@ -6,19 +6,36 @@ Usage:
     python test_bestbuy_browser.py --headed        # force a visible Chrome window
     python test_bestbuy_browser.py --cart          # also try add_to_cart on the first buyable product
     python test_bestbuy_browser.py <url> [<url>]   # scrape custom URLs
-    python test_bestbuy_browser.py --offline       # only run the HTML-parsing checks (no Chrome)
+    python test_bestbuy_browser.py --offline       # only run the parser/lock checks (no Chrome)
+    python test_bestbuy_browser.py --login         # ONE-TIME SETUP, see below
 
 Requires Chrome installed locally. Hits bestbuy.com for everything except --offline.
 Exit code is non-zero when a scrape returns None or violates the result contract.
+
+One-time setup (--login)
+------------------------
+Akamai treats a signed-in profile with real cookies far more kindly than a cold
+one, and the cart needs an account anyway. `--login` opens the persistent profile
+~/.chrome_profiles/bestbuy_profile in a VISIBLE window so you can sign in and
+clear any challenge yourself; the cookies stay in that profile and later headless
+runs reuse them. It waits indefinitely for the profile lock, so a scheduled check
+that is mid-scrape will simply be waited out.
+
+The app must run as the SAME OS user, since it reads that same profile directory.
 """
 
 import argparse
 import logging
+import os
 import sys
+import tempfile
+import time
+from contextlib import contextmanager
 
 from bs4 import BeautifulSoup
 
-from app.scrapers.bestbuy_scraper import BestBuyScraper
+from app.scrapers.bestbuy_scraper import BESTBUY_CART, BestBuyScraper
+from app.scrapers.common import ProfileBusyError, detect_block_page, profile_lock
 
 # Importing app.scrapers runs the app package's DEBUG basicConfig; override it so
 # selenium/urllib3 don't dump every page source to the console.
@@ -30,6 +47,8 @@ logging.basicConfig(
 )
 for noisy in ('selenium', 'urllib3', 'uc', 'undetected_chromedriver'):
     logging.getLogger(noisy).setLevel(logging.WARNING)
+
+BESTBUY_SIGNIN = 'https://www.bestbuy.com/identity/global/signin'
 
 TARGETS = [
     # Carrying case - listed as pre-order / coming soon (releases Oct 29 2026)
@@ -116,16 +135,122 @@ def run_offline_checks():
     return failures
 
 
+def run_lock_checks():
+    """
+    Chrome profile serialization, without Chrome: the lock is exclusive, it is
+    released afterwards, and neither entry point lets contention escape as a
+    traceback. Uses a scratch directory so a running check keeps its own profile.
+    """
+    failures = 0
+    scratch = os.path.join(tempfile.mkdtemp(prefix='bestbuy_lock_'), 'bestbuy_profile')
+
+    with profile_lock(scratch, timeout=1):
+        start = time.monotonic()
+        try:
+            with profile_lock(scratch, timeout=1):
+                got = 'acquired while already held'
+        except ProfileBusyError:
+            got = 'ProfileBusyError'
+        waited = time.monotonic() - start
+    ok = got == 'ProfileBusyError' and 0.9 <= waited < 5
+    failures += 0 if ok else 1
+    print(f"  [{'ok' if ok else 'FAIL'}] a second holder is refused: {got} after {waited:.1f}s")
+
+    # If the lock were not released, one finished scrape would wedge every later run.
+    try:
+        with profile_lock(scratch, timeout=1):
+            ok = True
+    except ProfileBusyError:
+        ok = False
+    failures += 0 if ok else 1
+    print(f"  [{'ok' if ok else 'FAIL'}] the lock is released when the session ends")
+
+    scraper = BestBuyScraper.__new__(BestBuyScraper)  # skip __init__: no profile dir, no Chrome lookup
+    scraper.profile_dir = scratch
+    scraper.current_product_url = TARGETS[0]
+    scraper.current_sku = '6691852'
+    scraper.headless = True
+    scraper.scrape_headed_fallback = False
+    scraper.cart_headed_fallback = True
+
+    @contextmanager
+    def busy_browser(headless=None, timeout=None):
+        raise ProfileBusyError(f"another process has held the Chrome profile {scratch} for over 60s")
+        yield  # unreachable; makes this a generator so @contextmanager accepts it
+
+    scraper._browser = busy_browser
+    scraper.scrape_via_requests = lambda url: None  # keep the HTTP fallback off the network
+
+    try:
+        result = scraper.scrape_product(TARGETS[0])
+        ok, detail = result is None, repr(result)
+    except Exception as e:
+        ok, detail = False, f"raised {type(e).__name__}: {e}"
+    failures += 0 if ok else 1
+    print(f"  [{'ok' if ok else 'FAIL'}] scrape_product on a busy profile -> {detail}")
+
+    try:
+        cart = scraper.add_to_cart(quantity=1)
+        ok = (cart.get('success') is False
+              and 'profile is busy' in (cart.get('message') or '').lower()
+              and cart.get('screenshot') is None)
+        detail = f"success={cart.get('success')} message={cart.get('message')!r}"
+    except Exception as e:
+        ok, detail = False, f"raised {type(e).__name__}: {e}"
+    failures += 0 if ok else 1
+    print(f"  [{'ok' if ok else 'FAIL'}] add_to_cart on a busy profile -> {detail}")
+
+    return failures
+
+
+def login():
+    """Open the persistent profile in a visible window for a one-time sign-in."""
+    scraper = BestBuyScraper(headless=False)
+    print(f"Opening a visible Chrome window using profile: {scraper.profile_dir}")
+    # Wait indefinitely rather than the usual 60s: a scheduled check may hold the
+    # profile, and the person signing in needs it for as long as that takes.
+    print("Waiting for exclusive access to the profile (a running check may hold it)...")
+    with scraper._browser(headless=False, timeout=None) as driver:
+        driver.set_page_load_timeout(60)
+        driver.get(BESTBUY_SIGNIN)
+        print("\nSign in and clear any verification in the window, then press Enter here...")
+        input()
+
+        # Visit a product page and the cart once, so the profile carries the cookies
+        # Akamai hands a session that has actually browsed.
+        for url in (TARGETS[0], BESTBUY_CART):
+            print(f"Visiting {url}")
+            try:
+                driver.get(url)
+            except Exception as e:
+                print(f"  (navigation error: {e})")
+            reason = detect_block_page(driver.page_source)
+            if reason:
+                print(f"  Best Buy is still showing a block/challenge page ({reason}) - "
+                      "clear it in the window, then press Enter...")
+                input()
+        print("\nDone. The profile now holds the session; later headless runs reuse it.")
+        print("Run `python test_bestbuy_browser.py --cart` to test add-to-cart.")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('urls', nargs='*', help="product URLs (default: the two Zelda 40th Anniversary items)")
     parser.add_argument('--headed', action='store_true', help="force a visible Chrome window")
     parser.add_argument('--cart', action='store_true', help="also call add_to_cart() on the first buyable product")
     parser.add_argument('--offline', action='store_true', help="only run parser/fixture checks, no Chrome")
+    parser.add_argument('--login', action='store_true',
+                        help="one-time setup: sign in to the persistent profile in a visible window")
     args = parser.parse_args()
+
+    if args.login:
+        return login()
 
     print("Offline parser checks:")
     failures = run_offline_checks()
+    print("\nChrome profile lock checks:")
+    failures += run_lock_checks()
     if args.offline:
         print(f"\n{'PASS' if failures == 0 else 'FAIL'} ({failures} failure(s))")
         return 1 if failures else 0

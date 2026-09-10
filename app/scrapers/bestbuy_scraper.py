@@ -10,6 +10,10 @@ drops headless Chrome. This scraper therefore:
   survives between runs;
 * runs ``--headless=new`` by default and, when that is blocked and a display
   is available, transparently retries with a visible window;
+* serializes every Chrome session on that profile through
+  ``common.profile_lock``, because Chrome refuses to run two instances against
+  one ``--user-data-dir`` and the loser dies at launch with an error that reads
+  exactly like a bot wall;
 * keeps ``scrape_via_requests()`` / ``extract_*_from_html()`` as the HTTP
   fallback path used by the other browser scrapers, even though Akamai will
   usually refuse it.
@@ -36,6 +40,7 @@ import platform
 import random
 import re
 import time
+from contextlib import contextmanager
 
 import requests
 from bs4 import BeautifulSoup
@@ -46,7 +51,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
-from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, detect_chrome_major
+from app.scrapers.common import (DEFAULT_HEADERS, PROFILE_LOCK_TIMEOUT, REQUEST_TIMEOUT, ProfileBusyError,
+                                 detect_block_page, detect_chrome_major, profile_lock)
 
 logger = logging.getLogger('app.scrapers.bestbuy')
 
@@ -141,7 +147,11 @@ class BestBuyScraper:
         return options
 
     def _launch(self, headless=None):
-        """Start Chrome, retrying once with the browser-reported major version on a driver mismatch."""
+        """
+        Start Chrome, retrying once with the browser-reported major version on a
+        driver mismatch. The profile lock must already be held - go through
+        _browser() rather than calling this directly.
+        """
         headless = self.headless if headless is None else headless
         version_main = self.chrome_major
         last_error = None
@@ -162,8 +172,55 @@ class BestBuyScraper:
                     self.chrome_major = version_main
                     logger.warning(f"chromedriver/Chrome mismatch; retrying with version_main={version_main}")
                     continue
+                busy = self._profile_busy_error(e)
+                if busy:
+                    raise busy from e
                 raise
+        busy = self._profile_busy_error(last_error)
+        if busy:
+            raise busy from last_error
         raise last_error
+
+    def _profile_busy_error(self, error):
+        """
+        ProfileBusyError for a launch failure caused by profile contention, else
+        None. The lock keeps our own paths apart, but a Chrome the user opened on
+        that profile by hand holds it too, and "chrome not reachable" otherwise
+        gets reported as a bot wall.
+        """
+        message = str(error)
+        if 'not reachable' in message or 'session not created' in message:
+            return ProfileBusyError(
+                f"Chrome could not start on the profile {self.profile_dir}; another Chrome is most "
+                "likely using it - close any window opened from that profile and retry")
+        return None
+
+    @contextmanager
+    def _browser(self, headless=None, timeout=PROFILE_LOCK_TIMEOUT):
+        """
+        One Chrome session on the shared bestbuy_profile, launch to quit.
+
+        Chrome will not run two instances against a single --user-data-dir, so
+        the scheduled scrape, a user-initiated cart attempt and the --login
+        helper all take the profile lock first and hold it until the driver is
+        gone. The driver has to die inside the lock: releasing it earlier would
+        let the next holder start Chrome while ours is still shutting down.
+
+        Args:
+            headless: passed to _launch(); None uses the configured mode
+            timeout: seconds to wait for the current holder to finish. None waits
+                     indefinitely, which only the interactive --login path asks for.
+
+        Raises:
+            ProfileBusyError: the profile did not come free within `timeout`
+        """
+        with profile_lock(self.profile_dir, timeout=timeout):
+            driver = None
+            try:
+                driver = self._launch(headless)
+                yield driver
+            finally:
+                self._quit(driver)
 
     @staticmethod
     def _apply_stealth(driver):
@@ -287,28 +344,30 @@ class BestBuyScraper:
         self.current_sku = self.extract_sku(url)
 
         for headless in self._modes(self.scrape_headed_fallback):
-            driver = None
             try:
-                driver = self._launch(headless)
-                html = self._load_product_page(driver, url)
-                soup = BeautifulSoup(html, 'html.parser')
-                self.current_sku = self.extract_sku(url, html) or self.current_sku
+                with self._browser(headless) as driver:
+                    html = self._load_product_page(driver, url)
+                    soup = BeautifulSoup(html, 'html.parser')
+                    self.current_sku = self.extract_sku(url, html) or self.current_sku
 
-                result = {
-                    'name': self.extract_name(soup, driver),
-                    'price': self.extract_price(soup, driver),
-                    'available': self.extract_availability(soup, driver),
-                    'image_url': self.extract_image_url(soup, driver),
-                }
-                logger.info(f"Scraped Best Buy sku={self.current_sku}: {result['name']!r} "
-                            f"price={result['price']} available={result['available']}")
-                return result
+                    result = {
+                        'name': self.extract_name(soup, driver),
+                        'price': self.extract_price(soup, driver),
+                        'available': self.extract_availability(soup, driver),
+                        'image_url': self.extract_image_url(soup, driver),
+                    }
+                    logger.info(f"Scraped Best Buy sku={self.current_sku}: {result['name']!r} "
+                                f"price={result['price']} available={result['available']}")
+                    return result
+            except ProfileBusyError as e:
+                # Something else owns the profile; a second browser mode would only
+                # queue behind it. The HTTP fallback below needs no profile.
+                logger.warning(f"Skipping browser scrape of {url}: {e}")
+                break
             except BestBuyBlocked as e:
                 logger.warning(f"{e} (headless={headless})")
             except Exception as e:
                 logger.error(f"Error scraping Best Buy product with browser (headless={headless}): {e}")
-            finally:
-                self._quit(driver)
 
         # HTTP fallback (Akamai usually refuses it, but it is cheap to try)
         try:
@@ -593,21 +652,31 @@ class BestBuyScraper:
 
         last = {'success': False, 'message': 'Could not reach Best Buy', 'cart_url': None, 'screenshot': None}
         for headless in self._modes(self.cart_headed_fallback):
-            driver = None
             try:
-                driver = self._launch(headless)
-                self._load_product_page(driver, url)
-                return self._add_to_cart_with_driver(driver, quantity)
-            except BestBuyBlocked as e:
-                logger.warning(f"{e} (headless={headless})")
-                last = {'success': False, 'message': str(e), 'cart_url': None,
-                        'screenshot': self._take_screenshot(driver) if driver else None}
+                # The inner try keeps failure handling inside the session: a
+                # screenshot can only be taken while the driver is still alive.
+                with self._browser(headless) as driver:
+                    try:
+                        self._load_product_page(driver, url)
+                        return self._add_to_cart_with_driver(driver, quantity)
+                    except BestBuyBlocked as e:
+                        logger.warning(f"{e} (headless={headless})")
+                        last = {'success': False, 'message': str(e), 'cart_url': None,
+                                'screenshot': self._take_screenshot(driver)}
+                    except Exception as e:
+                        logger.error(f"Error adding to cart (headless={headless}): {e}", exc_info=True)
+                        last = {'success': False, 'message': f"Error adding to cart: {e}", 'cart_url': None,
+                                'screenshot': self._take_screenshot(driver)}
+            except ProfileBusyError as e:
+                # Retrying in another window would just wait on the same profile.
+                logger.warning(f"Not adding to cart: {e}")
+                return {'success': False, 'message': f"Chrome profile is busy: {e}",
+                        'cart_url': None, 'screenshot': None}
             except Exception as e:
-                logger.error(f"Error adding to cart (headless={headless}): {e}", exc_info=True)
-                last = {'success': False, 'message': f"Error adding to cart: {e}", 'cart_url': None,
-                        'screenshot': self._take_screenshot(driver) if driver else None}
-            finally:
-                self._quit(driver)
+                # Chrome never started, so there is no driver to photograph.
+                logger.error(f"Could not start Chrome for the cart (headless={headless}): {e}", exc_info=True)
+                last = {'success': False, 'message': f"Error adding to cart: {e}",
+                        'cart_url': None, 'screenshot': None}
         return last
 
     def _find_buy_button(self, driver):
