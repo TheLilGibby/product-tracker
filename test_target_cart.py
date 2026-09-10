@@ -36,6 +36,12 @@ open no browser at all - so the profile, and its risk of being flagged, is only
 spent on cart attempts. PX tokens are short-lived; when it goes cold the checks
 quietly return to the browser path and re-running --import-cookies restores it.
 
+That path is relative to the checkout this script runs from. With several
+worktrees around, run --import-cookies from the SAME checkout the app runs from,
+or point both at one file with TARGET_COOKIE_JAR=/path/to/target_cookies.json -
+otherwise the jar is written where the app will never look for it, and Target
+checks keep opening a browser for no visible reason.
+
 The app must run as the SAME OS user, since it reads that same profile directory.
 
 Expected once set up: the carrying case (pre-order open) lands in the cart; the
