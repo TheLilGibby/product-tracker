@@ -226,6 +226,18 @@ FULL_CART_PAGE = """
 # would report a product as carted when it is not.
 OTHER_CART_PAGE = FULL_CART_PAGE.replace('123791', '999999').replace('Dock Set', 'Something Else')
 
+# A cart holding a DIFFERENT product whose name starts the same way. Nintendo
+# names share long prefixes, so the name fallback has to compare whole names:
+# a substring test on the first 40 characters called this a successful add.
+PREFIX_CART_PAGE = """
+<html><body><h1>Cart</h1>
+  <ul><li>
+    <a href="/us/store/products/nintendo-switch-2-dock-set-carrying-case-999999/">Nintendo Switch 2 Dock Set - Zelda 40th Anniversary Edition Carrying Case</a>
+    <span>$34.99</span>
+  </li></ul>
+  <button>Checkout</button>
+</body></html>"""
+
 
 # ------------------------------------------------------- the click path, faked
 def offline_checks():
@@ -281,7 +293,19 @@ def offline_checks():
     check("a cart holding something else is not a successful add",
           scraper._cart_contains(driver, '123791') is False)
     check("but matches by name when the cart links differently",
-          scraper._cart_contains(driver, '123791', 'Something Else') is True)
+          scraper._cart_contains(driver, '123791', 'Nintendo Switch 2 Something Else') is True)
+    check("and the name match ignores case, spacing and punctuation",
+          scraper._cart_contains(driver, '123791', 'nintendo  switch 2 - SOMETHING else!') is True)
+    check("a partial name is not a match",
+          scraper._cart_contains(driver, '123791', 'Something Else') is False)
+
+    # The name fallback has to compare whole names. Nintendo's line items share
+    # long prefixes, so a cart holding the carrying case must not report the
+    # console as added.
+    driver = FakeDriver(PREFIX_CART_PAGE)
+    check("a cart line that only shares a prefix is not a match",
+          scraper._cart_contains(
+              driver, '123791', 'Nintendo Switch 2 Dock Set - Zelda 40th Anniversary Edition') is False)
 
     # detect_block_page calls any short page with no product markers a block page,
     # which an empty cart is. Reading that as a bot wall would bury the real answer.
