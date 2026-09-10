@@ -10,6 +10,10 @@ drops headless Chrome. This scraper therefore:
   survives between runs;
 * runs ``--headless=new`` by default and, when that is blocked and a display
   is available, transparently retries with a visible window;
+* serializes every Chrome session on that profile through
+  ``common.profile_lock``, because Chrome refuses to run two instances against
+  one ``--user-data-dir`` and the loser dies at launch with an error that reads
+  exactly like a bot wall;
 * keeps ``scrape_via_requests()`` / ``extract_*_from_html()`` as the HTTP
   fallback path used by the other browser scrapers, even though Akamai will
   usually refuse it.
@@ -36,6 +40,7 @@ import platform
 import random
 import re
 import time
+from contextlib import contextmanager
 
 import requests
 from bs4 import BeautifulSoup
@@ -46,7 +51,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
-from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, detect_chrome_major
+from app.scrapers.common import (DEFAULT_HEADERS, PROFILE_LOCK_TIMEOUT, REQUEST_TIMEOUT, ProfileBusyError,
+                                 detect_block_page, detect_chrome_major, profile_lock)
 
 logger = logging.getLogger('app.scrapers.bestbuy')
 
@@ -55,6 +61,11 @@ BESTBUY_CART = 'https://www.bestbuy.com/cart'
 
 # Primary call-to-action on the product page: <button data-testid="pdp-<state>-<sku>">
 PDP_BUTTON_SELECTOR = 'button[data-testid^="pdp-"]'
+# Best Buy ids each add-to-cart control by the SKU it adds, buy box and
+# recommendation rail alike ("pdp-add-to-cart-6691852",
+# "carousel-add-to-cart-6641469"). That makes a foreign SKU proof that a button
+# belongs to another product - see _find_buy_button.
+BUTTON_SKU_RE = re.compile(r'-(\d{7})$')
 IN_STOCK_STATES = ('add-to-cart', 'pre-order', 'preorder')
 OUT_OF_STOCK_STATES = ('sold-out', 'coming-soon', 'unavailable', 'check-stores', 'notify')
 
@@ -141,7 +152,11 @@ class BestBuyScraper:
         return options
 
     def _launch(self, headless=None):
-        """Start Chrome, retrying once with the browser-reported major version on a driver mismatch."""
+        """
+        Start Chrome, retrying once with the browser-reported major version on a
+        driver mismatch. The profile lock must already be held - go through
+        _browser() rather than calling this directly.
+        """
         headless = self.headless if headless is None else headless
         version_main = self.chrome_major
         last_error = None
@@ -162,8 +177,55 @@ class BestBuyScraper:
                     self.chrome_major = version_main
                     logger.warning(f"chromedriver/Chrome mismatch; retrying with version_main={version_main}")
                     continue
+                busy = self._profile_busy_error(e)
+                if busy:
+                    raise busy from e
                 raise
+        busy = self._profile_busy_error(last_error)
+        if busy:
+            raise busy from last_error
         raise last_error
+
+    def _profile_busy_error(self, error):
+        """
+        ProfileBusyError for a launch failure caused by profile contention, else
+        None. The lock keeps our own paths apart, but a Chrome the user opened on
+        that profile by hand holds it too, and "chrome not reachable" otherwise
+        gets reported as a bot wall.
+        """
+        message = str(error)
+        if 'not reachable' in message or 'session not created' in message:
+            return ProfileBusyError(
+                f"Chrome could not start on the profile {self.profile_dir}; another Chrome is most "
+                "likely using it - close any window opened from that profile and retry")
+        return None
+
+    @contextmanager
+    def _browser(self, headless=None, timeout=PROFILE_LOCK_TIMEOUT):
+        """
+        One Chrome session on the shared bestbuy_profile, launch to quit.
+
+        Chrome will not run two instances against a single --user-data-dir, so
+        the scheduled scrape, a user-initiated cart attempt and the --login
+        helper all take the profile lock first and hold it until the driver is
+        gone. The driver has to die inside the lock: releasing it earlier would
+        let the next holder start Chrome while ours is still shutting down.
+
+        Args:
+            headless: passed to _launch(); None uses the configured mode
+            timeout: seconds to wait for the current holder to finish. None waits
+                     indefinitely, which only the interactive --login path asks for.
+
+        Raises:
+            ProfileBusyError: the profile did not come free within `timeout`
+        """
+        with profile_lock(self.profile_dir, timeout=timeout):
+            driver = None
+            try:
+                driver = self._launch(headless)
+                yield driver
+            finally:
+                self._quit(driver)
 
     @staticmethod
     def _apply_stealth(driver):
@@ -212,14 +274,32 @@ class BestBuyScraper:
     # Bot wall / error detection
     # ------------------------------------------------------------------ #
     @staticmethod
-    def is_blocked_html(html, title=''):
+    def is_blocked_html(html, title='', expect_product=True):
         """
         Detect Akamai "Access Denied", a JS challenge, or Chrome's own network
         error page (what a dropped connection looks like from Selenium).
+
+        Pass expect_product=False for a page that is not a product page - the
+        cart. Two rules here are statements about a product page rather than
+        about a wall: detect_block_page's "under 5 KB with none of the product
+        markers", and the requirement below that the page carry the pdp CTA or
+        Product JSON-LD. An empty cart trips both by design, so on the cart they
+        turn a plain "your cart is empty" into "Best Buy is blocking us", which
+        sends whoever reads the log off to fix the wrong thing.
+
+        Everything that identifies a wall by its own content stays live in both
+        modes - the title and body markers, Chrome's error page, "Reference #" -
+        and those are the whole reason to keep calling this on the cart at all.
+
+        The trade is deliberate and worth naming: with expect_product=False, a
+        wall that is BOTH under 5 KB AND carries none of those markers now reads
+        as "item not in cart" rather than "bot wall". Both answers stop the add
+        and neither proceeds to checkout, but only the false wall points at the
+        wrong cause.
         """
         if not html:
             return True
-        reason = detect_block_page(html)
+        reason = detect_block_page(html, expect_product=expect_product)
         if reason:
             logger.debug(f"Block page detected: {reason}")
             return True
@@ -231,7 +311,7 @@ class BestBuyScraper:
         if re.search(r'Access Denied|Just a moment', title or '', re.I):
             return True
         # A real product page always carries the pdp CTA or Product JSON-LD.
-        if 'data-testid="pdp-' not in html and 'application/ld+json' not in html:
+        if expect_product and 'data-testid="pdp-' not in html and 'application/ld+json' not in html:
             return True
         return False
 
@@ -287,28 +367,30 @@ class BestBuyScraper:
         self.current_sku = self.extract_sku(url)
 
         for headless in self._modes(self.scrape_headed_fallback):
-            driver = None
             try:
-                driver = self._launch(headless)
-                html = self._load_product_page(driver, url)
-                soup = BeautifulSoup(html, 'html.parser')
-                self.current_sku = self.extract_sku(url, html) or self.current_sku
+                with self._browser(headless) as driver:
+                    html = self._load_product_page(driver, url)
+                    soup = BeautifulSoup(html, 'html.parser')
+                    self.current_sku = self.extract_sku(url, html) or self.current_sku
 
-                result = {
-                    'name': self.extract_name(soup, driver),
-                    'price': self.extract_price(soup, driver),
-                    'available': self.extract_availability(soup, driver),
-                    'image_url': self.extract_image_url(soup, driver),
-                }
-                logger.info(f"Scraped Best Buy sku={self.current_sku}: {result['name']!r} "
-                            f"price={result['price']} available={result['available']}")
-                return result
+                    result = {
+                        'name': self.extract_name(soup, driver),
+                        'price': self.extract_price(soup, driver),
+                        'available': self.extract_availability(soup, driver),
+                        'image_url': self.extract_image_url(soup, driver),
+                    }
+                    logger.info(f"Scraped Best Buy sku={self.current_sku}: {result['name']!r} "
+                                f"price={result['price']} available={result['available']}")
+                    return result
+            except ProfileBusyError as e:
+                # Something else owns the profile; a second browser mode would only
+                # queue behind it. The HTTP fallback below needs no profile.
+                logger.warning(f"Skipping browser scrape of {url}: {e}")
+                break
             except BestBuyBlocked as e:
                 logger.warning(f"{e} (headless={headless})")
             except Exception as e:
                 logger.error(f"Error scraping Best Buy product with browser (headless={headless}): {e}")
-            finally:
-                self._quit(driver)
 
         # HTTP fallback (Akamai usually refuses it, but it is cheap to try)
         try:
@@ -593,32 +675,85 @@ class BestBuyScraper:
 
         last = {'success': False, 'message': 'Could not reach Best Buy', 'cart_url': None, 'screenshot': None}
         for headless in self._modes(self.cart_headed_fallback):
-            driver = None
             try:
-                driver = self._launch(headless)
-                self._load_product_page(driver, url)
-                return self._add_to_cart_with_driver(driver, quantity)
-            except BestBuyBlocked as e:
-                logger.warning(f"{e} (headless={headless})")
-                last = {'success': False, 'message': str(e), 'cart_url': None,
-                        'screenshot': self._take_screenshot(driver) if driver else None}
+                # The inner try keeps failure handling inside the session: a
+                # screenshot can only be taken while the driver is still alive.
+                with self._browser(headless) as driver:
+                    try:
+                        self._load_product_page(driver, url)
+                        return self._add_to_cart_with_driver(driver, quantity)
+                    except BestBuyBlocked as e:
+                        logger.warning(f"{e} (headless={headless})")
+                        last = {'success': False, 'message': str(e), 'cart_url': None,
+                                'screenshot': self._take_screenshot(driver)}
+                    except Exception as e:
+                        logger.error(f"Error adding to cart (headless={headless}): {e}", exc_info=True)
+                        last = {'success': False, 'message': f"Error adding to cart: {e}", 'cart_url': None,
+                                'screenshot': self._take_screenshot(driver)}
+            except ProfileBusyError as e:
+                # Retrying in another window would just wait on the same profile.
+                logger.warning(f"Not adding to cart: {e}")
+                return {'success': False, 'message': f"Chrome profile is busy: {e}",
+                        'cart_url': None, 'screenshot': None}
             except Exception as e:
-                logger.error(f"Error adding to cart (headless={headless}): {e}", exc_info=True)
-                last = {'success': False, 'message': f"Error adding to cart: {e}", 'cart_url': None,
-                        'screenshot': self._take_screenshot(driver) if driver else None}
-            finally:
-                self._quit(driver)
+                # Chrome never started, so there is no driver to photograph.
+                logger.error(f"Could not start Chrome for the cart (headless={headless}): {e}", exc_info=True)
+                last = {'success': False, 'message': f"Error adding to cart: {e}",
+                        'cart_url': None, 'screenshot': None}
         return last
 
     def _find_buy_button(self, driver):
-        """Return (button, state, label) for the pdp CTA; state is True/False/None as in _classify_button."""
+        """
+        Return (button, state, label) for the pdp CTA; state is True/False/None
+        as in _classify_button.
+
+        A button whose test id names a different SKU is never a candidate, and
+        one that names the right SKU wins over one that names none. The saved
+        product page carries nine working add-to-cart buttons for recommended
+        products; they are ids'd "carousel-" rather than "pdp-" today, so the
+        selector alone excludes them - but that is a naming convention, and this
+        selector sweeps the whole document, so "the first match" is document
+        order rather than the buy box. The SKU in the id is the part that
+        actually attributes a button to a product.
+
+        Clicking a recommendation's button would add someone else's product and
+        then report this one as missing from the cart: it fails closed, but it
+        blames the wrong thing while another item sits in the cart.
+        """
+        fallback = None
         for button in driver.find_elements(By.CSS_SELECTOR, PDP_BUTTON_SELECTOR):
             testid = (button.get_attribute('data-testid') or '').lower()
             label = (button.text or '').strip().lower()
             state = self._classify_button(testid, label, enabled=button.is_enabled())
-            if state is not None:
-                return button, state, label or testid
-        return None, None, None
+            if state is None:
+                continue
+
+            sku = self._sku_from_button(button)
+            if self.current_sku and sku:
+                if sku == self.current_sku:
+                    return button, state, label or testid
+                logger.debug(f"Ignoring pdp button {testid!r}: it adds SKU {sku}, not {self.current_sku}")
+                continue
+
+            # Either the button names no SKU or this scrape has none to compare
+            # it against. Usable, but only if nothing better turns up.
+            if fallback is None:
+                fallback = (button, state, label or testid)
+        return fallback or (None, None, None)
+
+    @staticmethod
+    def _sku_from_button(button):
+        """
+        The SKU off the CTA's own data-testid ("pdp-<state>-<sku>"), or None.
+
+        Preferred over extract_sku's page-wide scan because it is unambiguous:
+        it is the button this add is about to click. A real Best Buy product
+        page carries ~275 other "sku" values in its cross-sell JSON, and the
+        page-wide fallback lands on the right one only because the page's own
+        happens to come first in the document.
+        """
+        match = BUTTON_SKU_RE.search(button.get_attribute('data-testid') or '')
+        return match.group(1) if match else None
 
     def _add_to_cart_with_driver(self, driver, quantity):
         button, state, label = self._find_buy_button(driver)
@@ -628,6 +763,17 @@ class BestBuyScraper:
         if not state:
             return {'success': False, 'message': f"Product is not purchasable ({label})",
                     'cart_url': None, 'screenshot': self._take_screenshot(driver)}
+
+        # Verification at the end of this method is "the SKU is on the cart
+        # page", never "the cart does not say it is empty" - a bot wall carries
+        # neither, so absence must never read as success. Recover the SKU from
+        # the pdp markup now, while the product page is still loaded, for the
+        # URL shapes extract_sku cannot read on their own.
+        if not self.current_sku:
+            self.current_sku = self._sku_from_button(button) or self.extract_sku(
+                self.current_product_url or '', driver.page_source)
+            if self.current_sku:
+                logger.info(f"Recovered SKU {self.current_sku} from the product page")
 
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
         self._human_pause(0.4, 1.0)
@@ -678,12 +824,42 @@ class BestBuyScraper:
 
         page = driver.page_source
         screenshot = self._take_screenshot(driver)
+
+        # Check the cart page for a wall BEFORE reading anything into its
+        # contents. Without this, an Akamai page served on /cart is neither
+        # empty nor carrying the SKU, so a click that looked confirmed on the
+        # product page reported success for an item that never reached the cart.
+        # expect_product=False because an empty cart is small and mentions no
+        # products - see is_blocked_html.
+        if self.is_blocked_html(page, driver.title, expect_product=False):
+            logger.warning("Best Buy served a block page on the cart; cannot verify the add")
+            return {'success': False,
+                    'message': "Best Buy served a block page on the cart, so the add could not be "
+                               "verified. The item may or may not be in the cart - check it before retrying",
+                    'cart_url': driver.current_url, 'screenshot': screenshot}
+
+        # Success needs positive evidence: the SKU has to be on the cart page.
+        # The confirmation toast is only a hint - it is rendered on the product
+        # page before the cart is written, and any page that is not the cart
+        # (a wall, an error, a sign-in) is missing the SKU too.
         empty = bool(re.search(r'cart is empty|nothing in your cart', page, re.I))
         in_cart = bool(self.current_sku and self.current_sku in page)
 
-        if empty or (not confirmed and not in_cart):
-            return {'success': False, 'message': "Item did not appear in the cart",
+        if not self.current_sku:
+            logger.warning("No SKU for this product, so the cart could not be verified")
+            return {'success': False,
+                    'message': "Could not identify the product's SKU, so the add could not be "
+                               "verified against the cart. Check the cart before retrying",
                     'cart_url': driver.current_url, 'screenshot': screenshot}
+
+        if not in_cart:
+            reason = ('the cart is empty' if empty
+                      else f"the cart page does not list SKU {self.current_sku}")
+            logger.warning(f"Add to cart not verified: {reason} "
+                           f"(confirmation on the product page: {confirmed})")
+            return {'success': False, 'message': f"Item did not appear in the cart ({reason})",
+                    'cart_url': driver.current_url, 'screenshot': screenshot}
+
         return {'success': True, 'message': f"Successfully added {quantity} item(s) to Best Buy cart",
                 'cart_url': driver.current_url, 'screenshot': screenshot}
 
