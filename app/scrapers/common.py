@@ -7,6 +7,15 @@ import logging
 import os
 import re
 import subprocess
+import time
+from contextlib import contextmanager
+
+try:                      # Windows
+    import msvcrt
+    fcntl = None
+except ImportError:       # POSIX
+    msvcrt = None
+    import fcntl
 
 # Set up logging
 logger = logging.getLogger('app.scrapers.common')
@@ -135,3 +144,79 @@ def detect_chrome_major():
     except Exception as e:
         logger.debug(f"Could not detect Chrome version from install directory: {str(e)}")
     return None
+
+
+# --------------------------------------------------------------- chrome profile
+# Chrome refuses to run two instances against one --user-data-dir. When the
+# background scheduler is mid-scrape and a user clicks auto-cart (or two
+# scrapers overlap), the loser dies at launch with "session not created:
+# ... from chrome not reachable" long before any page loads. That is easily
+# misread as a bot wall, so the paths that share a profile serialize here.
+PROFILE_LOCK_TIMEOUT = 60
+PROFILE_LOCK_POLL = 0.5
+
+
+class ProfileBusyError(RuntimeError):
+    """Raised when another process holds the Chrome profile for too long."""
+
+
+@contextmanager
+def profile_lock(profile_dir, timeout=PROFILE_LOCK_TIMEOUT):
+    """
+    Hold an exclusive cross-process lock on a Chrome user-data-dir.
+
+    Args:
+        profile_dir: the --user-data-dir being shared
+        timeout: seconds to wait for the current holder to finish. Pass None to
+            wait indefinitely, which the interactive --login helper does.
+
+    Raises:
+        ProfileBusyError: if the lock is still held after `timeout`
+    """
+    # Beside the profile, not inside it: Chrome rewrites its own directory, and
+    # every process sharing the profile must agree on one lock path.
+    profile_dir = os.path.abspath(profile_dir)
+    os.makedirs(os.path.dirname(profile_dir), exist_ok=True)
+    lock_path = profile_dir + '.lock'
+    handle = open(lock_path, 'a+b')
+    deadline = None if timeout is None else time.monotonic() + timeout
+    waited = False
+    try:
+        while True:
+            try:
+                _lock_exclusive(handle)
+                break
+            except OSError:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise ProfileBusyError(
+                        f"another process has held the Chrome profile {profile_dir} for over "
+                        f"{timeout}s; retry once the running check finishes")
+                waited = True
+                time.sleep(PROFILE_LOCK_POLL)
+        if waited:
+            logger.info(f"Waited for another process to release the Chrome profile {profile_dir}")
+        try:
+            yield
+        finally:
+            _unlock(handle)
+    finally:
+        handle.close()
+
+
+def _lock_exclusive(handle):
+    """Take a non-blocking exclusive lock, raising OSError if it is already held."""
+    if msvcrt is not None:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock(handle):
+    try:
+        if msvcrt is not None:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError as e:
+        logger.debug(f"Could not release the Chrome profile lock: {str(e)}")
