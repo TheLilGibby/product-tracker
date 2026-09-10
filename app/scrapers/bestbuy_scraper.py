@@ -269,14 +269,32 @@ class BestBuyScraper:
     # Bot wall / error detection
     # ------------------------------------------------------------------ #
     @staticmethod
-    def is_blocked_html(html, title=''):
+    def is_blocked_html(html, title='', expect_product=True):
         """
         Detect Akamai "Access Denied", a JS challenge, or Chrome's own network
         error page (what a dropped connection looks like from Selenium).
+
+        Pass expect_product=False for a page that is not a product page - the
+        cart. Two rules here are statements about a product page rather than
+        about a wall: detect_block_page's "under 5 KB with none of the product
+        markers", and the requirement below that the page carry the pdp CTA or
+        Product JSON-LD. An empty cart trips both by design, so on the cart they
+        turn a plain "your cart is empty" into "Best Buy is blocking us", which
+        sends whoever reads the log off to fix the wrong thing.
+
+        Everything that identifies a wall by its own content stays live in both
+        modes - the title and body markers, Chrome's error page, "Reference #" -
+        and those are the whole reason to keep calling this on the cart at all.
+
+        The trade is deliberate and worth naming: with expect_product=False, a
+        wall that is BOTH under 5 KB AND carries none of those markers now reads
+        as "item not in cart" rather than "bot wall". Both answers stop the add
+        and neither proceeds to checkout, but only the false wall points at the
+        wrong cause.
         """
         if not html:
             return True
-        reason = detect_block_page(html)
+        reason = detect_block_page(html, expect_product=expect_product)
         if reason:
             logger.debug(f"Block page detected: {reason}")
             return True
@@ -288,7 +306,7 @@ class BestBuyScraper:
         if re.search(r'Access Denied|Just a moment', title or '', re.I):
             return True
         # A real product page always carries the pdp CTA or Product JSON-LD.
-        if 'data-testid="pdp-' not in html and 'application/ld+json' not in html:
+        if expect_product and 'data-testid="pdp-' not in html and 'application/ld+json' not in html:
             return True
         return False
 
@@ -698,6 +716,16 @@ class BestBuyScraper:
             return {'success': False, 'message': f"Product is not purchasable ({label})",
                     'cart_url': None, 'screenshot': self._take_screenshot(driver)}
 
+        # Verification at the end of this method is "the SKU is on the cart
+        # page", never "the cart does not say it is empty" - a bot wall carries
+        # neither, so absence must never read as success. Recover the SKU from
+        # the pdp markup now, while the product page is still loaded, for the
+        # URL shapes extract_sku cannot read on their own.
+        if not self.current_sku:
+            self.current_sku = self.extract_sku(self.current_product_url or '', driver.page_source)
+            if self.current_sku:
+                logger.info(f"Recovered SKU {self.current_sku} from the product page")
+
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
         self._human_pause(0.4, 1.0)
         try:
@@ -747,12 +775,42 @@ class BestBuyScraper:
 
         page = driver.page_source
         screenshot = self._take_screenshot(driver)
+
+        # Check the cart page for a wall BEFORE reading anything into its
+        # contents. Without this, an Akamai page served on /cart is neither
+        # empty nor carrying the SKU, so a click that looked confirmed on the
+        # product page reported success for an item that never reached the cart.
+        # expect_product=False because an empty cart is small and mentions no
+        # products - see is_blocked_html.
+        if self.is_blocked_html(page, driver.title, expect_product=False):
+            logger.warning("Best Buy served a block page on the cart; cannot verify the add")
+            return {'success': False,
+                    'message': "Best Buy served a block page on the cart, so the add could not be "
+                               "verified. The item may or may not be in the cart - check it before retrying",
+                    'cart_url': driver.current_url, 'screenshot': screenshot}
+
+        # Success needs positive evidence: the SKU has to be on the cart page.
+        # The confirmation toast is only a hint - it is rendered on the product
+        # page before the cart is written, and any page that is not the cart
+        # (a wall, an error, a sign-in) is missing the SKU too.
         empty = bool(re.search(r'cart is empty|nothing in your cart', page, re.I))
         in_cart = bool(self.current_sku and self.current_sku in page)
 
-        if empty or (not confirmed and not in_cart):
-            return {'success': False, 'message': "Item did not appear in the cart",
+        if not self.current_sku:
+            logger.warning("No SKU for this product, so the cart could not be verified")
+            return {'success': False,
+                    'message': "Could not identify the product's SKU, so the add could not be "
+                               "verified against the cart. Check the cart before retrying",
                     'cart_url': driver.current_url, 'screenshot': screenshot}
+
+        if not in_cart:
+            reason = ('the cart is empty' if empty
+                      else f"the cart page does not list SKU {self.current_sku}")
+            logger.warning(f"Add to cart not verified: {reason} "
+                           f"(confirmation on the product page: {confirmed})")
+            return {'success': False, 'message': f"Item did not appear in the cart ({reason})",
+                    'cart_url': driver.current_url, 'screenshot': screenshot}
+
         return {'success': True, 'message': f"Successfully added {quantity} item(s) to Best Buy cart",
                 'cart_url': driver.current_url, 'screenshot': screenshot}
 

@@ -6,7 +6,7 @@ Usage:
     python test_bestbuy_browser.py --headed        # force a visible Chrome window
     python test_bestbuy_browser.py --cart          # also try add_to_cart on the first buyable product
     python test_bestbuy_browser.py <url> [<url>]   # scrape custom URLs
-    python test_bestbuy_browser.py --offline       # only run the parser/lock checks (no Chrome)
+    python test_bestbuy_browser.py --offline       # only run the parser/lock/cart checks (no Chrome)
     python test_bestbuy_browser.py --login         # ONE-TIME SETUP, see below
 
 Requires Chrome installed locally. Hits bestbuy.com for everything except --offline.
@@ -33,6 +33,8 @@ import time
 from contextlib import contextmanager
 
 from bs4 import BeautifulSoup
+from selenium.common.exceptions import NoSuchElementException
+from selenium.webdriver.common.by import By
 
 from app.scrapers.bestbuy_scraper import BESTBUY_CART, BestBuyScraper
 from app.scrapers.common import ProfileBusyError, detect_block_page, profile_lock
@@ -82,6 +84,31 @@ FIXTURES = [
 CHROME_ERROR_PAGE = '<html><head><title>www.bestbuy.com</title></head><body><div id="main-frame-error"></div></body></html>'
 ACCESS_DENIED_PAGE = '<html><head><title>Access Denied</title></head><body><h1>Access Denied</h1>Reference #18.abc</body></html>'
 
+# An empty cart, which is what add_to_cart reads after a click that did not take.
+# It is deliberately tiny and mentions no product: that is the shape detect_block_page
+# would otherwise call a bot wall.
+EMPTY_CART_PAGE = ('<html><head><title>Cart - Best Buy</title></head><body>'
+                   '<h1>Your cart is empty</h1><a href="/">Continue shopping</a></body></html>')
+
+# A wall served on the cart. Still a wall, whatever page was asked for.
+CART_ACCESS_DENIED_PAGE = ('<html><head><title>Access Denied</title></head><body>'
+                           '<h1>Access Denied</h1>Reference #18.def</body></html>')
+
+# A cart holding one line item. The SKU appears in the item link and beside it,
+# which is the positive evidence add_to_cart requires before reporting success.
+CART_WITH_ITEM = ('<html><head><title>Cart - Best Buy</title></head><body><h1>Your cart</h1>'
+                  '<div data-testid="cart-item"><a href="/site/fixture/{sku}.p?skuId={sku}">{name}</a>'
+                  '<span>SKU: {sku}</span><span>$39.99</span></div>'
+                  '<button>Go to Checkout</button></body></html>')
+
+# The product page as it looks after a click Best Buy acknowledged. The toast is
+# what `confirmed` keys off; it is rendered on the product page, before the cart
+# is written, so on its own it proves nothing.
+PDP_AFTER_CLICK = ('<html><head><title>{name} - Best Buy</title></head><body><h1>{name}</h1>'
+                   '<button data-testid="{testid}">Add to Cart</button>'
+                   '{toast}</body></html>')
+ADDED_TOAST = '<div role="alert">Added to cart</div>'
+
 
 def check_contract(result):
     """Raise AssertionError if a scrape result violates the scraper contract."""
@@ -122,6 +149,24 @@ def run_offline_checks():
         failures += 0 if ok else 1
         print(f"  [{'ok' if ok else 'FAIL'}] is_blocked_html: {label} -> {got}")
 
+    # The cart is not a product page. add_to_cart reads it with expect_product=False
+    # so that an empty cart reports "item did not appear in the cart" instead of a
+    # bot wall - while a real wall on the cart still reports as one.
+    for label, html, expect_product, expected in (
+        ('empty cart, read as a cart', EMPTY_CART_PAGE, False, False),
+        ('empty cart, read as a product page', EMPTY_CART_PAGE, True, True),
+        ('access denied on the cart', CART_ACCESS_DENIED_PAGE, False, True),
+        ('chrome network error on the cart', CHROME_ERROR_PAGE, False, True),
+        ('empty response, whatever was asked for', '', False, True),
+    ):
+        title = BeautifulSoup(html, 'html.parser').title
+        got = BestBuyScraper.is_blocked_html(html, title.string if title else '',
+                                             expect_product=expect_product)
+        ok = got == expected
+        failures += 0 if ok else 1
+        print(f"  [{'ok' if ok else 'FAIL'}] is_blocked_html(expect_product={expect_product}): "
+              f"{label} -> {got}")
+
     for url, expected in (
         (TARGETS[0], '6691852'),
         (TARGETS[1], None),
@@ -131,6 +176,135 @@ def run_offline_checks():
         ok = got == expected
         failures += 0 if ok else 1
         print(f"  [{'ok' if ok else 'FAIL'}] extract_sku({url[-40:]}) -> {got}")
+
+    return failures
+
+
+class FakeElement:
+    """A BeautifulSoup tag wearing just enough of the WebElement interface."""
+
+    def __init__(self, driver, tag):
+        self._driver = driver
+        self._tag = tag
+
+    @property
+    def text(self):
+        return self._tag.get_text(' ', strip=True)
+
+    def get_attribute(self, name):
+        value = self._tag.get(name)
+        return ' '.join(value) if isinstance(value, list) else value
+
+    def is_enabled(self):
+        return not (self._tag.has_attr('disabled') or self._tag.get('aria-disabled') == 'true')
+
+    def is_displayed(self):
+        return True
+
+    def click(self):
+        self._driver.clicks.append(self.text or self.get_attribute('data-testid'))
+
+
+class FakeDriver:
+    """
+    Enough of a WebDriver to run _add_to_cart_with_driver against fixtures.
+
+    It serves the product page until the flow navigates to the cart, then serves
+    the cart page - the same order the real flow sees them. A fixture with no
+    confirmation toast makes the flow's 15-second wait expire for real, which is
+    the one slow case in this suite.
+    """
+
+    def __init__(self, product_page, cart_page, url):
+        self.product_page = product_page
+        self.cart_page = cart_page
+        self.page_source = product_page
+        self.current_url = url
+        self.clicks = []
+
+    @property
+    def title(self):
+        title = BeautifulSoup(self.page_source, 'html.parser').title
+        return title.string if title else ''
+
+    def get(self, url):
+        self.current_url = url
+        self.page_source = self.cart_page
+
+    def execute_script(self, script, *args):
+        return None
+
+    def get_screenshot_as_base64(self):
+        return 'ZmFrZSBzY3JlZW5zaG90'
+
+    def find_elements(self, by, value):
+        if by in (By.CSS_SELECTOR, By.TAG_NAME):
+            soup = BeautifulSoup(self.page_source, 'html.parser')
+            return [FakeElement(self, tag) for tag in soup.select(value)]
+        # The only XPATHs this flow uses are text probes: the confirmation
+        # toast, and the upsell sheets it tries to dismiss.
+        if 'added to' in value and 'added to' in self.page_source.lower():
+            tag = BeautifulSoup(ADDED_TOAST, 'html.parser').div
+            return [FakeElement(self, tag)]
+        return []
+
+    def find_element(self, by, value):
+        found = self.find_elements(by, value)
+        if not found:
+            raise NoSuchElementException(value)
+        return found[0]
+
+
+def run_cart_verification_checks():
+    """
+    _add_to_cart_with_driver against cart fixtures, no Chrome.
+
+    The rule under test: success requires the SKU to be present on the cart
+    page. A confirmation toast on the product page, or a cart page that merely
+    fails to say "your cart is empty", is not evidence - a bot wall, a sign-in
+    redirect and an error page all look exactly like that.
+    """
+    sku = '6691852'
+    pdp = PDP_AFTER_CLICK.format(name='Fixture Product',
+                                 testid=f'pdp-add-to-cart-{sku}', toast=ADDED_TOAST)
+    pdp_no_toast = PDP_AFTER_CLICK.format(name='Fixture Product',
+                                          testid=f'pdp-add-to-cart-{sku}', toast='')
+    # A CTA whose test id carries no SKU, on a page with no JSON-LD: nothing to
+    # recover the SKU from, on a URL that does not carry one either.
+    pdp_anonymous = PDP_AFTER_CLICK.format(name='Fixture Product',
+                                           testid='pdp-add-to-cart-button', toast=ADDED_TOAST)
+    cart_with_item = CART_WITH_ITEM.format(sku=sku, name='Fixture Product')
+    cart_other_item = CART_WITH_ITEM.format(sku='6543210', name='Some Other Thing')
+
+    cases = [
+        ('SKU on the cart page', pdp, cart_with_item, TARGETS[0], True, 'Successfully added'),
+        ('SKU recovered from the pdp markup', pdp, cart_with_item, TARGETS[1], True, 'Successfully added'),
+        ('no toast, but the SKU is on the cart page', pdp_no_toast, cart_with_item, TARGETS[0],
+         True, 'Successfully added'),
+        ('cart holds a different item', pdp, cart_other_item, TARGETS[0], False, 'does not list SKU'),
+        ('cart is empty', pdp, EMPTY_CART_PAGE, TARGETS[0], False, 'cart is empty'),
+        ('wall served on the cart', pdp, CART_ACCESS_DENIED_PAGE, TARGETS[0], False, 'block page'),
+        ('no SKU anywhere to verify against', pdp_anonymous, cart_with_item, TARGETS[1],
+         False, "Could not identify"),
+    ]
+
+    failures = 0
+    for label, product_page, cart_page, url, expected, fragment in cases:
+        scraper = BestBuyScraper.__new__(BestBuyScraper)  # skip __init__: no profile dir, no Chrome lookup
+        scraper.current_product_url = url
+        scraper.current_sku = BestBuyScraper.extract_sku(url)
+        scraper._human_pause = lambda *a, **k: None
+        driver = FakeDriver(product_page, cart_page, url)
+
+        result = scraper._add_to_cart_with_driver(driver, 1)
+        ok = (result['success'] is expected
+              and fragment.lower() in result['message'].lower()
+              and driver.clicks
+              and result['cart_url'] == BESTBUY_CART
+              and result['screenshot'])
+        failures += 0 if ok else 1
+        print(f"  [{'ok' if ok else 'FAIL'}] {label} -> success={result['success']} "
+              f"({result['message'][:70]})")
 
     return failures
 
@@ -251,6 +425,8 @@ def main():
     failures = run_offline_checks()
     print("\nChrome profile lock checks:")
     failures += run_lock_checks()
+    print("\nCart verification checks:")
+    failures += run_cart_verification_checks()
     if args.offline:
         print(f"\n{'PASS' if failures == 0 else 'FAIL'} ({failures} failure(s))")
         return 1 if failures else 0
