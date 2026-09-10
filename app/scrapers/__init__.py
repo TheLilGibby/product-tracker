@@ -3,6 +3,7 @@ Scraper module initialization.
 Provides direct access to store-specific scrapers based on store type.
 """
 
+import inspect
 import logging
 from app.scrapers.base_scraper import BaseScraper
 from app.scrapers.amazon_scraper import AmazonScraper
@@ -53,6 +54,33 @@ def get_scraper(store_type):
     logger.debug(f"Using {scraper_class.__name__} for {store_type}")
     return scraper_class()
 
+# Two invariants every scraper's add_to_cart must hold. Both have now been
+# rediscovered independently in four scrapers, so they are written down here
+# rather than found a fifth time.
+#
+# 1. Never click a buy button you cannot attribute to the item being carted.
+#    Retailers server-render live, working add-to-cart buttons for RECOMMENDED
+#    products on the product page itself, so "the first match in the document"
+#    clicks a stranger's item. Scope by the item's own id - in the button, or in
+#    a container around it - and skip any control naming a foreign id. Two
+#    shapes in use: by id in Target (addToCartButtonOrTextIdFor<tcin>) and Best
+#    Buy (pdp- / carousel- by sku), by container in Walmart (its buy-box
+#    selectors) and Nintendo (the div before [data-drawer-id="add-to-cart-
+#    drawer"], cross-checked against [data-ps-sku]).
+#
+# 2. Never report cart success on the absence of evidence. "The words 'cart is
+#    empty' are missing" and "a toast appeared on the product page" are both
+#    satisfied by a bot wall, and by a click that silently did nothing. Load the
+#    cart page and require the item's own id/sku/ASIN to be PRESENT on it, and
+#    check that page with detect_block_page(expect_product=False) - an empty
+#    cart is legitimately small and names no product, so the default heuristic
+#    would report it as a wall.
+#
+# Together they fail closed in both directions: an add that did not happen is
+# never reported as a success, and a wrong item can never be the thing that
+# makes the check pass. Note that (1) is what keeps (2) honest - without it, a
+# carousel click puts a real product in a real cart, and the failure that
+# follows names the wrong cause.
 def add_to_cart(store_type, url, quantity=1):
     """
     Add a product to the cart for the specified store.
@@ -83,9 +111,14 @@ def add_to_cart(store_type, url, quantity=1):
         raise ValueError(f"Auto cart functionality not supported for {store_type}")
     
     try:
-        # For Newegg and other scrapers that need to store the URL first,
-        # we need to call scrape_product to set the current_product_url
-        if store_type == 'newegg' and hasattr(scraper, 'scrape_product'):
+        # Scrapers whose add_to_cart takes a url get it directly (test, amazon,
+        # bestbuy); the rest read it off the instance, so pre-scrape to set
+        # current_product_url first (newegg, target, adorama).
+        if 'url' in inspect.signature(scraper.add_to_cart).parameters:
+            logger.debug(f"Passing product URL directly to {store_type} scraper")
+            return scraper.add_to_cart(url=url, quantity=quantity)
+
+        if hasattr(scraper, 'scrape_product'):
             logger.debug(f"Setting product URL for {store_type} scraper")
             try:
                 # Just scrape basic product info to set the URL
@@ -95,17 +128,8 @@ def add_to_cart(store_type, url, quantity=1):
                 # Set the URL directly as fallback
                 if hasattr(scraper, 'current_product_url'):
                     scraper.current_product_url = url
-        
-        # Pass the URL as the first parameter if this is the test scraper
-        if store_type == 'test':
-            result = scraper.add_to_cart(url=url, quantity=quantity)
-        # For Amazon scraper which accepts URL directly
-        elif store_type == 'amazon':
-            result = scraper.add_to_cart(url=url, quantity=quantity)
-        else:
-            # For other scrapers, just pass the quantity (they look up the URL internally)
-            result = scraper.add_to_cart(quantity=quantity)
-        return result
+
+        return scraper.add_to_cart(quantity=quantity)
     except Exception as e:
         logger.error(f"Error adding product to cart: {str(e)}", exc_info=True)
         return {
