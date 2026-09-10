@@ -81,6 +81,10 @@ def create_app(config_name='default'):
     app.jinja_env.filters['tojson'] = json.dumps
     app.jinja_env.filters['fromjson'] = lambda x: json.loads(x)
     
+    # Optional password gate, needed before the dashboard is exposed publicly
+    from app.auth import register_auth
+    register_auth(app)
+
     # Register blueprints
     from app.routes import main_bp
     app.register_blueprint(main_bp)

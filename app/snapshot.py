@@ -35,8 +35,21 @@ def _config_value(key, default=''):
 
 
 def get_public_url():
-    """Externally reachable base URL of the app (PUBLIC_URL), or '' when not configured."""
-    return str(_config_value('PUBLIC_URL', '') or '').strip().rstrip('/')
+    """
+    Externally reachable base URL of the app (PUBLIC_URL), or '' when it is not
+    configured or the dashboard has no password. An unauthenticated admin UI is
+    never advertised in a chat message, however the tunnel is set up.
+    """
+    url = str(_config_value('PUBLIC_URL', '') or '').strip().rstrip('/')
+    if not url:
+        return ''
+    if not str(_config_value('DASHBOARD_PASSWORD', '') or '').strip():
+        logger.warning(
+            "PUBLIC_URL is set but DASHBOARD_PASSWORD is blank; omitting the link "
+            "rather than pointing at an unprotected dashboard"
+        )
+        return ''
+    return url
 
 
 def get_dashboard_url():
@@ -53,6 +66,25 @@ def resolve_dashboard_path(path=None):
     if path and isinstance(path, str) and path.startswith('/') and not path.startswith('//'):
         return base + path
     return base + '/'
+
+
+def _authorize(driver):
+    """
+    Give the headless browser the dashboard password, when one is set, so the
+    screenshot is of the dashboard rather than of a 401 page. Sent as a header
+    over the loopback interface; Chrome strips credentials from a URL.
+    """
+    password = str(_config_value('DASHBOARD_PASSWORD', '') or '').strip()
+    if not password:
+        return
+    import base64
+
+    token = base64.b64encode(f"snapshot:{password}".encode('utf-8')).decode('ascii')
+    try:
+        driver.execute_cdp_cmd('Network.enable', {})
+        driver.execute_cdp_cmd('Network.setExtraHTTPHeaders', {'headers': {'Authorization': f'Basic {token}'}})
+    except Exception as e:
+        logger.warning(f"Could not set the dashboard credentials on the snapshot browser: {str(e)}")
 
 
 def capture_dashboard(url=None, width=WINDOW_WIDTH, height=WINDOW_HEIGHT):
@@ -87,6 +119,7 @@ def capture_dashboard(url=None, width=WINDOW_WIDTH, height=WINDOW_HEIGHT):
         driver = uc.Chrome(options=options, version_main=detect_chrome_major())
         driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
         driver.set_window_size(width, height)
+        _authorize(driver)
         driver.get(url)
         time.sleep(SETTLE_SECONDS)
         png = driver.get_screenshot_as_png()

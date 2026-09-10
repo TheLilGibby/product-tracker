@@ -37,13 +37,16 @@ services:
       - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-UTC}
       - NEWEGG_COOKIES=${NEWEGG_COOKIES:-}
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
 
   # Optional: expose the dashboard on the internet through a Cloudflare quick tunnel so the
   # Telegram snapshot link opens from a phone. Opt-in:  docker compose --profile tunnel up -d
+  # SET DASHBOARD_PASSWORD IN .env FIRST. The dashboard has no accounts: anyone who reaches it
+  # can add or delete tracked products, trigger cart attempts and rewrite .env. Without that
+  # password the app also refuses to put the public link in Telegram messages.
   # The public https://<random>.trycloudflare.com URL is printed in this container's log:
   #   docker compose --profile tunnel logs tunnel | grep trycloudflare
   # Put it in .env as PUBLIC_URL=https://... (it changes every time the tunnel restarts) and

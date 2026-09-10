@@ -39,6 +39,11 @@ class Config:
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
     
+    # HTTP Basic password for the whole dashboard (any username). Blank = no gate.
+    # REQUIRED before exposing the app publicly: the UI can add/delete products,
+    # trigger cart attempts and rewrite .env, and has no other access control.
+    DASHBOARD_PASSWORD = os.environ.get('DASHBOARD_PASSWORD', '').strip()
+
     # Public base URL of this app (e.g. a Cloudflare tunnel) used for links in Telegram; blank = none
     PUBLIC_URL = os.environ.get('PUBLIC_URL', '').strip().rstrip('/')
     
