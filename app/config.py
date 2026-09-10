@@ -1,8 +1,48 @@
+import json
 import os
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+
+def parse_store_intervals(raw):
+    """
+    Read a per-store check interval map from an environment value.
+
+    Accepts either "gamestop=60,bestbuy=15" or a JSON object
+    {"gamestop": 60, "bestbuy": 15}, both in minutes. Entries that are not a
+    store name and a positive number are dropped rather than taking the app
+    down, since this arrives from the environment.
+    """
+    raw = (raw or '').strip()
+    if not raw:
+        return {}
+
+    if raw.startswith('{'):
+        try:
+            pairs = json.loads(raw).items()
+        except (ValueError, AttributeError):
+            print(f"Ignoring unreadable STORE_CHECK_INTERVALS: {raw!r}")
+            return {}
+    else:
+        pairs = (entry.split('=', 1) for entry in raw.split(',') if entry.strip())
+
+    intervals = {}
+    for pair in pairs:
+        try:
+            store, minutes = pair
+            minutes = float(minutes)
+        except (TypeError, ValueError):
+            print(f"Ignoring unreadable STORE_CHECK_INTERVALS entry: {pair!r}")
+            continue
+        store = str(store).strip().lower()
+        if store and minutes > 0:
+            intervals[store] = minutes
+        else:
+            print(f"Ignoring STORE_CHECK_INTERVALS entry {store!r}={minutes!r}")
+    return intervals
+
 
 class Config:
     """Base configuration."""
@@ -34,6 +74,14 @@ class Config:
     # blocking us on every cycle only extends the block.
     STORE_BACKOFF_FAILURES = int(os.environ.get('STORE_BACKOFF_FAILURES', 2))
     STORE_BACKOFF_MINUTES = int(os.environ.get('STORE_BACKOFF_MINUTES', 15))
+
+    # How often each store may be checked, in minutes, as
+    # STORE_CHECK_INTERVALS="gamestop=60,bestbuy=15" or the equivalent JSON
+    # object. A store that is not listed is checked on the global interval.
+    # Some retailers cannot take that cadence: GameStop is Cloudflare-blocked
+    # over plain HTTP and needs a visible Chrome window, and Best Buy starts
+    # serving Akamai block pages at roughly five loads a minute.
+    STORE_CHECK_INTERVALS = parse_store_intervals(os.environ.get('STORE_CHECK_INTERVALS', ''))
     
     # Default timezone setting (uses UTC by default)
     DEFAULT_TIMEZONE = os.environ.get('DEFAULT_TIMEZONE', 'UTC')

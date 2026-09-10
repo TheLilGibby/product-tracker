@@ -1,5 +1,5 @@
 """
-Per-store backoff checks for check_all_products.
+Per-store backoff and per-store check interval checks for check_all_products.
 
     python test_store_backoff.py            # all checks
     python test_store_backoff.py -v         # with the scheduler's own logging
@@ -18,9 +18,12 @@ import argparse
 import logging
 import sys
 import warnings
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from flask import current_app
+
+from app.config import parse_store_intervals
 
 # The app stores naive UTC via datetime.utcnow(); these checks compare against it.
 warnings.filterwarnings('ignore', message='datetime.datetime.utcnow', category=DeprecationWarning)
@@ -109,6 +112,18 @@ def run_cycle(behaviour):
     finally:
         tasks.get_scraper = original
     return calls
+
+
+@contextmanager
+def store_intervals(intervals):
+    """Run the block with these per-store intervals in the app config."""
+    config = current_app.config
+    previous = config.get('STORE_CHECK_INTERVALS')
+    config['STORE_CHECK_INTERVALS'] = intervals
+    try:
+        yield
+    finally:
+        config['STORE_CHECK_INTERVALS'] = previous
 
 
 def report(ok, description, detail=''):
@@ -333,6 +348,106 @@ def check_auto_cart_is_untouched():
     return failures
 
 
+def check_interval_settings_are_parsed():
+    """The env map is read in both forms, and unusable entries are dropped."""
+    print("Store interval settings are parsed")
+    failures = 0
+    cases = [
+        ('gamestop=60,bestbuy=15', {'gamestop': 60.0, 'bestbuy': 15.0}),
+        (' GameStop = 60 , bestbuy=15 ', {'gamestop': 60.0, 'bestbuy': 15.0}),
+        ('{"gamestop": 60, "bestbuy": 15}', {'gamestop': 60.0, 'bestbuy': 15.0}),
+        ('', {}),
+        ('gamestop', {}),
+        ('gamestop=soon,bestbuy=15', {'bestbuy': 15.0}),
+        ('gamestop=0,bestbuy=-5', {}),
+        ('{oops', {}),
+    ]
+    for raw, expected in cases:
+        got = parse_store_intervals(raw)
+        failures += report(got == expected, f"{raw!r} reads as {expected}", str(got))
+    return failures
+
+
+def check_interval_due_boundaries():
+    """When a store with an interval is due, including the grace at the edge."""
+    print("Interval boundaries")
+    failures = 0
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    with store_intervals({'bestbuy': 15}):
+        # 15 minutes less a 60 second grace, so anything past 14:00 is due.
+        for elapsed, expected in [(timedelta(minutes=1), False),
+                                  (timedelta(minutes=13, seconds=30), False),
+                                  (timedelta(minutes=14, seconds=1), True),
+                                  (timedelta(minutes=15), True),
+                                  (timedelta(hours=2), True)]:
+            got = tasks.store_check_is_due('bestbuy', now - elapsed, now=now)
+            failures += report(got == expected, f"{elapsed} since the last check reads due={expected}",
+                               str(got))
+        failures += report(tasks.store_check_is_due('bestbuy', None, now=now),
+                           'a product that was never checked is due')
+        failures += report(tasks.store_check_is_due('amazon', now, now=now),
+                           'a store with no interval of its own is always due')
+        failures += report(tasks.store_check_interval('amazon') is None,
+                           'and reports no interval of its own')
+    return failures
+
+
+def check_store_waits_for_its_interval():
+    """A store with an hourly interval is checked once, then left alone."""
+    print("A store with its own interval waits for it")
+    failures = 0
+    tasks.reset_store_backoff()
+    seed_products()
+
+    with store_intervals({'bestbuy': 60}):
+        first = run_cycle({})
+        checked_at = {p.id: p.last_checked
+                      for p in Product.query.filter(Product.url.in_(BESTBUY_URLS)).all()}
+        second = run_cycle({})
+
+        failures += report(first.count('bestbuy') == 2, 'the first cycle checks Best Buy',
+                           f"calls={first}")
+        failures += report(second.count('bestbuy') == 0, 'the second cycle leaves it alone',
+                           f"calls={second}")
+        # Amazon has no interval of its own, so an off-cycle run - the "Update
+        # All Products" button calls check_all_products directly - still works.
+        failures += report(second.count('amazon') == 1,
+                           'a store with no interval of its own is still checked')
+        failures += report(not tasks._store_failures and not tasks._store_retry_at,
+                           'waiting for an interval is not a failure',
+                           str(tasks._store_failures))
+        for product in Product.query.filter(Product.url.in_(BESTBUY_URLS)).all():
+            failures += report(product.last_checked == checked_at[product.id],
+                               f"waiting product {product.id} keeps its last_checked")
+
+        # Wind the clock back past the hour.
+        for product in Product.query.filter(Product.url.in_(BESTBUY_URLS)).all():
+            product.last_checked = datetime.utcnow() - timedelta(minutes=61)
+        db.session.commit()
+
+        third = run_cycle({})
+        failures += report(third.count('bestbuy') == 2, 'it is checked again once the hour is up',
+                           f"calls={third}")
+    return failures
+
+
+def check_backoff_beats_interval():
+    """A backed-off store is skipped even when its interval says it is due."""
+    print("Backoff still wins over the interval")
+    failures = 0
+    tasks.reset_store_backoff()
+    seed_products()
+
+    with store_intervals({'bestbuy': 1}):
+        run_cycle({'bestbuy': 'none'})
+        failures += report('bestbuy' in tasks._store_retry_at, 'Best Buy is backed off')
+        # last_checked is untouched by the failures, so the interval is long past.
+        calls = run_cycle({})
+        failures += report(calls.count('bestbuy') == 0,
+                           'the due store is still skipped while backed off', f"calls={calls}")
+    tasks.reset_store_backoff()
+    return failures
+
 CHECKS = [
     check_healthy_cycle,
     check_backoff_after_failures,
@@ -342,6 +457,10 @@ CHECKS = [
     check_success_resets,
     check_exception_counts_as_failure,
     check_auto_cart_is_untouched,
+    check_interval_settings_are_parsed,
+    check_interval_due_boundaries,
+    check_store_waits_for_its_interval,
+    check_backoff_beats_interval,
 ]
 
 
