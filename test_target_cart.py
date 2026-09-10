@@ -30,17 +30,16 @@ That loads your own cookies into ~/.chrome_profiles/target_profile and reports
 whether a challenge or sign-in wall is still in the way. Treat the file as a
 password: it is your live session. Delete it afterwards.
 
-It also writes data/target_cookies.json (0600), which the Redsky path reads. With
-a valid _px3 in there, scheduled Target checks answer from one HTTP request and
-open no browser at all - so the profile, and its risk of being flagged, is only
-spent on cart attempts. PX tokens are short-lived; when it goes cold the checks
-quietly return to the browser path and re-running --import-cookies restores it.
+It also writes ~/.chrome_profiles/target_profile/cookies.json (0600), which the
+Redsky path reads. With a valid _px3 in there, scheduled Target checks answer
+from one HTTP request and open no browser at all - so the profile, and its risk
+of being flagged, is only spent on cart attempts. PX tokens are short-lived;
+when it goes cold the checks quietly return to the browser path and re-running
+--import-cookies restores it.
 
-That path is relative to the checkout this script runs from. With several
-worktrees around, run --import-cookies from the SAME checkout the app runs from,
-or point both at one file with TARGET_COOKIE_JAR=/path/to/target_cookies.json -
-otherwise the jar is written where the app will never look for it, and Target
-checks keep opening a browser for no visible reason.
+The jar sits beside the profile, not in the checkout, so it does not matter which
+worktree you run this from - the app finds the same file either way. Set
+TARGET_COOKIE_JAR to override. The run prints the resolved path at the end.
 
 The app must run as the SAME OS user, since it reads that same profile directory.
 
@@ -156,7 +155,9 @@ def import_cookies(path):
             _save_jar(driver)
 
             print("\nIf both pages are clear, headless runs will reuse this session.")
-            print("Delete the cookie file now - it is a live login.")
+            print(f"Saved session: {TARGET_COOKIE_JAR}")
+            print(f"Chrome profile: {scraper.profile_dir}")
+            print("Delete the cookie EXPORT you passed in now - it is a live login.")
         finally:
             try:
                 driver.quit()
@@ -180,9 +181,10 @@ def _save_jar(driver):
 
     print(f"\nSaved {written} cookies to {TARGET_COOKIE_JAR}")
     # The file is opened 0600. On Windows that mode is ignored and the file
-    # inherits the ACL of data/ instead, so do not promise a mode we did not set.
+    # inherits the profile directory's ACL instead, so do not promise a mode we did not set.
     print(f"  permissions: {oct(stat.S_IMODE(os.stat(TARGET_COOKIE_JAR).st_mode))}"
-          + (" (Windows applies the inherited ACL, not the mode)" if os.name == "nt" else ""))
+          + (" (Windows applies the profile directory's inherited ACL, not the mode)"
+             if os.name == "nt" else ""))
     if missing:
         print(f"  WARNING: no {', '.join(missing)} among them.")
         print("  _px3 is the PerimeterX clearance token; without it Redsky will keep")
@@ -191,7 +193,8 @@ def _save_jar(driver):
         print("  Redsky checks will use this and skip the browser entirely.")
     print("  It expires on its own; when it does, checks quietly go back to the")
     print("  browser path and you can re-run --import-cookies to restore it.")
-    print("  This file is a live login - it is under data/, which git ignores.")
+    print("  This file is a live login. It lives beside the Chrome profile, outside")
+    print("  the repo, so no branch can commit it and every worktree finds the same one.")
 
 
 def check(url):
