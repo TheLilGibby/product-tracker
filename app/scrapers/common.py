@@ -4,7 +4,9 @@ request timeout, bot-wall detection and pre-order text matching.
 """
 
 import logging
+import os
 import re
+import subprocess
 
 # Set up logging
 logger = logging.getLogger('app.scrapers.common')
@@ -98,3 +100,38 @@ def detect_block_page(html):
 def is_preorder_text(text):
     """True if the text says the item is a pre-order ("pre-order", "preorder" or "pre order")"""
     return bool(text) and bool(_PREORDER_RE.search(text))
+
+
+def detect_chrome_major():
+    """
+    Major version of the installed Chrome, for undetected-chromedriver's
+    `version_main`. Without it uc downloads the newest driver, which refuses to
+    start against an older browser ("This version of ChromeDriver only supports
+    Chrome version N"). CHROME_MAJOR_VERSION in the environment overrides
+    detection; None lets undetected-chromedriver decide.
+    """
+    override = os.environ.get('CHROME_MAJOR_VERSION', '')
+    if override.isdigit():
+        return int(override)
+
+    for exe in ('google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'):
+        try:
+            output = subprocess.run([exe, '--version'], capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        match = re.search(r'(\d+)\.\d+\.\d+', output or '')
+        if match:
+            return int(match.group(1))
+
+    # Windows installs keep a <version> directory next to chrome.exe
+    try:
+        import undetected_chromedriver as uc
+        exe = uc.find_chrome_executable()
+        if exe:
+            for entry in os.listdir(os.path.dirname(exe)):
+                match = re.fullmatch(r'(\d+)\.\d+\.\d+\.\d+', entry)
+                if match:
+                    return int(match.group(1))
+    except Exception as e:
+        logger.debug(f"Could not detect Chrome version from install directory: {str(e)}")
+    return None

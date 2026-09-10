@@ -9,7 +9,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from bs4 import BeautifulSoup
-from app.scrapers.common import CHROME_VERSION, DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text
+from app.scrapers.common import CHROME_VERSION, DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text, detect_chrome_major
 import platform
 import os
 import random
@@ -130,7 +130,7 @@ class AdoramaScraper:
                 options.page_load_strategy = 'eager'
                 
                 # Create a new browser instance
-                driver = uc.Chrome(options=options)
+                driver = uc.Chrome(options=options, version_main=detect_chrome_major())
                 
                 logger.debug(f"Accessing URL: {url}")
                 
@@ -848,7 +848,7 @@ class AdoramaScraper:
             options = self._get_chrome_options()
             
             # Create browser instance
-            driver = uc.Chrome(options=options)
+            driver = uc.Chrome(options=options, version_main=detect_chrome_major())
             
             # Navigate to product page
             logger.info(f"Navigating to product page: {url}")

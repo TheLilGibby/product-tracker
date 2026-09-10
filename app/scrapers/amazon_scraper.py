@@ -2,7 +2,7 @@ import re
 import logging
 import requests
 from bs4 import BeautifulSoup
-from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text
+from app.scrapers.common import DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text, detect_chrome_major
 import time
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -77,7 +77,7 @@ class AmazonScraper:
             # Proxy setup if needed
             # options.add_argument('--proxy-server=your-proxy-server')
             
-            driver = uc.Chrome(options=options)
+            driver = uc.Chrome(options=options, version_main=detect_chrome_major())
             
             try:
                 # Set window size
