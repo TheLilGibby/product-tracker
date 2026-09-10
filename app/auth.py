@@ -113,18 +113,17 @@ def register_auth(app):
 #    which still send Origin on a cross-origin POST.
 #
 # 3. When none of those headers is present, allow the request. This is the
-#    documented decision, not an oversight: it is the non-browser case - the
-#    runbook's curl, the MCP server, a scheduled job - and a browser always
-#    sends Sec-Fetch-Site, so a real CSRF attempt cannot reach this branch. A
-#    client that does reach it is not carrying browser-managed credentials
-#    either, so it has nothing to be confused into spending.
+#    documented decision, not an oversight. Browsers always send Sec-Fetch-Site,
+#    so the absence of all three identifies a non-browser client: curl, a script,
+#    anything driving the JSON endpoints. A real CSRF attempt cannot reach this
+#    branch, and a client that does reach it holds no browser-managed
+#    credentials to be confused into spending.
 #
 # Deliberately not Flask-WTF: no new dependency, no per-template token wiring,
 # and nothing to forget on a new form. The trade is that this defends the origin
 # boundary rather than proving intent, which is the right shape for an app whose
 # whole surface is same-origin forms.
 # ---------------------------------------------------------------------------
-
 
 logger = logging.getLogger('app.auth')
 
@@ -202,7 +201,7 @@ def same_origin_required():
                 return None
             return _refuse(f'{header}: {value}')
 
-    # No browser-set origin headers at all: non-browser client. See module docstring.
+    # No browser-set origin headers at all, so not a browser. See module docstring.
     return None
 
 
