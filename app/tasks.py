@@ -397,18 +397,11 @@ def check_auto_cart_opportunities():
         except Exception as e:
             logger.error(f"Error processing auto-cart for product {product.id}: {str(e)}", exc_info=True)
     
-    # If we had any successful cart additions, update the cart count in the application context
+    # This used to call update_cart_count(), which writes the badge count into the
+    # Flask session. A session needs a request context, and the scheduler thread has
+    # none, so every successful auto-cart logged "Working outside of request context"
+    # and the write went nowhere. The badge is recomputed from the database by
+    # GET /api/cart-count, which every page polls every 30s, so nothing is needed here.
     if had_successful_cart:
-        try:
-            # current_app is imported at module level; re-importing it here made it
-            # a function-local name, so reads earlier in this function raised
-            # UnboundLocalError.
-            # Check if we're in an application context
-            if current_app:
-                with current_app.app_context():
-                    # Update the cart count function
-                    # This function would be imported from routes.main to avoid circular imports
-                    from app.routes.main import update_cart_count
-                    update_cart_count()
-        except Exception as e:
-            logger.error(f"Error updating cart count after auto-cart: {str(e)}", exc_info=True) 
+        logger.info("Auto-cart succeeded for at least one product; the nav cart badge "
+                    "refreshes on the next /api/cart-count poll") 
