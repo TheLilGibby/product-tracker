@@ -125,8 +125,8 @@ class Config:
     # fires real cart attempts at retailers. With SCHEDULER_ENABLED=0 no
     # BackgroundScheduler is created at all (no check job, no auto-cart job, no
     # snapshot job) while the database and the UI stay fully live; the manual
-    # Update Now buttons still work, because they scrape directly rather than
-    # directly. The pair every non-designated instance sets is
+    # Update Now buttons still work, because they scrape inline rather than
+    # through the scheduler. The pair every non-designated instance sets is
     # SCHEDULER_ENABLED=0 TELEGRAM_ALERTS_ENABLED=0.
     SCHEDULER_ENABLED = os.environ.get('SCHEDULER_ENABLED', '1').strip().lower() not in (
         '0', 'false', 'no', 'off', '')
