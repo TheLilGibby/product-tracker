@@ -197,6 +197,37 @@ def get_scraper(store_type):
 # makes the check pass. Note that (1) is what keeps (2) honest - without it, a
 # carousel click puts a real product in a real cart, and the failure that
 # follows names the wrong cause.
+
+# Refusals a scraper makes on purpose, having read the page and decided the
+# listing cannot be carted. These are not errors, and they will go on happening
+# until the retailer changes the page, so the caller reports them differently
+# from a failure - see check_auto_cart_opportunities.
+#
+# Matched on the message because that is all the dispatcher's contract carries
+# today. The better shape is a 'refused' key in the returned dict alongside
+# 'success'; when the scrapers grow one, read that and leave this as the
+# fallback. If you add a refusal to a scraper, add its phrase here, and keep the
+# phrase distinctive enough that it cannot match an ordinary failure.
+BY_DESIGN_REFUSALS = (
+    # Amazon: a pre-order or other Buy-Now-only buy box. Buy Now skips the cart
+    # and goes straight to checkout, so it is never clicked - the contract is
+    # that this app fills a cart and stops there.
+    'buy now but no add to cart',
+    # Best Buy: the product's own CTA reads Coming Soon / Sold Out / Check Stores.
+    'is not purchasable',
+    # Any store: the URL carries no id to verify the add against afterwards, so
+    # nothing is clicked, rather than clicked and then unverifiable.
+    'could not read an asin',
+    'could not identify the product',
+)
+
+
+def is_by_design_refusal(message):
+    """True when a cart result's message is a deliberate refusal, not a failure."""
+    text = (message or '').lower()
+    return any(phrase in text for phrase in BY_DESIGN_REFUSALS)
+
+
 def add_to_cart(store_type, url, quantity=1):
     """
     Add a product to the cart for the specified store.

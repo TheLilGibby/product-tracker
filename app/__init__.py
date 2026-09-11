@@ -37,6 +37,35 @@ logger = logging.getLogger('app')
 # the bot token ends up in app.log. Keep HTTP client logging at INFO.
 logging.getLogger('urllib3').setLevel(logging.INFO)
 
+# Selenium's wire log writes the body of every WebDriver response at DEBUG, and
+# the response to `driver.page_source` is the whole page. With the root logger at
+# DEBUG that is one log line per scrape carrying a megabyte or more of HTML:
+# app.log on the integration host reached 470 MB, of which 196 MB was 173 such
+# lines - 98% of the file, the longest single line being 1.76 MB. It also leaves
+# a copy of every retailer page on disk in a file too large to open. The rest
+# below are startup and poll chatter that buries the app's own DEBUG output.
+NOISY_LIBRARY_LOGGERS = ('selenium', 'undetected_chromedriver', 'uc', 'apscheduler')
+
+
+class _LibraryDebugFilter(logging.Filter):
+    """
+    Drop DEBUG records from the libraries above, wherever they are emitted.
+
+    A filter rather than setLevel: undetected_chromedriver sets its own logger
+    to the root's effective level when it is imported, which is DEBUG here and
+    silently undoes a setLevel made before the import. Filters on the handlers
+    are not something a library can overwrite.
+    """
+
+    def filter(self, record):
+        if record.levelno > logging.DEBUG:
+            return True
+        return not record.name.startswith(NOISY_LIBRARY_LOGGERS)
+
+
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_LibraryDebugFilter())
+
 def create_app(config_name='default'):
     """
     Create and configure the Flask application.

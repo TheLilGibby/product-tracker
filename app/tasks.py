@@ -5,7 +5,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from flask import current_app
 from app import db
 from app.models.product import AvailabilityHistory, Product, PriceHistory
-from app.scrapers import detect_store_type, get_scraper
+from app.scrapers import detect_store_type, get_scraper, is_by_design_refusal
 from app.notifications import send_product_alert
 import urllib.parse
 import threading
@@ -554,21 +554,35 @@ def check_auto_cart_opportunities():
             quantity = product.auto_cart_quantity or 1
             
             try:
+                previous_status = product.last_cart_status
                 result = add_to_cart(store_type, product.url, quantity)
-                
-                # Update product with cart attempt results
+                message = result.get('message', 'Unknown status')
+
+                # Update product with cart attempt results. This is what arms
+                # the cooldown, and it runs for a refusal exactly as it does for
+                # a success - a scraper that declines to click has still had its
+                # turn, and retrying it a minute later would only decline again.
                 product.last_cart_attempt = datetime.utcnow()
-                product.last_cart_status = result.get('message', 'Unknown status')
+                product.last_cart_status = message
                 db.session.commit()
-                
+
                 if result.get('success'):
                     logger.info(f"Successfully added product {product.id} to cart")
                     had_successful_cart = True
-                    
+
                     # Send notification about auto-cart success
                     send_product_alert(product, is_auto_cart=True, cart_url=result.get('cart_url'))
+                elif is_by_design_refusal(message):
+                    # Not a failure: the scraper looked at the page and correctly
+                    # declined. Said once at INFO, and dropped to DEBUG while the
+                    # answer stays the same, so a product that will refuse for
+                    # weeks does not file a warning every cooldown for weeks.
+                    if message == previous_status:
+                        logger.debug(f"Product {product.id} still not cartable: {message}")
+                    else:
+                        logger.info(f"Leaving product {product.id} alone: {message}")
                 else:
-                    logger.warning(f"Failed to add product {product.id} to cart: {result.get('message', 'Unknown error')}")
+                    logger.warning(f"Failed to add product {product.id} to cart: {message}")
             except Exception as e:
                 logger.error(f"Error adding product {product.id} to cart: {str(e)}", exc_info=True)
                 product.last_cart_attempt = datetime.utcnow()
