@@ -6,9 +6,16 @@
 <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2rem;">
     <div>
         <h2>{{ product.name }}</h2>
-        <p><a href="{{ product.url }}" target="_blank" rel="noopener noreferrer">View on retailer site</a></p>
     </div>
-    <div>
+    <div class="product-actions">
+        <a href="{{ product.url }}" target="_blank" rel="noopener noreferrer" role="button">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem;">
+                <path fill-rule="evenodd" d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/>
+                <path fill-rule="evenodd" d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5z"/>
+            </svg>
+            View on retailer site
+        </a>
+
         <a href="{{ url_for('main.update_product', product_id=product.id) }}" role="button">
             <svg class="icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem;">
                 <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
@@ -16,11 +23,11 @@
             </svg>
             Update Now
         </a>
-        
+
         <!-- Add to Cart Button -->
-        <form method="post" action="{{ url_for('main.add_product_to_cart', product_id=product.id) }}" style="display: inline;">
+        <form method="post" action="{{ url_for('main.add_product_to_cart', product_id=product.id) }}">
             <input type="hidden" name="quantity" value="1">
-            <button type="submit" class="outline" style="margin-left: 0.5rem;">
+            <button type="submit" class="outline">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem;">
                     <path d="M0 1.5A.5.5 0 0 1 .5 1H2a.5.5 0 0 1 .485.379L2.89 3H14.5a.5.5 0 0 1 .491.592l-1.5 8A.5.5 0 0 1 13 12H4a.5.5 0 0 1-.491-.408L2.01 3.607 1.61 2H.5a.5.5 0 0 1-.5-.5zM3.102 4l1.313 7h8.17l1.313-7H3.102zM5 12a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-7 1a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm7 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/>
                 </svg>
@@ -216,6 +223,28 @@
 </div>
 
 <style>
+    /* Right-hand action column: retailer link, Update Now, Add to Cart last */
+    .product-actions {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.5rem;
+        min-width: 13rem;
+    }
+
+    .product-actions form {
+        margin: 0;
+    }
+
+    .product-actions a[role="button"],
+    .product-actions button {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        margin: 0;
+    }
+
     .complete-purchase-btn {
         display: inline-flex;
         align-items: center;
