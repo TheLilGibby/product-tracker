@@ -1,0 +1,140 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ group.name }} - Product Tracker{% endblock %}
+
+{% block extra_css %}
+<style>
+    .group-listings td { vertical-align: top; }
+    .group-listings .badge { white-space: nowrap; }
+    .group-listings .meta { margin-top: 0.2rem; font-size: 0.8rem; color: var(--text-light); }
+</style>
+{% endblock %}
+
+{% block content %}
+<p><a href="{{ url_for('main.index', view='grouped') }}">&larr; Grouped view</a></p>
+
+<h2>{{ group.name }}</h2>
+<p>
+    {% if summary.total == 0 %}
+        <span style="color: var(--text-light);">No listings in this group yet.</span>
+    {% elif summary.in_stock %}
+        <span class="badge badge-success" style="font-size: 1rem;">In stock at {{ summary.in_stock }} of {{ summary.total }}</span>
+    {% else %}
+        <span class="badge badge-danger" style="font-size: 1rem;">Out of stock at all {{ summary.total }}</span>
+    {% endif %}
+    {% if summary.best %}
+        &nbsp;Best price: <strong>${{ "%.2f"|format(summary.best.current_price) }}</strong>
+        at {{ summary.best_store }}{% if not summary.best_is_in_stock %} (out of stock){% endif %}
+    {% endif %}
+</p>
+
+<h3>Retailer listings</h3>
+{% if listings %}
+    <div class="table-responsive" style="overflow-x: auto;">
+        <table class="group-listings">
+            <thead>
+                <tr>
+                    <th>Store</th>
+                    <th>Listing</th>
+                    <th>Price</th>
+                    <th>Stock</th>
+                    <th>Last in stock</th>
+                    <th>Auto-cart</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in listings %}
+                    {% set p = row.product %}
+                    {% set seen = last_in_stock.get(p.id) %}
+                    <tr>
+                        <td>
+                            {{ row.store }}
+                            <div class="meta"><a href="{{ p.url }}" target="_blank" rel="noopener noreferrer">Retailer site</a></div>
+                        </td>
+                        <td>
+                            <a href="{{ url_for('main.product_detail', product_id=p.id) }}">{{ p.name|truncate(60) }}</a>
+                            <div class="meta">Checked {{ format_datetime(p.last_checked, current_timezone) }}</div>
+                        </td>
+                        <td>
+                            {% if p.current_price is not none %}${{ "%.2f"|format(p.current_price) }}{% else %}<span style="color: var(--text-light);">Not available</span>{% endif %}
+                        </td>
+                        <td>
+                            {% if p.available %}
+                                <span class="badge badge-success">In Stock</span>
+                            {% else %}
+                                <span class="badge badge-danger">Out of Stock</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span style="font-size: 0.875rem;">
+                                {% if seen %}{{ format_datetime(seen, current_timezone) }}{% else %}<span style="color: var(--text-light);">Not logged</span>{% endif %}
+                            </span>
+                        </td>
+                        <td>{{ 'Armed' if p.auto_cart_enabled else 'Off' }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+{% else %}
+    <p>Open a listing's page and choose this group under "Product group" to add it here.</p>
+{% endif %}
+
+<h3 style="margin-top: 2rem;">Stock history</h3>
+<p style="font-size: 0.875rem; color: var(--text-light);">
+    Every stock change the scheduler has seen at each retailer, newest first.
+    Logging starts at a listing's first scheduled check after stock history
+    was added, so earlier changes are not here.
+</p>
+{% if history %}
+    <div class="table-responsive" style="overflow-x: auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>When</th>
+                    <th>Store</th>
+                    <th>Stock</th>
+                    <th>Price then</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in history %}
+                    {% set e = row.entry %}
+                    <tr>
+                        <td><span style="font-size: 0.875rem;">{{ format_datetime(e.timestamp, current_timezone) }}</span></td>
+                        <td><a href="{{ url_for('main.product_detail', product_id=e.product_id) }}">{{ row.store }}</a></td>
+                        <td>
+                            {% if e.available %}
+                                <span class="badge badge-success">In Stock</span>
+                            {% else %}
+                                <span class="badge badge-danger">Out of Stock</span>
+                            {% endif %}
+                        </td>
+                        <td>{% if e.price is not none %}${{ "%.2f"|format(e.price) }}{% else %}<span style="color: var(--text-light);">-</span>{% endif %}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+{% else %}
+    <p>No stock changes logged yet.</p>
+{% endif %}
+
+<article style="margin-top: 2rem;">
+    <h3>Manage group</h3>
+    <form method="post" action="{{ url_for('groups.rename', group_id=group.id) }}">
+        <label for="group_name">Name</label>
+        <input type="text" id="group_name" name="name" value="{{ group.name }}" maxlength="200" required>
+        <button type="submit">Rename</button>
+    </form>
+
+    <form method="post" action="{{ url_for('groups.delete', group_id=group.id) }}" style="margin-top: 1.5rem;"
+          onsubmit="return confirm('Delete this group? Its listings stay tracked and keep their settings; they just become ungrouped.');">
+        <p style="margin-bottom: 0.5rem;">
+            Deleting the group keeps every listing, its stock history and its auto-cart
+            settings. The listings just become ungrouped.
+        </p>
+        <button type="submit" style="background-color: #b91c1c; border-color: #b91c1c;">Delete group</button>
+    </form>
+</article>
+{% endblock %}

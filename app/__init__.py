@@ -92,6 +92,8 @@ def create_app(config_name='default'):
     # Register blueprints
     from app.routes import main_bp
     app.register_blueprint(main_bp)
+    from app.routes.groups import groups_bp
+    app.register_blueprint(groups_bp)
 
     # Refuse state-changing requests that came from another site. Installed on
     # the app rather than on main_bp so anything registered later - api_bp, which

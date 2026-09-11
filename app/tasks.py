@@ -4,7 +4,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from flask import current_app
 from app import db
-from app.models.product import Product, PriceHistory
+from app.models.product import AvailabilityHistory, Product, PriceHistory
 from app.scrapers import detect_store_type, get_scraper
 from app.notifications import send_product_alert
 import urllib.parse
@@ -157,6 +157,30 @@ def store_check_is_due(store_type, last_checked, now=None):
     return elapsed >= (interval * 60.0) - grace
 
 
+def record_availability(product, now):
+    """
+    Log a listing's stock state when it differs from the last one logged.
+
+    The comparison is against the listing's newest AvailabilityHistory row, not
+    the value check_all_products just overwrote. That way a listing's first
+    check logs its starting state, and a change that "Update Now" saw first
+    (it sets product.available without logging) is still logged on the next
+    scheduled check instead of being lost.
+    """
+    available = bool(product.available)
+    last = (AvailabilityHistory.query
+            .filter_by(product_id=product.id)
+            .order_by(AvailabilityHistory.timestamp.desc(), AvailabilityHistory.id.desc())
+            .first())
+    if last is not None and last.available == available:
+        return
+    db.session.add(AvailabilityHistory(product_id=product.id, timestamp=now,
+                                       available=available, price=product.current_price))
+    if last is not None:
+        logger.info(f"Stock changed for product {product.id}: "
+                    f"{'in stock' if available else 'out of stock'}")
+
+
 # Names for the dashboard. A store missing from here falls back to its key.
 STORE_LABELS = {
     'amazon': 'Amazon',
@@ -304,7 +328,8 @@ def check_all_products():
                     product.available = product_data.get('available', False)
                     product.image_url = product_data.get('image_url') or product.image_url
                     product.last_checked = datetime.utcnow()
-                    
+                    record_availability(product, product.last_checked)
+
                     # Record price history if price changed
                     if product.current_price is not None and product.current_price != old_price:
                         history = PriceHistory(

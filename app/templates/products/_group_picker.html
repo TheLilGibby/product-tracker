@@ -1,0 +1,30 @@
+{# Which product group this listing belongs to. Included by products/detail.html.
+   One text field: type an existing group's name (the list suggests them) or a
+   new one to create it; clear it to take the listing out of its group. #}
+{% set current_group = product.group_membership.group if product.group_membership else none %}
+<article>
+    <h3>Product group</h3>
+    <p style="font-size: 0.875rem; color: var(--text-light); margin-top: 0;">
+        Put the same item from different retailers in one group to see them as a
+        single row on the dashboard's Grouped view. This does not change how the
+        listing is checked or carted.
+    </p>
+    {% if current_group %}
+        <p>In <a href="{{ url_for('groups.detail', group_id=current_group.id) }}">{{ current_group.name }}</a></p>
+    {% endif %}
+    <form method="post" action="{{ url_for('groups.set_product_group', product_id=product.id) }}">
+        <label for="group_name">Group name</label>
+        <input type="text" id="group_name" name="group_name" list="product-group-names" maxlength="200"
+               value="{{ current_group.name if current_group else '' }}"
+               placeholder="e.g. Switch 2 Zelda Edition console">
+        <datalist id="product-group-names">
+            {% for name in product_group_names() %}
+                <option value="{{ name }}">
+            {% endfor %}
+        </datalist>
+        <button type="submit">Save group</button>
+        {% if current_group %}
+            <p style="font-size: 0.8rem; color: var(--text-light); margin-bottom: 0;">Clear the name and save to take this listing out of the group.</p>
+        {% endif %}
+    </form>
+</article>
