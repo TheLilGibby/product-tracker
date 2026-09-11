@@ -54,10 +54,12 @@ import argparse
 import logging
 import os
 import sys
+from contextlib import contextmanager
 
 from bs4 import BeautifulSoup
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, WebDriverException
 from selenium.webdriver.common.by import By
+from urllib.parse import urlparse
 
 # --login and --import-cookies must show a window whatever AMAZON_HEADLESS says;
 # set it before the scraper module reads the variable at import time.
@@ -66,7 +68,10 @@ IMPORT_MODE = '--import-cookies' in sys.argv
 if LOGIN_MODE or IMPORT_MODE:
     os.environ['AMAZON_HEADLESS'] = '0'
 
-from app.scrapers.amazon_scraper import AMAZON_CART_URL, AmazonScraper  # noqa: E402
+from app.scrapers import amazon_scraper  # noqa: E402
+from app.scrapers.amazon_scraper import (  # noqa: E402
+    AMAZON_CART_URL, AmazonScraper, cookie_header_from_form, validate_cookie_header,
+)
 from app.scrapers.common import import_cookies_txt, profile_lock  # noqa: E402
 
 # Importing app.scrapers runs the app package's DEBUG basicConfig; override it so
@@ -263,6 +268,10 @@ class FakeDriver:
     an acknowledgement expire for real, which is the one slow case here.
     """
 
+    # Chrome rejects a cookie whose domain does not match the page it is on;
+    # the scraper relies on that, trying .amazon.com first and falling through.
+    accepts_cookies = True
+
     def __init__(self, product_page, cart_page, url):
         self.product_page = product_page
         self.cart_page = cart_page
@@ -270,12 +279,25 @@ class FakeDriver:
         self.current_url = url
         self.clicks = []
         self.clicked_asins = []
+        self.gets = []
+        self.cookies = []
 
     def get(self, url):
         # The flow navigates to the product URL first and the cart second, so
         # serve by URL rather than by call order.
+        self.gets.append(url)
         self.current_url = url
         self.page_source = self.cart_page if 'cart' in url else self.product_page
+
+    def add_cookie(self, cookie):
+        if not self.accepts_cookies:
+            raise WebDriverException('invalid cookie domain')
+        host = urlparse(self.current_url).hostname or ''
+        domain = (cookie.get('domain') or '').lstrip('.')
+        if not (host == domain or host.endswith('.' + domain)):
+            raise WebDriverException('invalid cookie domain')
+        self.cookies.append((cookie['name'], cookie['value']))
+
 
     def execute_script(self, script, *args):
         return None
@@ -293,6 +315,12 @@ class FakeDriver:
         return found[0]
 
 
+class CookieRejectingDriver(FakeDriver):
+    """A browser that turns down every cookie, however it is addressed."""
+
+    accepts_cookies = False
+
+
 def _select(driver, soup, by, value):
     if by in (By.CSS_SELECTOR, By.TAG_NAME):
         return [FakeElement(driver, tag) for tag in soup.select(value)]
@@ -307,11 +335,38 @@ def _product(body, name='Nintendo Switch 2 - Zelda 40th Anniversary Edition', si
     return PRODUCT_PAGE.format(name=name, body=body + (SIDE_SHEET if side_sheet else ''))
 
 
-def _run(product_page, cart_page, url=CONSOLE_URL):
+def _run(product_page, cart_page, url=CONSOLE_URL, driver_class=FakeDriver):
     scraper = AmazonScraper.__new__(AmazonScraper)  # skip __init__: no profile dir, no Chrome lookup
-    driver = FakeDriver(product_page, cart_page, url)
+    driver = driver_class(product_page, cart_page, url)
     asin = AmazonScraper.extract_asin(url)
     return scraper._add_to_cart_with_driver(driver, url, asin, 1), driver
+
+
+@contextmanager
+def cookie_state(header):
+    """
+    Pin what load_amazon_cookies() sees for the duration of a check.
+
+    Both of its sources are ambient: the AMAZON_COOKIES environment variable
+    and ~/.chrome_profiles/amazon_cookies.txt, which is a real file holding a
+    real Amazon session on any machine where the user has pasted one. Without
+    this, these checks would take a different branch on that machine than on a
+    clean one - and the cart checks either side of them would too, silently.
+    The file is pointed at a path that does not exist rather than touched.
+    """
+    previous = os.environ.get('AMAZON_COOKIES')
+    previous_path = amazon_scraper.amazon_cookies_file_path
+    os.environ['AMAZON_COOKIES'] = header
+    amazon_scraper.amazon_cookies_file_path = lambda: os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'no-such-amazon-cookies.txt')
+    try:
+        yield
+    finally:
+        amazon_scraper.amazon_cookies_file_path = previous_path
+        if previous is None:
+            os.environ.pop('AMAZON_COOKIES', None)
+        else:
+            os.environ['AMAZON_COOKIES'] = previous
 
 
 def run_asin_checks():
@@ -525,6 +580,118 @@ def run_attribution_checks():
     return failures
 
 
+def run_cookie_checks():
+    """
+    The pasted-session branch: Settings -> Amazon cookies, or AMAZON_COOKIES.
+
+    Cookies can only be handed to a browser that is already on the domain, so
+    the cart flow loads the page, applies them, and loads it AGAIN - a cookie
+    added after a render does not apply to that render. That second load is the
+    only thing the branch changes about the flow, so it is what these count.
+
+    The flow also has to survive the two ways it goes wrong without a Chrome to
+    ask: nothing configured (the common case, a guest cart) and configured but
+    refused by the browser (an expired or malformed paste). Neither may change
+    the cart result, because the cart page is what decides that.
+    """
+    buy_box = BUY_BOX_FORM.format(asin=CONSOLE_ASIN)
+    product_page = _product(buy_box)
+    cart_page = CART_WITH_ITEM.format(asin=CONSOLE_ASIN, slug='zelda-console', name='Nintendo Switch 2')
+
+    # A header the way a browser hands it over: padded spaces, a quoted
+    # session-token whose base64 padding is itself '=', and a stray segment.
+    HEADER = 'session-id=141-000; at-main = Atza|xyz ; session-token="Abc=="; garbage; ubid-main=133-1'
+    EXPECTED = [('session-id', '141-000'), ('at-main', 'Atza|xyz'),
+                ('session-token', 'Abc=='), ('ubid-main', '133-1')]
+
+    scraper = AmazonScraper.__new__(AmazonScraper)
+    failures = 0
+
+    parsed = scraper._parse_cookie_header(HEADER)
+    ok = parsed == EXPECTED
+    failures += 0 if ok else 1
+    print(f"  [{'ok' if ok else 'FAIL'}] header parsed into {len(parsed)} pairs "
+          f"(a value may contain '=', a segment without one is dropped)")
+
+    # Configured and accepted: every pair reaches the browser, and the product
+    # page is loaded a second time so the session applies to it.
+    with cookie_state(HEADER):
+        result, driver = _run(product_page, cart_page)
+    product_loads = [url for url in driver.gets if url == CONSOLE_URL]
+    ok = (driver.cookies == EXPECTED and len(product_loads) == 2
+          and driver.gets[-1] == AMAZON_CART_URL and result['success'] is True)
+    failures += 0 if ok else 1
+    print(f"  [{'ok' if ok else 'FAIL'}] cookies applied -> {len(driver.cookies)} sent, "
+          f"product page loaded {len(product_loads)}x, success={result['success']}")
+
+    # Nothing configured: the branch is not entered at all. This is the case
+    # every other check in this file runs under.
+    with cookie_state(''):
+        result, driver = _run(product_page, cart_page)
+    product_loads = [url for url in driver.gets if url == CONSOLE_URL]
+    ok = (driver.cookies == [] and len(product_loads) == 1
+          and driver.clicks == ['add-to-cart-button'] and result['success'] is True)
+    failures += 0 if ok else 1
+    print(f"  [{'ok' if ok else 'FAIL'}] no cookies configured -> none sent, "
+          f"product page loaded {len(product_loads)}x, success={result['success']}")
+
+    # Configured but the browser turns all of them down - an expired or
+    # malformed paste. No reload, because there is no new session to apply; no
+    # raise; and the cart still decides the outcome.
+    with cookie_state(HEADER):
+        result, driver = _run(product_page, cart_page, driver_class=CookieRejectingDriver)
+    product_loads = [url for url in driver.gets if url == CONSOLE_URL]
+    ok = (driver.cookies == [] and len(product_loads) == 1 and result['success'] is True)
+    failures += 0 if ok else 1
+    print(f"  [{'ok' if ok else 'FAIL'}] every cookie refused -> no reload, "
+          f"cart still decides (success={result['success']})")
+
+    # validate_cookie_header guards a write into .env, where a newline in the
+    # value would become a second config line.
+    validate_cases = [
+        ('a normal header is kept', 'session-id=141-000; at-main=Atza|abc',
+         'session-id=141-000; at-main=Atza|abc'),
+        ('surrounding whitespace is trimmed', '  session-id=141-000  ', 'session-id=141-000'),
+        ('empty clears', '', ''),
+        ('a newline is refused, not stripped', 'session-id=1\nSECRET_KEY=hijacked', ValueError),
+        ('a control character is refused', 'session-id=1\x00', ValueError),
+    ]
+    for label, value, expected in validate_cases:
+        try:
+            got = validate_cookie_header(value)
+            ok = got == expected
+        except ValueError:
+            ok = expected is ValueError
+        failures += 0 if ok else 1
+        print(f"  [{'ok' if ok else 'FAIL'}] validate: {label}")
+
+    # The settings form: five named fields copied out of Chrome's cookie table,
+    # where a value is easily copied with its name or its quotes attached.
+    form_cases = [
+        ('named fields become a header, in cookie order',
+         {'amazon_at_main': 'Atza|abc', 'amazon_session_id': '141-000'},
+         'at-main=Atza|abc; session-id=141-000'),
+        ('a pasted name= prefix and wrapping quotes are stripped',
+         {'amazon_at_main': '"Atza|abc"', 'amazon_session_id': 'session-id=141-000'},
+         'at-main=Atza|abc; session-id=141-000'),
+        ('a full pasted header wins over the named fields',
+         {'amazon_cookies': 'session-id=whole; at-main=header', 'amazon_at_main': 'ignored'},
+         'session-id=whole; at-main=header'),
+        ('clear beats anything else on the form',
+         {'clear_amazon_cookies': '1', 'amazon_cookies': 'session-id=whole'},
+         ''),
+        ('an empty form is an empty header, not a stray separator',
+         {}, ''),
+    ]
+    for label, form, expected in form_cases:
+        got = cookie_header_from_form(form)
+        ok = got == expected
+        failures += 0 if ok else 1
+        print(f"  [{'ok' if ok else 'FAIL'}] form: {label}")
+
+    return failures
+
+
 # ------------------------------------------------------- interactive helpers
 
 def login():
@@ -591,18 +758,25 @@ def main():
         import_cookies(args.import_cookies)
         return 0
 
-    print("ASIN parsing:")
-    failures = run_asin_checks()
+    # Pinned for the whole offline run, not just the cookie checks. Otherwise
+    # a machine where the user has pasted an Amazon session sends every cart
+    # check down the apply-cookies branch, and these results would differ from
+    # one box to the next for a reason nothing on screen would mention.
+    with cookie_state(''):
+        print("ASIN parsing:")
+        failures = run_asin_checks()
 
-    print("\nBuy button attribution:")
-    failures += run_attribution_checks()
+        print("\nBuy button attribution:")
+        failures += run_attribution_checks()
 
-    print("\nCart verification:")
-    print("\nPrice attribution:")
-    failures += run_price_attribution_checks()
+        print("\nPrice attribution:")
+        failures += run_price_attribution_checks()
 
-    print("\nCart verification:")
-    failures += run_cart_verification_checks()
+        print("\nCart verification:")
+        failures += run_cart_verification_checks()
+
+        print("\nPasted Amazon session:")
+        failures += run_cookie_checks()
 
     print("")
     print(f"{'PASS' if failures == 0 else 'FAIL'} ({failures} failure(s))")

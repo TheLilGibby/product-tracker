@@ -359,9 +359,16 @@ class AmazonScraper:
                 cookies.append((name, value))
         return cookies
 
-    def _apply_amazon_cookies(self, driver):
-        """Inject the user's Amazon session cookies into this browser."""
-        cookie_header = load_amazon_cookies()
+    def _apply_amazon_cookies(self, driver, cookie_header=None):
+        """
+        Inject the user's Amazon session cookies into this browser.
+
+        The header is passed in by the cart flow, which has already read it to
+        decide whether to bother; the default is there for callers that have
+        not. Returns the number of cookies the browser accepted.
+        """
+        if cookie_header is None:
+            cookie_header = load_amazon_cookies()
         if not cookie_header:
             logger.warning("No Amazon cookies configured; cart will be a guest session")
             return 0
@@ -384,7 +391,17 @@ class AmazonScraper:
                     continue
             if not added:
                 logger.debug(f"Could not add Amazon cookie {name}")
-        logger.info(f"Applied {applied} Amazon cookie(s) for a logged-in cart")
+        if applied:
+            logger.info(f"Applied {applied} Amazon cookie(s) for a logged-in cart")
+        else:
+            # Cookies were configured and none of them stuck, so the cart is
+            # about to run as a guest. Said at WARNING because the previous
+            # "Applied 0 Amazon cookie(s) for a logged-in cart" was the only
+            # trace of it, and it read like the good case.
+            logger.warning(
+                "Amazon cookies are configured but the browser accepted none of "
+                "them; the cart will run as a guest session"
+            )
         return applied
 
     def _amazon_looks_signed_in(self, driver):
@@ -499,8 +516,9 @@ class AmazonScraper:
         # is laid on top of the persistent profile. Cookies can only be added
         # once the browser is on the domain, hence after the first load, and the
         # page is loaded again so the session actually applies to it.
-        if load_amazon_cookies():
-            if self._apply_amazon_cookies(driver):
+        cookie_header = load_amazon_cookies()
+        if cookie_header:
+            if self._apply_amazon_cookies(driver, cookie_header):
                 driver.get(url)
                 WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
                 if not self._amazon_looks_signed_in(driver):
