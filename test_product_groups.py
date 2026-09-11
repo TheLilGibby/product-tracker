@@ -19,6 +19,7 @@ import argparse
 import logging
 import sys
 import warnings
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 # The app stores naive UTC via datetime.utcnow(); these checks compare against it.
@@ -90,16 +91,30 @@ def stock_of(target, bestbuy, walmart):
     return {URLS['target']: target, URLS['bestbuy']: bestbuy, URLS['walmart']: walmart}
 
 
+@contextmanager
+def patched(module, **attrs):
+    """Swap a module's attributes for the length of the block, then put them back."""
+    originals = {name: getattr(module, name) for name in attrs}
+    for name, value in attrs.items():
+        setattr(module, name, value)
+    try:
+        yield
+    finally:
+        for name, value in originals.items():
+            setattr(module, name, value)
+
+
+def faked(stock):
+    """get_scraper and send_product_alert stand-ins: scrapes answer from `stock`, alerts go nowhere."""
+    return {'get_scraper': lambda store_type: FakeScraper(stock),
+            'send_product_alert': lambda *args, **kwargs: None}
+
+
 def run_cycle(stock):
     """One check_all_products pass with fake scrapers and alerts switched off."""
-    originals = tasks.get_scraper, tasks.send_product_alert
-    tasks.get_scraper = lambda store_type: FakeScraper(stock)
-    tasks.send_product_alert = lambda *args, **kwargs: None
-    try:
+    with patched(tasks, **faked(stock)):
         tasks.reset_store_backoff()
         tasks.check_all_products()
-    finally:
-        tasks.get_scraper, tasks.send_product_alert = originals
 
 
 def history_of(product):
@@ -156,6 +171,59 @@ def check_history():
     failures += report(len(rows) == 2 and rows[-1].available is False,
                        'a change Update Now saw first is logged on the next check',
                        f"{[r.available for r in rows]}")
+    return failures
+
+
+def check_one_writer(app):
+    """Every other way a listing gets checked logs its stock the same way the scheduler does."""
+    print("One stock history writer")
+    failures = 0
+    failures += report('stock_checks' not in inspect(db.engine).get_table_names(),
+                       'a new database has no stock_checks table')
+    stock = stock_of((False, 499.99), (True, 489.99), (False, 479.99))
+    products = seed(stock)
+    target, bestbuy = products['target'], products['bestbuy']
+
+    # refresh_product is the API's and the MCP server's check, and the API's add.
+    with patched(tasks, **faked(stock)):
+        tasks.refresh_product(target)
+        first = history_of(target)
+        tasks.refresh_product(target)
+        unchanged = len(history_of(target))
+        stock[URLS['target']] = (True, 459.99)
+        tasks.refresh_product(target)
+    rows = history_of(target)
+    failures += report(len(first) == 1 and first[0].available is False and unchanged == 1
+                       and [(r.available, r.price) for r in rows] == [(False, 499.99), (True, 459.99)]
+                       and rows[-1].timestamp == target.last_checked,
+                       'refresh_product logs the first state and each change, at the time of the check',
+                       str([(r.available, r.price) for r in rows]))
+
+    client = app.test_client()
+    routes = sys.modules['app.routes.main']
+    with patched(routes, **faked(stock)):
+        client.get(f'/product/{bestbuy.id}/update')
+        stock[URLS['bestbuy']] = (False, 489.99)
+        client.get(f'/product/{bestbuy.id}/update')
+        client.get(f'/product/{bestbuy.id}/update')
+    db.session.expire_all()
+    rows = history_of(bestbuy)
+    failures += report([r.available for r in rows] == [True, False],
+                       'Update Now logs the first state and the sell-out, once each',
+                       str([r.available for r in rows]))
+
+    url = 'https://www.walmart.com/ip/zelda-switch-2-bundle/2222222'
+    stock[url] = (True, 519.99)
+    with patched(routes, **faked(stock)):
+        response = client.post('/product/add', data={'url': url, 'scraper_type': 'walmart'})
+    db.session.expire_all()
+    added = Product.query.filter_by(url=url).first()
+    rows = history_of(added) if added else []
+    failures += report(response.status_code == 302 and added is not None
+                       and [(r.available, r.price) for r in rows] == [(True, 519.99)]
+                       and rows[0].timestamp == added.last_checked,
+                       'adding a listing logs its starting state once',
+                       f"status {response.status_code}, {[(r.available, r.price) for r in rows]}")
     return failures
 
 
@@ -554,6 +622,7 @@ def main():
     failed = 0
     with app.app_context():
         failed += check_history()
+        failed += check_one_writer(app)
         failed += check_membership()
         failed += check_rollup()
         failed += check_routes(app)
