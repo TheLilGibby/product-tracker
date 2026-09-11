@@ -68,6 +68,10 @@ PDP_BUTTON_SELECTOR = 'button[data-testid^="pdp-"]'
 BUTTON_SKU_RE = re.compile(r'-(\d{7})$')
 IN_STOCK_STATES = ('add-to-cart', 'pre-order', 'preorder')
 OUT_OF_STOCK_STATES = ('sold-out', 'coming-soon', 'unavailable', 'check-stores', 'notify')
+# How long to keep waiting for the client-rendered CTA after the server's
+# markup has arrived. The CTA is the only thing on the page that knows whether
+# the item can be bought, so it is worth a few seconds of its own.
+CTA_RENDER_TIMEOUT = 10
 
 PRICE_RE = re.compile(r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+(?:\.\d{2})?)')
 
@@ -328,6 +332,19 @@ class BestBuyScraper:
             )
         except TimeoutException:
             logger.warning("Timed out waiting for product markup")
+
+        # The wait above is satisfied by the JSON-LD, which arrives in the
+        # server's first response, while the CTA is rendered client-side a
+        # moment later. Returning here hands extract_availability a page with no
+        # CTA on it, and the JSON-LD is not a substitute for one - see
+        # _availability_from_jsonld.
+        if not driver.find_elements(By.CSS_SELECTOR, PDP_BUTTON_SELECTOR):
+            try:
+                WebDriverWait(driver, CTA_RENDER_TIMEOUT).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, PDP_BUTTON_SELECTOR)))
+            except TimeoutException:
+                logger.warning("Product markup arrived but the pdp CTA never rendered")
+
         self._human_pause()
         self._human_scroll(driver)
 
@@ -636,15 +653,36 @@ class BestBuyScraper:
         return None
 
     def _availability_from_jsonld(self, soup):
+        """
+        The JSON-LD may veto availability. It may never vouch for it.
+
+        Best Buy's Product JSON-LD is marketing metadata, not the buy box. Both
+        saved captures of the Zelda 40th accessories carry
+        ``"availability": "https://schema.org/InStock"`` on a page whose own CTA
+        is ``<button data-testid="pdp-coming-soon-6691852" disabled>Coming
+        Soon</button>`` - SKUs 6691852 and 6691849, InStock in the metadata and
+        unbuyable on the page, in the same capture.
+
+        That is the reported contradiction: the scrape reads True here, alerts,
+        and the auto-cart job then refuses with "Product is not purchasable
+        (coming soon)" every cycle, because the click path reads the CTA and the
+        CTA is right. So a positive claim from this source is discarded - like a
+        cart that is merely not empty, it is evidence of nothing in particular.
+        A negative claim is still worth having, since nobody advertises
+        OutOfStock by mistake, and an absent CTA with nothing to veto stays
+        False, which is what this already returned when it could not tell.
+        """
         for offer in self._offers(self._jsonld_product(soup)):
             availability = str(offer.get('availability', ''))
             if not availability:
                 continue
-            if re.search(r'InStock|PreOrder|LimitedAvailability|OnlineOnly', availability):
-                logger.debug(f"JSON-LD availability {availability} -> True")
-                return True
             if re.search(r'OutOfStock|SoldOut|Discontinued|PreSale', availability):
                 logger.debug(f"JSON-LD availability {availability} -> False")
+                return False
+            if re.search(r'InStock|PreOrder|LimitedAvailability|OnlineOnly', availability):
+                logger.warning(
+                    f"JSON-LD claims {availability} but the page rendered no pdp CTA to confirm it; "
+                    "reporting unavailable rather than alerting on metadata")
                 return False
         logger.warning("Could not determine availability; defaulting to False")
         return False
