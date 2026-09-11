@@ -8,6 +8,13 @@
         <h2>{{ product.name }}</h2>
     </div>
     <div class="product-actions">
+        <a href="{{ url_for('main.index') }}" role="button" class="back-link" aria-label="Back to product list">
+            <svg class="icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem;">
+                <path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8z"/>
+            </svg>
+            Back
+        </a>
+
         <a href="{{ product.url }}" target="_blank" rel="noopener noreferrer" role="button">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem;">
                 <path fill-rule="evenodd" d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/>
@@ -234,6 +241,20 @@
 
     .product-actions form {
         margin: 0;
+    }
+
+    /* Back is navigation, not an action -- simple.css gives every button the
+       same accent fill, so without this the four stack up looking equally
+       important and Add to Cart stops standing out. */
+    .product-actions .back-link {
+        background: transparent;
+        color: var(--text-light);
+        border: 1px solid var(--border);
+    }
+
+    .product-actions .back-link:hover {
+        background: var(--accent-bg);
+        color: var(--text);
     }
 
     .product-actions a[role="button"],
