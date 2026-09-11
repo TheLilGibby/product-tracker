@@ -94,6 +94,17 @@ class Config:
     # Telegram alerts: one global channel for every product (leave blank to disable)
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+    # Exactly ONE running tracker may post to the channel. Every other process
+    # that loads this app - a second dev server, a preview, a check script -
+    # reads the same .env and would post the same alerts again from its own
+    # database, which is how the channel ended up carrying contradictory stock
+    # messages from three instances at once. Set TELEGRAM_ALERTS_ENABLED=0 in
+    # the environment of anything that is not the designated instance.
+    TELEGRAM_ALERTS_ENABLED = os.environ.get('TELEGRAM_ALERTS_ENABLED', '1').strip().lower() not in (
+        '0', 'false', 'no', 'off', '')
+    # Short name of this instance, prefixed to every Telegram post so a stray
+    # sender can be told apart from the real one (e.g. INSTANCE_LABEL=live).
+    INSTANCE_LABEL = os.environ.get('INSTANCE_LABEL', '').strip()[:32]
     
 
     # Minimum minutes between auto-cart attempts for the same product
@@ -126,6 +137,11 @@ class TestingConfig(Config):
     """Testing configuration."""
     TESTING = True
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
+    # Check scripts and previews use this config, and they inherit the real bot
+    # token from .env. They must never post: blank the channel outright.
+    TELEGRAM_BOT_TOKEN = ''
+    TELEGRAM_CHAT_ID = ''
+    TELEGRAM_ALERTS_ENABLED = False
 
 class ProductionConfig(Config):
     """Production configuration."""

@@ -70,6 +70,26 @@ Then ping me with "Telegram is set up" and I'll run the end-to-end check from my
 - If Telegram is not configured, nothing changes — the app behaves exactly as before.
 - Other tools can push a message into the channel via `POST /api/telegram/send` with `{"message": "..."}`.
 
+## One sender only
+
+Every process that loads this app reads the same `.env`, so a second dev
+server, a preview on another port, or a check script that calls
+`create_app()` will post the same alerts again from its own database. Three
+instances running at once is what made the channel unreadable.
+
+- Pick **one** instance as the sender. Give it `INSTANCE_LABEL=live` (any short
+  name) so its posts are prefixed `[live]`.
+- Start everything else with `TELEGRAM_ALERTS_ENABLED=0` in its environment.
+  Nothing else changes: the instance still scrapes and records history, it
+  just never calls the Bot API.
+- `create_app('testing')` blanks the token and chat id and disables alerts, so
+  check scripts on the testing config cannot post.
+- A Windows user-scope `TELEGRAM_BOT_TOKEN` overrides `.env` and is inherited
+  by every child process; delete it rather than working around it.
+
+A post without a `[label]` prefix after this is set up is a stray instance:
+find it with `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'tracker' }`.
+
 ## Troubleshooting
 
 | Symptom | Fix |
