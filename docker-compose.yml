@@ -15,6 +15,11 @@ services:
       - chrome_profiles:/home/appuser/.chrome_profiles
     # Chrome crashes with the default 64MB /dev/shm; give it a real shared-memory segment.
     shm_size: 1g
+    # start.sh runs create_db.py immediately; without this it races Postgres's
+    # first-boot initdb and the app dies before the server accepts connections.
+    depends_on:
+      db:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -30,7 +35,10 @@ services:
     environment:
       - FLASK_ENV=production
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-here}
-      - DATABASE_URI=sqlite:///data/product_tracker.db
+      # Postgres, so the data outlives the container. No default password:
+      # compose refuses to start rather than bring up a database anyone can
+      # guess into. Set POSTGRES_PASSWORD in .env.
+      - DATABASE_URI=postgresql+psycopg://${POSTGRES_USER:-tracker}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-product_tracker}
       - DEBUG=${DEBUG:-0}
       - CHECK_INTERVAL_MINUTES=${CHECK_INTERVAL_MINUTES:-15}
       - CHECK_INTERVAL_SECONDS=${CHECK_INTERVAL_SECONDS:-0}
@@ -52,6 +60,35 @@ services:
   # Put it in .env as PUBLIC_URL=https://... (it changes every time the tunnel restarts) and
   # restart app-tracker so the snapshot caption links to it. For a stable hostname use a named
   # tunnel with a Cloudflare account and replace the command with `tunnel run --token <token>`.
+  db:
+    # Pinned to 17 to match the server most of us already run locally; Postgres
+    # refuses to start on a data directory written by a different major version.
+    image: postgres:17-alpine
+    container_name: app-tracker-db
+    restart: unless-stopped
+    # Same pattern as app-tracker: real values come from .env, and no secret
+    # gets a default here.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-tracker}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      - POSTGRES_DB=${POSTGRES_DB:-product_tracker}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tracker} -d ${POSTGRES_DB:-product_tracker}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # Deliberately not published. The app reaches it over the compose network;
+    # uncomment to point psql at it from the host (5433, so it does not collide
+    # with a Postgres already running on the host's 5432).
+    # ports:
+    #   - "5433:5432"
+
   tunnel:
     image: cloudflare/cloudflared:latest
     container_name: app-tracker-tunnel
@@ -67,4 +104,8 @@ volumes:
   app_logs:
     driver: local
   chrome_profiles:
+    driver: local
+  # The actual database. `docker compose down` keeps this; only `down -v` or
+  # an explicit `docker volume rm` destroys it.
+  pg_data:
     driver: local 

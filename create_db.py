@@ -88,12 +88,44 @@ with app.app_context():
             except Exception as e:
                 print(f"Error updating schema: {e}")
     
+    if not db_uri.startswith('sqlite'):
+        # db.create_all() adds missing *tables* but never missing *columns*, and
+        # this project has no migrations/ directory -- create_db.py is the
+        # migration mechanism (see CLAUDE.md). The SQLite path above keeps a
+        # hand-written ALTER list; on Postgres we can ask the models instead, so
+        # a new column needs no second edit here.
+        from sqlalchemy import inspect as sa_inspect
+        from sqlalchemy.schema import CreateColumn
+
+        inspector = sa_inspect(db.engine)
+        existing_tables = set(inspector.get_table_names())
+
+        with db.engine.begin() as conn:
+            for table in db.metadata.sorted_tables:
+                if table.name not in existing_tables:
+                    continue  # create_all() below will build it whole
+                have = {c['name'] for c in inspector.get_columns(table.name)}
+                for column in table.columns:
+                    if column.name in have:
+                        continue
+                    ddl = CreateColumn(column).compile(db.engine)
+                    print(f"Adding {table.name}.{column.name} column...")
+                    conn.exec_driver_sql(
+                        f'ALTER TABLE "{table.name}" ADD COLUMN IF NOT EXISTS {ddl}'
+                    )
+        print("Schema updates completed!")
+
     # Create all tables
     try:
         db.create_all()
         print("Database tables created successfully!")
     except Exception as e:
         print(f"ERROR creating database tables: {e}")
+        if not db_uri.startswith('sqlite'):
+            # The SQLite diagnostics below would only mislead here: on Postgres
+            # this is almost always the server being down or the credentials
+            # being wrong, not a directory permission.
+            raise
         # Try to diagnose the issue
         import sqlite3
         try:
