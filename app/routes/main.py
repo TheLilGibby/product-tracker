@@ -1,6 +1,7 @@
 from flask import Blueprint, render_template, redirect, url_for, flash, request, jsonify, current_app, session, abort
 from app import db
 from app.models.product import Product, PriceHistory
+from app.groups import grouped_view
 from app.scrapers import add_to_cart, detect_store_type, get_scraper, store_choices
 from app.tasks import check_all_products, get_store_backoff_state
 from app.notifications import send_product_alert
@@ -110,9 +111,18 @@ def index():
     """Home page showing all tracked products."""
     # Query all products and order by availability (True first, then False)
     products = Product.query.order_by(Product.available.desc()).all()
+    # Grouped (one row per product group) or all sites (every listing). The
+    # choice sticks for the session so the dashboard reopens the way it was left.
+    view = request.args.get('view')
+    if view in ('grouped', 'all'):
+        session['dashboard_view'] = view
+    else:
+        view = session.get('dashboard_view', 'all')
+    groups, ungrouped = grouped_view() if view == 'grouped' else ([], [])
     # Which stores the scheduler is currently backing off from, so a blocked
     # retailer reads as blocked instead of looking like a dead tracker.
-    return render_template('index.html', products=products,
+    return render_template('index.html', products=products, view=view,
+                           groups=groups, ungrouped=ungrouped,
                            store_backoff=get_store_backoff_state())
 
 @main_bp.route('/product/add', methods=['GET', 'POST'])

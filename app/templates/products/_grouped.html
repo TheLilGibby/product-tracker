@@ -1,0 +1,163 @@
+{# Grouped dashboard view: one row per real product, one chip per retailer
+   listing. Included by index.html, and rendered on its own at
+   /groups/partial for the 30-second refresh, which swaps
+   #grouped-view in place. The tables carry .grouped-table so index.html's
+   flat-table sorting and refresh leave them alone. #}
+<div id="grouped-view">
+    <style>
+        .grouped-table td { vertical-align: top; }
+        .grouped-table .badge { white-space: nowrap; }
+        .grouped-table td.group-name { min-width: 11rem; }
+        .group-meta { margin-top: 0.2rem; font-size: 0.8rem; color: var(--text-light); }
+        .source-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+        .source-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.15rem 0.6rem;
+            border: 1px solid #d1d5db;
+            border-radius: 999px;
+            color: inherit;
+            font-size: 0.8rem;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+        .source-chip:hover { border-color: #9ca3af; }
+        .source-chip .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background-color: #b91c1c; }
+        .source-chip.in-stock { border-color: #059669; font-weight: bold; }
+        .source-chip.in-stock .dot { background-color: #059669; }
+        .source-chip .armed { font-size: 0.7rem; opacity: 0.75; }
+    </style>
+
+    {% if not groups and not ungrouped %}
+        <div style="padding: 1.5rem; background-color: #dbeafe; color: #1e40af; border-radius: 5px;">
+            <p style="margin: 0;">No products are being tracked yet. <a href="{{ url_for('main.add_product') }}">Add your first product</a> to get started!</p>
+        </div>
+    {% endif %}
+
+    {% if groups %}
+        <div class="table-responsive" style="overflow-x: auto;">
+            <table class="grouped-table">
+                <thead>
+                    <tr>
+                        <th>Product</th>
+                        <th>Stock</th>
+                        <th>Best price</th>
+                        <th>Retailers</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in groups %}
+                        {% set s = row.summary %}
+                        <tr>
+                            <td class="group-name">
+                                <strong><a href="{{ url_for('groups.detail', group_id=row.group.id) }}">{{ row.group.name }}</a></strong>
+                                <div class="group-meta">
+                                    {{ s.total }} listing{{ '' if s.total == 1 else 's' }}{% if s.auto_cart_armed %} &middot; auto-cart armed on {{ s.auto_cart_armed }}{% endif %}
+                                </div>
+                                {% if s.last_checked %}
+                                    <div class="group-meta">Checked {{ format_datetime(s.last_checked, current_timezone) }}</div>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if s.total == 0 %}
+                                    <span style="color: var(--text-light);">No listings</span>
+                                {% elif s.in_stock %}
+                                    <span class="badge badge-success">In stock at {{ s.in_stock }} of {{ s.total }}</span>
+                                {% else %}
+                                    <span class="badge badge-danger">Out of stock everywhere</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if s.best %}
+                                    <span class="current-price">${{ "%.2f"|format(s.best.current_price) }}</span>
+                                    <div class="group-meta">{{ s.best_store }}{% if not s.best_is_in_stock %} (out of stock){% endif %}</div>
+                                {% else %}
+                                    <span style="color: var(--text-light);">Not available</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <div class="source-chips">
+                                    {% for listing in row.listings %}
+                                        {% set p = listing.product %}
+                                        <a class="source-chip{% if p.available %} in-stock{% endif %}"
+                                           href="{{ url_for('main.product_detail', product_id=p.id) }}"
+                                           title="{{ p.name }} - {{ 'In stock' if p.available else 'Out of stock' }}{% if p.auto_cart_enabled %}, auto-cart armed{% endif %}">
+                                            <span class="dot" aria-hidden="true"></span>
+                                            {{ listing.store }}
+                                            {% if p.current_price is not none %}${{ "%.2f"|format(p.current_price) }}{% endif %}
+                                            {% if p.auto_cart_enabled %}<span class="armed">armed</span>{% endif %}
+                                        </a>
+                                    {% endfor %}
+                                </div>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% elif ungrouped %}
+        <p style="color: var(--text-light);">
+            No product groups yet. Open a listing and choose a group under "Product group" to
+            put the same item from different retailers together.
+        </p>
+    {% endif %}
+
+    {% if ungrouped %}
+        <h3 style="margin-top: 2rem;">Not in a group</h3>
+        <div class="table-responsive" style="overflow-x: auto;">
+            <table class="grouped-table">
+                <thead>
+                    <tr>
+                        <th>Store</th>
+                        <th>Listing</th>
+                        <th>Price</th>
+                        <th>Stock</th>
+                        <th>Last checked</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for listing in ungrouped %}
+                        {% set p = listing.product %}
+                        <tr>
+                            <td>{{ listing.store }}</td>
+                            <td><a href="{{ url_for('main.product_detail', product_id=p.id) }}">{{ p.name|truncate(60) }}</a></td>
+                            <td>
+                                {% if p.current_price is not none %}${{ "%.2f"|format(p.current_price) }}{% else %}<span style="color: var(--text-light);">Not available</span>{% endif %}
+                            </td>
+                            <td>
+                                {% if p.available %}
+                                    <span class="badge badge-success">In Stock</span>
+                                {% else %}
+                                    <span class="badge badge-danger">Out of Stock</span>
+                                {% endif %}
+                            </td>
+                            <td><span style="font-size: 0.875rem;">{{ format_datetime(p.last_checked, current_timezone) }}</span></td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% endif %}
+</div>
+<script>
+    (function () {
+        // The fragment comes back already rendered, so grouping and the
+        // best-price rule live only in app/groups.py. Guarded so the script
+        // cannot start twice; the dashboard's Auto-refresh button pauses it.
+        if (window.groupedRefreshStarted) return;
+        window.groupedRefreshStarted = true;
+        setInterval(function () {
+            if (document.hidden || window.dashboardAutoRefreshEnabled === false) return;
+            fetch('{{ url_for("groups.grouped_partial") }}', { credentials: 'same-origin' })
+                .then(function (response) { return response.ok ? response.text() : null; })
+                .then(function (html) {
+                    if (!html) return;
+                    var fresh = new DOMParser().parseFromString(html, 'text/html').getElementById('grouped-view');
+                    var current = document.getElementById('grouped-view');
+                    if (fresh && current) current.replaceWith(fresh);
+                })
+                .catch(function (error) { console.error('Grouped view refresh failed:', error); });
+        }, 30000);
+    })();
+</script>

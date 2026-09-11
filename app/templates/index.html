@@ -110,6 +110,32 @@
             transition: none;
         }
     }
+
+    /* Grouped / All sites switch above the table */
+    .view-toggle {
+        display: inline-flex;
+        margin-bottom: 1rem;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        overflow: hidden;
+    }
+
+    .view-toggle a {
+        padding: 0.3rem 0.9rem;
+        color: inherit;
+        font-size: 0.9rem;
+        text-decoration: none;
+    }
+
+    .view-toggle a + a {
+        border-left: 1px solid #d1d5db;
+    }
+
+    .view-toggle a[aria-current="page"] {
+        background-color: var(--accent);
+        color: var(--bg);
+        font-weight: bold;
+    }
 </style>
 {% endblock %}
 
@@ -156,7 +182,16 @@
     {% endif %}
 </section>
 
-{% if products %}
+{# Grouped: one row per product group, a chip per retailer listing
+   (products/_grouped.html). All sites: every listing, the table below. #}
+<nav class="view-toggle" aria-label="Dashboard view">
+    <a href="{{ url_for('main.index', view='grouped') }}"{% if view == 'grouped' %} aria-current="page"{% endif %}>Grouped</a>
+    <a href="{{ url_for('main.index', view='all') }}"{% if view != 'grouped' %} aria-current="page"{% endif %}>All sites</a>
+</nav>
+
+{% if view == 'grouped' %}
+    {% include 'products/_grouped.html' %}
+{% elif products %}
     <div class="table-responsive" style="overflow-x: auto;">
         <table>
             <thead>
@@ -260,8 +295,8 @@
 {% block scripts %}
 <script>
     document.addEventListener('DOMContentLoaded', function() {
-        // Table sorting functionality
-        const table = document.querySelector('table');
+        // Table sorting functionality. The grouped view's tables refresh themselves.
+        const table = document.querySelector('table:not(.grouped-table)');
         if (table) {
             const headers = table.querySelectorAll('th');
             const tableBody = table.querySelector('tbody');
@@ -622,7 +657,9 @@
             // Toggle auto-refresh when the button is clicked
             toggleRefreshBtn.addEventListener('click', () => {
                 autoRefreshEnabled = !autoRefreshEnabled;
-                
+                // products/_grouped.html reads this to pause its own refresh
+                window.dashboardAutoRefreshEnabled = autoRefreshEnabled;
+
                 if (autoRefreshEnabled) {
                     toggleRefreshBtn.textContent = 'Enabled';
                     toggleRefreshBtn.className = 'success';
