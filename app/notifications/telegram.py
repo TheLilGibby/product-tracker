@@ -34,12 +34,52 @@ def get_telegram_settings():
     )
 
 
+def _setting(name, default):
+    """A config value under an app context, else the environment variable."""
+    try:
+        from flask import current_app, has_app_context
+        if has_app_context():
+            return current_app.config.get(name, default)
+    except RuntimeError:
+        pass
+    return os.environ.get(name, default)
+
+
+def telegram_alerts_enabled():
+    """
+    False when this process has been told it is not the designated sender.
+
+    Only one running tracker may post to the channel; see TELEGRAM_ALERTS_ENABLED
+    in app/config.py. Read here, on every send, so it also covers CLI scripts
+    that never build an app.
+    """
+    value = _setting('TELEGRAM_ALERTS_ENABLED', '1')
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in ('0', 'false', 'no', 'off', '')
+
+
+def instance_label():
+    """The INSTANCE_LABEL prefix for outgoing posts, '' when unset."""
+    return str(_setting('INSTANCE_LABEL', '') or '').strip()[:32]
+
+
+def label_text(text):
+    """Prefix a message or caption with this instance's label, if it has one."""
+    label = instance_label()
+    if not label:
+        return text
+    return f"[{html.escape(label)}] {text}"
+
+
 class TelegramNotifier:
     """Send notifications to a Telegram channel (or group/DM) via the Bot API"""
 
     @staticmethod
     def is_configured():
-        """True when both a bot token and a chat id are available"""
+        """True when a bot token and chat id are available AND this instance may post"""
+        if not telegram_alerts_enabled():
+            return False
         bot_token, chat_id = get_telegram_settings()
         return bool(bot_token and chat_id)
 
@@ -61,10 +101,14 @@ class TelegramNotifier:
         bot_token = bot_token or default_token
         chat_id = chat_id or default_chat
 
+        if not telegram_alerts_enabled():
+            logger.info("Telegram alerts are disabled for this instance (TELEGRAM_ALERTS_ENABLED=0); not posting")
+            return False
         if not bot_token or not chat_id:
             logger.debug("Telegram not configured; skipping notification")
             return False
 
+        text = label_text(text)
         base_url = f"{TELEGRAM_API_BASE}/bot{bot_token}"
 
         try:
@@ -184,6 +228,9 @@ class TelegramNotifier:
         bot_token = bot_token or default_token
         chat_id = chat_id or default_chat
 
+        if not telegram_alerts_enabled():
+            logger.info("Telegram alerts are disabled for this instance (TELEGRAM_ALERTS_ENABLED=0); not posting")
+            return False
         if not bot_token or not chat_id:
             logger.debug("Telegram not configured; skipping photo upload")
             return False
@@ -191,7 +238,7 @@ class TelegramNotifier:
             logger.warning("Telegram photo upload skipped: no image data")
             return False
 
-        caption = caption or ''
+        caption = label_text(caption or '')
         if len(caption) > TELEGRAM_CAPTION_LIMIT:
             caption = caption[:TELEGRAM_CAPTION_LIMIT - 1] + '…'
 
