@@ -173,7 +173,26 @@
             margin: 0 auto;
             padding: 0 1rem;
         }
-        
+
+        /* Simple.css makes body a grid and already centres main in the middle
+           column. Two things let one wide table size main to the table instead
+           of the column: .container's auto side margins, and a grid item's
+           default min-width of auto. On a narrow screen main then ran past the
+           edge and the whole page scrolled sideways. With both reset, main
+           fits the column and wide tables scroll inside their
+           .table-responsive wrapper. The selector names .container so it
+           outranks the margins set there.
+           Only below 60rem: on wider screens a table a little wider than the
+           column spills into the side margin, which reads better than giving
+           it its own scrollbar. The widest dashboard table (All sites, about
+           830px) stops fitting the screen at about 930px. */
+        @media (max-width: 60rem) {
+            body > main.container {
+                margin-inline: 0;
+                min-width: 0;
+            }
+        }
+
         .mb-4 {
             margin-bottom: 1.5rem;
         }
