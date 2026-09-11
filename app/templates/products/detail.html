@@ -126,8 +126,17 @@
         padding-bottom: 0.5rem;
     }
 
+    .product-details {
+        display: grid;
+        grid-template-columns: minmax(300px, 1fr) 2fr;
+        gap: 2rem;
+    }
+
+    /* Both grids stack on a phone. The details grid's 300px first column
+       alone would push its second column off a 400px screen. */
     @media (max-width: 800px) {
-        .product-hero {
+        .product-hero,
+        .product-details {
             grid-template-columns: 1fr;
         }
     }
@@ -210,7 +219,7 @@
     </article>
 </div>
 
-<div style="display: grid; grid-template-columns: minmax(300px, 1fr) 2fr; gap: 2rem;">
+<div class="product-details">
     <div>
         <div>
             <h3>Current Status</h3>
