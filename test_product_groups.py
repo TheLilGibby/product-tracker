@@ -408,8 +408,17 @@ SEED_URLS = {
     'console_amazon': 'https://www.amazon.com/dp/B0HJ6F8L6V',
     'console_nintendo': 'https://www.nintendo.com/us/store/products/nintendo-switch-2-the-legend-of-zelda'
                         '-40th-anniversary-edition-121642/',
+    # GameStop's shorter product number, not the SKU the table lists first
+    'console_gamestop': 'https://www.gamestop.com/consoles-hardware/nintendo-switch-2/products/nintendo-switch-2'
+                        '-the-legend-of-zelda-40th-anniversary-edition/451607.html',
     'controller_nintendo': 'https://www.nintendo.com/us/store/products/nintendo-switch-2-pro-controller-display'
                            '-stand-the-legend-of-zelda-40th-anniversary-edition-127076/',
+    # The same controller without the display stand
+    'controller_nintendo_plain': 'https://www.nintendo.com/us/store/products/nintendo-switch-2-pro-controller-the'
+                                 '-legend-of-zelda-40th-anniversary-edition-127074/',
+    'controller_gamestop': 'https://www.gamestop.com/gaming-accessories/controllers/nintendo-switch-2/products'
+                           '/nintendo-switch-2-pro-controller-the-legend-of-zelda---40th-anniversary-edition'
+                           '/451609.html',
     'controller_walmart': 'https://www.walmart.com/ip/Nintendo-Switch-2-Pro-Controller-The-Legend-of-Zelda'
                           '-40th-Anniversary-Edition/20954470204',
     'case_bestbuy': 'https://www.bestbuy.com/product/nintendo-switch-2-carrying-case-and-screen-protector-the'
@@ -444,7 +453,8 @@ def check_seed():
                        'a dry run writes nothing')
     actions = {row.product.name: row.action for row in rows}
     expected = {'console_target': 'add', 'console_amazon': 'add', 'console_nintendo': 'add',
-                'controller_nintendo': 'add', 'controller_walmart': 'kept', 'case_bestbuy': 'add',
+                'console_gamestop': 'add', 'controller_nintendo': 'add', 'controller_nintendo_plain': 'add',
+                'controller_gamestop': 'add', 'controller_walmart': 'kept', 'case_bestbuy': 'add',
                 'test_store': 'unmatched', 'lookalike': 'unmatched'}
     failures += report(actions == expected, 'the dry run says what it would do to each listing', str(actions))
 
@@ -455,12 +465,13 @@ def check_seed():
         membership = db.session.get(Product, product.id).group_membership
         grouped[key] = membership.group.name if membership else None
     console = 'ZELDA 40th Console'
-    failures += report(grouped['console_target'] == grouped['console_amazon'] == grouped['console_nintendo'] == console
-                       and ProductGroup.query.count() == 4,
+    failures += report(grouped['console_target'] == grouped['console_amazon'] == grouped['console_nintendo']
+                       == grouped['console_gamestop'] == console and ProductGroup.query.count() == 4,
                        'the console listings join the existing console group, whatever its case', str(grouped))
-    failures += report(grouped['controller_nintendo'] == 'Zelda 40th Pro Controller'
+    failures += report(grouped['controller_nintendo'] == grouped['controller_nintendo_plain']
+                       == grouped['controller_gamestop'] == 'Zelda 40th Pro Controller'
                        and grouped['case_bestbuy'] == 'Zelda 40th carrying case',
-                       'the controller and case listings get groups of their own')
+                       'the controller and case listings get groups of their own, whichever id the URL uses')
     failures += report(grouped['controller_walmart'] == 'My controllers',
                        'a listing someone put in another group stays there')
     failures += report(grouped['test_store'] is None and grouped['lookalike'] is None,
@@ -469,7 +480,7 @@ def check_seed():
     rows = seed_groups.seed(apply=True)
     db.session.expire_all()
     failures += report(not [row for row in rows if row.action == 'add'] and ProductGroup.query.count() == 4
-                       and ProductGroupMember.query.count() == 6 and Product.query.count() == len(SEED_URLS),
+                       and ProductGroupMember.query.count() == 9 and Product.query.count() == len(SEED_URLS),
                        'running it again changes nothing')
     return failures
 
