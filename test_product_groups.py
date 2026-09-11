@@ -30,6 +30,7 @@ from app import create_app, db
 from app import tasks
 from app.groups import assign_group, find_or_create_group, grouped_view, summarize
 from app.models.product import AvailabilityHistory, Product, ProductGroup, ProductGroupMember
+import seed_groups
 
 URLS = {
     'target': 'https://www.target.com/p/zelda-switch-2/-/A-11111111',
@@ -330,6 +331,78 @@ def check_routes(app):
     return failures
 
 
+SEED_URLS = {
+    'console_target': 'https://www.target.com/p/nintendo-8482-switch-2-the-legend-of-zelda-40th-anniversary-edition'
+                      '-console-system/-/A-1013322047',
+    'console_amazon': 'https://www.amazon.com/dp/B0HJ6F8L6V',
+    'console_nintendo': 'https://www.nintendo.com/us/store/products/nintendo-switch-2-the-legend-of-zelda'
+                        '-40th-anniversary-edition-121642/',
+    'controller_nintendo': 'https://www.nintendo.com/us/store/products/nintendo-switch-2-pro-controller-display'
+                           '-stand-the-legend-of-zelda-40th-anniversary-edition-127076/',
+    'controller_walmart': 'https://www.walmart.com/ip/Nintendo-Switch-2-Pro-Controller-The-Legend-of-Zelda'
+                          '-40th-Anniversary-Edition/20954470204',
+    'case_bestbuy': 'https://www.bestbuy.com/product/nintendo-switch-2-carrying-case-and-screen-protector-the'
+                    '-legend-of-zelda-40th-anniversary-edition-multi/J7GSL57WCW/sku/6691852',
+    'test_store': 'https://test-store.example.com/product/1?scenario=success&name=Zelda+console',
+    'lookalike': 'https://www.nintendo.com/us/store/products/something-else-1216420/',
+}
+
+
+def check_seed():
+    """seed_groups.py groups the known Zelda listings by retailer item id, and only ever adds."""
+    print("Seeding the Zelda groups")
+    failures = 0
+    db.session.remove()
+    db.drop_all()
+    db.create_all()
+    products = {}
+    for key, url in SEED_URLS.items():
+        products[key] = Product(name=key, url=url, current_price=1.0, available=False, last_checked=STAMP,
+                                notify_on_price_drop=False, notify_on_availability=False)
+        db.session.add(products[key])
+    # The console group was already made by hand, in other case, and the Walmart
+    # controller was put in a group of someone's own.
+    mine = ProductGroup(name='My controllers')
+    db.session.add_all([ProductGroup(name='ZELDA 40th Console'), mine])
+    assign_group(products['controller_walmart'], mine)
+    db.session.commit()
+
+    rows = seed_groups.seed(apply=False)
+    db.session.expire_all()
+    failures += report(ProductGroup.query.count() == 2 and ProductGroupMember.query.count() == 1,
+                       'a dry run writes nothing')
+    actions = {row.product.name: row.action for row in rows}
+    expected = {'console_target': 'add', 'console_amazon': 'add', 'console_nintendo': 'add',
+                'controller_nintendo': 'add', 'controller_walmart': 'kept', 'case_bestbuy': 'add',
+                'test_store': 'unmatched', 'lookalike': 'unmatched'}
+    failures += report(actions == expected, 'the dry run says what it would do to each listing', str(actions))
+
+    seed_groups.seed(apply=True)
+    db.session.expire_all()
+    grouped = {}
+    for key, product in products.items():
+        membership = db.session.get(Product, product.id).group_membership
+        grouped[key] = membership.group.name if membership else None
+    console = 'ZELDA 40th Console'
+    failures += report(grouped['console_target'] == grouped['console_amazon'] == grouped['console_nintendo'] == console
+                       and ProductGroup.query.count() == 4,
+                       'the console listings join the existing console group, whatever its case', str(grouped))
+    failures += report(grouped['controller_nintendo'] == 'Zelda 40th Pro Controller'
+                       and grouped['case_bestbuy'] == 'Zelda 40th carrying case',
+                       'the controller and case listings get groups of their own')
+    failures += report(grouped['controller_walmart'] == 'My controllers',
+                       'a listing someone put in another group stays there')
+    failures += report(grouped['test_store'] is None and grouped['lookalike'] is None,
+                       'other listings, and ids that only start the same, are left alone')
+
+    rows = seed_groups.seed(apply=True)
+    db.session.expire_all()
+    failures += report(not [row for row in rows if row.action == 'add'] and ProductGroup.query.count() == 4
+                       and ProductGroupMember.query.count() == 6 and Product.query.count() == len(SEED_URLS),
+                       'running it again changes nothing')
+    return failures
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('-v', '--verbose', action='store_true', help="show the app's own log output")
@@ -349,6 +422,7 @@ def main():
         failed += check_membership()
         failed += check_rollup()
         failed += check_routes(app)
+        failed += check_seed()
 
     print()
     print('All checks passed' if not failed else f'{failed} check(s) failed')
