@@ -315,6 +315,12 @@ def check_routes(app):
     failures += report('value="Zelda console"' in html and '<option value="Pro Controller">' in html,
                        "the listing page's group picker shows the current group and suggests the others")
 
+    response = client.get(f'/product/{bestbuy_id}')
+    html = response.get_data(as_text=True)
+    failures += report(response.status_code == 200 and f'action="/product/{bestbuy_id}/group"' in html
+                       and 'value="Zelda console"' in html,
+                       'the listing page includes the group picker', f"status {response.status_code}")
+
     group_id = group.id
     response = client.post(f'/group/{group_id}/delete')
     db.session.expire_all()
