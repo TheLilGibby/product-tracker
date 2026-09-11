@@ -22,7 +22,7 @@ docker-compose logs -f
 docker-compose down
 ```
 
-There is **no test framework** (no pytest/unittest). The `test_*.py` and `verify_*.py` files at the repo root are standalone scripts run individually with `python test_newegg.py`, `python test_adorama.py`, etc. Most hit live retailer sites and require Chrome + a working chromedriver; several need an app context (they call `create_app()` themselves). `check_product.py` is a scratch DB query script. There is no linter or formatter configured.
+There is **no test framework** (no pytest/unittest). The `test_*.py` and `verify_*.py` files at the repo root are standalone scripts run individually with `python test_newegg.py`, `python test_adorama.py`, etc. Most hit live retailer sites and require Chrome + a working chromedriver; several need an app context (they call `create_app()` themselves). `test_scheduler_toggle.py` is the exception: it needs no network and no Chrome, spawns a subprocess per `SCHEDULER_ENABLED` value against a throwaway DB, and exits non-zero on failure. `check_product.py` is a scratch DB query script. There is no linter or formatter configured.
 
 ## Architecture
 
