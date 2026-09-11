@@ -895,9 +895,13 @@ def settings():
 def update_newegg_cookies():
     """Update Newegg cookies for auto-cart functionality"""
     if request.method == 'POST':
-        cookies = request.form.get('newegg_cookies', '')
-        
+        from app.scrapers.amazon_scraper import validate_cookie_header
+
         try:
+            # Same .env injection the Amazon paste had: this value is written
+            # into NEWEGG_COOKIES=<value>, so a newline in it appends config
+            # lines that python-dotenv reads on the next load.
+            cookies = validate_cookie_header(request.form.get('newegg_cookies', ''))
             # Save the cookies to environment variable for the current process
             os.environ['NEWEGG_COOKIES'] = cookies
             

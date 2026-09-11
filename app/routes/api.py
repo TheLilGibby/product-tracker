@@ -176,6 +176,21 @@ def create_product():
             'supported_stores': supported_stores(),
         }), 400
 
+    # store_type naming a real store is not enough: an explicit store_type
+    # skips detect_store_type entirely, so any http(s) URL would be accepted
+    # and then fetched server-side by the scheduler on the next check. The
+    # hostname has to actually belong to the store being claimed.
+    detected = detect_store_type(url)
+    if detected != store_type:
+        return jsonify({
+            'error': (
+                f"URL does not belong to {store_type}"
+                if detected is None else
+                f"URL looks like {detected}, not {store_type}"
+            ),
+            'supported_stores': supported_stores(),
+        }), 400
+
     existing = Product.query.filter_by(url=url).first()
     if existing:
         return jsonify({
