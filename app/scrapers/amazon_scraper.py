@@ -98,6 +98,27 @@ CART_EMPTY_RE = re.compile(r'your (?:amazon )?(?:shopping )?cart is empty', re.I
 
 DEFAULT_CHROME_MAJOR = 152
 
+# Where the buy box's own price lives, most specific first. Never a page-wide
+# '.a-price' scan: a real product page carries 10-26 of them (the cross-sell
+# rails, "Buy it with", sponsored blocks), so taking the first match picks by
+# document order and is right only by accident. Seen live on the Zelda 40th
+# console: a render carrying NO buy box at all still had nine .a-price
+# elements, and the page-wide scan read $169.00 off a recommendation and
+# recorded it as the console's price.
+PRICE_CONTAINER_IDS = (
+    'corePrice_feature_div',
+    'corePriceDisplay_desktop_feature_div',
+    'price_inside_buybox',
+    'newBuyBoxPrice',
+    'priceblock_ourprice',
+    'priceblock_dealprice',
+    'apex_offerDisplay_desktop',
+    'desktop_qualifiedBuyBox',
+    'buybox',
+)
+
+PRICE_RE = re.compile(r'(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}')
+
 
 def _env_flag(name, default):
     value = os.environ.get(name)
@@ -605,33 +626,48 @@ class AmazonScraper:
             return "Unknown Product"
     
     def extract_price(self, soup):
-        """Extract product price from Amazon page"""
+        """
+        The price of THIS product, read from the buy box, or None.
+
+        Scoped on purpose. The price is attributed to the listing the same way
+        the add-to-cart button is: by the container it sits in, never by taking
+        the first price on the page. A product page prices a dozen or more
+        other things - the "Buy it with" bundle, the accessory rails, sponsored
+        blocks - and Amazon renders those rails on pages whose buy box is gone
+        entirely, so a page-wide scan does not merely pick the wrong price, it
+        invents one for a listing that is not for sale. Returning None when the
+        buy box has no price is the honest answer, and the caller keeps the
+        last known price rather than recording somebody else's.
+        """
         logger.debug("AmazonScraper: Extracting price")
         try:
-            # Check multiple possible price elements (Amazon changes these often)
-            price_elements = [
-                soup.find(id='priceblock_ourprice'),
-                soup.find(id='priceblock_dealprice'),
-                soup.select_one('.a-price .a-offscreen'),
-                soup.select_one('#price_inside_buybox'),
-                soup.select_one('#newBuyBoxPrice')
-            ]
-            
-            for element in price_elements:
-                if element:
-                    price_text = element.get_text().strip()
-                    price_match = re.search(r'(\d+\,)?\d+\.\d{2}', price_text)
-                    if price_match:
-                        # Remove commas and convert to float
-                        price = float(price_match.group(0).replace(',', ''))
-                        logger.debug(f"Found price: ${price}")
-                        return price
-            
-            logger.warning("Could not find product price")
+            for container_id in PRICE_CONTAINER_IDS:
+                container = soup.find(id=container_id)
+                if container is None:
+                    continue
+                price = self._price_from(container)
+                if price is not None:
+                    logger.debug(f"Found price ${price} in #{container_id}")
+                    return price
+
+            logger.warning("Could not find a price in the buy box")
             return None
         except Exception as e:
             logger.error(f"Error extracting price: {str(e)}")
             return None
+
+    @staticmethod
+    def _price_from(container):
+        """The first price inside this container, or None."""
+        # .a-offscreen is the screen-reader copy of the rendered price and is
+        # the one element that holds it as one string; the visible price is
+        # split across a-price-whole / a-price-fraction spans.
+        for element in container.select('.a-offscreen') or []:
+            match = PRICE_RE.search(element.get_text())
+            if match:
+                return float(match.group(0).replace(',', ''))
+        match = PRICE_RE.search(container.get_text(' ', strip=True))
+        return float(match.group(0).replace(',', '')) if match else None
     
     def extract_availability(self, soup):
         """

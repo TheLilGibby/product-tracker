@@ -408,6 +408,65 @@ def run_cart_verification_checks():
     return failures
 
 
+# A recommendation rail. Its prices are real prices of real products - just not
+# of this one. A live capture of the Zelda console page carried nine of these
+# with no buy box at all, and a page-wide '.a-price' scan read $169.00 off one
+# of them and recorded it as the console's price.
+RAIL = """
+<div id="similarities_feature_div">
+  <span class="a-price"><span class="a-offscreen">$169.00</span></span>
+  <span class="a-price"><span class="a-offscreen">$34.50</span></span>
+</div>
+"""
+
+# The buy box's own price, where Amazon actually puts it.
+CORE_PRICE = """
+<div id="corePrice_feature_div">
+  <span class="a-price"><span class="a-offscreen">${price}</span>
+    <span class="a-price-whole">{whole}<span class="a-price-fraction">{cents}</span></span>
+  </span>
+</div>
+"""
+
+# "Currently unavailable": no buy box, no price of its own. The rails still render.
+NO_BUY_BOX = '<div id="outOfStock"><span>Currently unavailable.</span></div>'
+
+
+def run_price_attribution_checks():
+    """
+    The price belongs to the listing whose buy box it sits in.
+
+    Same rule as the buy button, one field over: a product page prices a dozen
+    other things, so the first '.a-price' on it is the right one only by
+    document-order accident. These checks live in this file rather than in
+    test_amazon.py so the two do not collide; the rule is the same one.
+    """
+    scraper = AmazonScraper.__new__(AmazonScraper)
+    failures = 0
+
+    def check(label, markup, expected):
+        nonlocal failures
+        got = scraper.extract_price(BeautifulSoup(markup, 'html.parser'))
+        ok = got == expected
+        failures += 0 if ok else 1
+        print(f"  [{'ok' if ok else 'FAIL'}] {label} -> {got} (expected {expected})")
+
+    core = CORE_PRICE.format(price='519.99', whole='519', cents='99')
+
+    check("the buy box's price wins over a rail above it", RAIL + core, 519.99)
+    check("...and over a rail below it", core + RAIL, 519.99)
+    check("a page with rails but no buy box has no price of its own",
+          NO_BUY_BOX + RAIL, None)
+    check("a buy-now-only pre-order still prices from its buy box",
+          '<div id="desktop_qualifiedBuyBox">' + core + '</div>' + RAIL, 519.99)
+    check("thousands separators survive",
+          CORE_PRICE.format(price='1,199.99', whole='1,199', cents='99'), 1199.99)
+    check("a buy box with no price at all reads None, not a rail's",
+          '<div id="corePrice_feature_div"></div>' + RAIL, None)
+
+    return failures
+
+
 def run_attribution_checks():
     """
     Never click a buy button you cannot attribute to the item being carted.
@@ -537,6 +596,10 @@ def main():
 
     print("\nBuy button attribution:")
     failures += run_attribution_checks()
+
+    print("\nCart verification:")
+    print("\nPrice attribution:")
+    failures += run_price_attribution_checks()
 
     print("\nCart verification:")
     failures += run_cart_verification_checks()
