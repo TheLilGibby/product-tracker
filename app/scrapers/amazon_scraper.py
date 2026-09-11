@@ -142,24 +142,18 @@ def load_amazon_cookies():
     return ''
 
 
-# A Cookie header is visible ASCII and spaces. Anything outside that - a
-# newline above all else - is how a pasted value turns into extra lines in
-# .env, where it would set arbitrary config on the next load. Rejected rather
-# than stripped: silently dropping part of a credential yields a cookie that
-# fails later in a confusing way.
-_COOKIE_HEADER_RE = re.compile(r'^[\x20-\x7e]*$')
+def validate_cookie_header(cookie_header, label='Cookies'):
+    """
+    Return the cleaned header, or raise ValueError if it cannot be stored.
 
+    A Cookie header is visible ASCII and spaces, which is also exactly what
+    .env can hold, so this is app.env_file's rule rather than a second one that
+    could drift from it - and both pasted cookie headers in this app end up in
+    .env. ``label`` names the retailer in the message the user sees.
+    """
+    from app.env_file import validate_env_value
 
-def validate_cookie_header(cookie_header):
-    """Return the cleaned header, or raise ValueError if it cannot be stored."""
-    cookie_header = (cookie_header or '').strip()
-    if not _COOKIE_HEADER_RE.match(cookie_header):
-        raise ValueError(
-            'Amazon cookies contain characters that are not valid in a Cookie '
-            'header (a line break or a control character). Copy the value '
-            'again as a single line.'
-        )
-    return cookie_header
+    return validate_env_value(cookie_header, label)
 
 
 def save_amazon_cookies(cookie_header):

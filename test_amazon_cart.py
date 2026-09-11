@@ -655,6 +655,9 @@ def run_cookie_checks():
         ('empty clears', '', ''),
         ('a newline is refused, not stripped', 'session-id=1\nSECRET_KEY=hijacked', ValueError),
         ('a control character is refused', 'session-id=1\x00', ValueError),
+        # The value is stored single-quoted in .env, so a quote inside it would
+        # close the assignment early - see test_env_file.py.
+        ("a single quote is refused", "session-id=it's", ValueError),
     ]
     for label, value, expected in validate_cases:
         try:

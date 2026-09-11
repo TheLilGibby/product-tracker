@@ -984,50 +984,15 @@ def settings():
 def update_newegg_cookies():
     """Update Newegg cookies for auto-cart functionality"""
     if request.method == 'POST':
-        from app.scrapers.amazon_scraper import validate_cookie_header
+        from app.env_file import set_env_value, validate_env_value
 
         try:
-            # Same .env injection the Amazon paste had: this value is written
-            # into NEWEGG_COOKIES=<value>, so a newline in it appends config
-            # lines that python-dotenv reads on the next load.
-            cookies = validate_cookie_header(request.form.get('newegg_cookies', ''))
-            # The line below is single-quoted, so a quote inside the value would
-            # end it early and turn the rest into settings of its own.
-            if "'" in cookies:
-                flash("Newegg cookies cannot contain a single quote.", 'error')
-                return redirect(url_for('main.settings'))
-            # Save the cookies to environment variable for the current process
+            # Validated before either store is touched, so a value .env will
+            # refuse does not end up live in the process for one run only.
+            cookies = validate_env_value(request.form.get('newegg_cookies', ''),
+                                         'Newegg cookies')
             os.environ['NEWEGG_COOKIES'] = cookies
-
-            # Write to .env file for persistence across restarts
-            env_path = os.path.join(os.getcwd(), '.env')
-
-            # Read existing .env file or create new one
-            env_lines = []
-            if os.path.exists(env_path):
-                with open(env_path, 'r') as f:
-                    env_lines = f.readlines()
-
-            # Single-quoted so a value with spaces or '#' survives the round
-            # trip; python-dotenv takes single-quoted contents literally.
-            cookie_line = f"NEWEGG_COOKIES='{cookies}'\n"
-            cookie_line_found = False
-            for i, line in enumerate(env_lines):
-                if line.startswith('NEWEGG_COOKIES='):
-                    env_lines[i] = cookie_line
-                    cookie_line_found = True
-                    break
-
-            if not cookie_line_found:
-                env_lines.append(cookie_line)
-
-            # Write a temp file alongside and rename over the original, so a
-            # crash mid-write cannot leave a half-written .env - which would
-            # take out every other setting in it, not just this one.
-            temp_path = env_path + '.tmp'
-            with open(temp_path, 'w') as f:
-                f.writelines(env_lines)
-            os.replace(temp_path, env_path)
+            set_env_value('NEWEGG_COOKIES', cookies, label='Newegg cookies')
 
             flash('Newegg cookies updated successfully.', 'success')
         except Exception as e:
@@ -1038,32 +1003,19 @@ def update_newegg_cookies():
 @main_bp.route('/update-amazon-cookies', methods=['POST'])
 def update_amazon_cookies():
     """Save Amazon session cookies for logged-in auto-cart."""
+    from app.env_file import set_env_value
     from app.scrapers.amazon_scraper import (
         cookie_header_from_form, save_amazon_cookies, validate_cookie_header,
     )
     try:
-        # Validated before anything is written: the value is interpolated into
-        # .env below, where an embedded newline would add a config line.
-        cookies = validate_cookie_header(cookie_header_from_form(request.form))
+        # Validated before anything is written. set_env_value validates again
+        # on its own behalf - it is the one that knows what .env can hold - but
+        # the file this writes first should not be written for a value the
+        # config file is then going to refuse.
+        cookies = validate_cookie_header(cookie_header_from_form(request.form),
+                                         label='Amazon cookies')
         save_amazon_cookies(cookies)
-
-        env_path = os.path.join(os.getcwd(), '.env')
-        env_lines = []
-        if os.path.exists(env_path):
-            with open(env_path, 'r') as f:
-                env_lines = f.readlines()
-
-        cookie_line = f'AMAZON_COOKIES={cookies}\n'
-        cookie_line_found = False
-        for i, line in enumerate(env_lines):
-            if line.startswith('AMAZON_COOKIES='):
-                env_lines[i] = cookie_line
-                cookie_line_found = True
-                break
-        if not cookie_line_found:
-            env_lines.append(cookie_line)
-        with open(env_path, 'w') as f:
-            f.writelines(env_lines)
+        set_env_value('AMAZON_COOKIES', cookies, label='Amazon cookies')
 
         if cookies.strip():
             if 'at-main=' not in cookies:
