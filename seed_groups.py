@@ -38,6 +38,8 @@ from app.models.product import Product
 REPO = os.path.dirname(os.path.abspath(__file__))
 
 # (group name, ((store host, item id as it appears in the URL path), ...))
+# GameStop serves one product under two ids, a SKU (20037854) and a shorter
+# product number (451607), so both are listed.
 GROUPS = (
     ('Zelda 40th console', (
         ('target.com', '/A-1013322047'),
@@ -45,6 +47,7 @@ GROUPS = (
         ('walmart.com', '/21002656445'),
         ('amazon.com', '/B0HJ6F8L6V'),
         ('gamestop.com', '/20037854.html'),
+        ('gamestop.com', '/451607.html'),
         ('nintendo.com', '-121642'),
     )),
     ('Zelda 40th Pro Controller', (
@@ -52,7 +55,10 @@ GROUPS = (
         ('bestbuy.com', '/J7GSL57W27'),
         ('walmart.com', '/20954470204'),
         ('gamestop.com', '/20037855.html'),
-        # My Nintendo Store only sells it with a display stand, as a store exclusive
+        ('gamestop.com', '/451609.html'),
+        # My Nintendo Store sells it on its own and, as a store exclusive,
+        # with a display stand. Both are the same controller.
+        ('nintendo.com', '-127074'),
         ('nintendo.com', '-127076'),
     )),
     ('Zelda 40th carrying case', (
