@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template, redirect, url_for, flash, request, jsonify, current_app, session
+from flask import Blueprint, render_template, redirect, url_for, flash, request, jsonify, current_app, session, abort
 from app import db
 from app.models.product import Product, PriceHistory
 from app.scrapers import add_to_cart, detect_store_type, get_scraper, store_choices
@@ -677,6 +677,63 @@ def update_auto_cart_settings(product_id):
     
     return redirect(url_for('main.product_detail', product_id=product.id))
 
+
+# Fields the dashboard toggles may flip. Anything not named here is refused, so a
+# crafted URL cannot reach an arbitrary model attribute.
+TOGGLE_FIELDS = ('alerts', 'auto_cart')
+
+
+def _alerts_enabled(product):
+    """A product counts as alerting if either channel trigger is still on."""
+    return bool(product.notify_on_price_drop or product.notify_on_availability)
+
+
+@main_bp.route('/product/<int:product_id>/toggle/<field>', methods=['POST'])
+def toggle_product_flag(product_id, field):
+    """
+    Flip one setting from the dashboard table, then come back to the table.
+
+    Only the two switches the list view shows are accepted. `alerts` moves both
+    notify_on_* flags together, because the table has room for one control rather
+    than two; the product page still sets them individually.
+    """
+    if field not in TOGGLE_FIELDS:
+        abort(404)
+
+    product = Product.query.get_or_404(product_id)
+
+    try:
+        if field == 'auto_cart':
+            product.auto_cart_enabled = not product.auto_cart_enabled
+            db.session.commit()
+            if product.auto_cart_enabled:
+                # Say what arming actually costs: the auto-cart job runs every 60
+                # seconds and does not wait for the next scrape.
+                flash(
+                    f'Auto-cart armed for {product.name}. If it is in stock, a cart '
+                    f'attempt can fire within a minute. It stops at the cart and never '
+                    f'checks out.',
+                    'warning',
+                )
+            else:
+                flash(f'Auto-cart disarmed for {product.name}.', 'success')
+        else:
+            new_state = not _alerts_enabled(product)
+            product.notify_on_price_drop = new_state
+            product.notify_on_availability = new_state
+            db.session.commit()
+            if new_state:
+                flash(f'Alerts on for {product.name}: price drops and restocks.', 'success')
+            else:
+                flash(f'Alerts off for {product.name}. It is still being tracked.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error toggling {field} on product {product_id}: {str(e)}")
+        flash(f'Could not change that setting: {str(e)}', 'danger')
+
+    return redirect(url_for('main.index'))
+
+
 @main_bp.route('/cart-successes')
 def cart_successes():
     """Display all successful auto-cart operations with links to complete purchases."""
@@ -832,7 +889,12 @@ def get_products_json():
                 'current_price': product.current_price,
                 'target_price': product.target_price,
                 'available': product.available,
-                'last_checked': formatted_time
+                'last_checked': formatted_time,
+                # The dashboard rebuilds every row from this payload every 30
+                # seconds, so the switch states have to ride along or the toggles
+                # vanish on the first refresh.
+                'alerts_enabled': bool(product.notify_on_price_drop or product.notify_on_availability),
+                'auto_cart_enabled': bool(product.auto_cart_enabled),
             }
             products_data.append(product_data)
         
