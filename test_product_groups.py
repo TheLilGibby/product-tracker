@@ -19,17 +19,19 @@ import argparse
 import logging
 import sys
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # The app stores naive UTC via datetime.utcnow(); these checks compare against it.
 warnings.filterwarnings('ignore', message='datetime.datetime.utcnow', category=DeprecationWarning)
 
 from flask import render_template
+from sqlalchemy import inspect, text
 
 from app import create_app, db
 from app import tasks
 from app.groups import assign_group, find_or_create_group, grouped_view, summarize
-from app.models.product import AvailabilityHistory, Product, ProductGroup, ProductGroupMember
+from app.history_backfill import backfill_from_stock_checks
+from app.models.product import AvailabilityHistory, PriceHistory, Product, ProductGroup, ProductGroupMember
 import seed_groups
 
 URLS = {
@@ -143,8 +145,9 @@ def check_history():
     failures += report(len(rows) == 3 and rows[-1].available is False, 'selling out is logged',
                        f"{[r.available for r in rows]}")
 
-    # "Update Now" writes product.available without logging. The next scheduled
-    # check compares against the last logged row, so the change is not lost.
+    # A change that reached product.available without being logged (the state
+    # a database written before every check path logged can be in) is logged
+    # by the next check, which compares against the last logged row.
     bestbuy.available = False
     db.session.commit()
     stock[URLS['bestbuy']] = (False, 489.99)
@@ -403,6 +406,138 @@ def check_seed():
     return failures
 
 
+def check_chart(app):
+    """The detail chart reads AvailabilityHistory, closed by the latest check."""
+    print("Availability chart")
+    failures = 0
+    products = seed(stock_of((False, 499.99), (True, 489.99), (False, 479.99)))
+    target, bestbuy, walmart = products['target'], products['bestbuy'], products['walmart']
+    now = STAMP
+    for ago, available in ((timedelta(days=3), False), (timedelta(hours=2), True),
+                           (timedelta(minutes=30), False)):
+        db.session.add(AvailabilityHistory(product_id=target.id, timestamp=now - ago,
+                                           available=available, price=499.99))
+    target.available, target.last_checked = False, now - timedelta(minutes=1)
+    # Best Buy: in stock for two days, but not checked for the last three hours.
+    db.session.add(AvailabilityHistory(product_id=bestbuy.id, timestamp=now - timedelta(days=2),
+                                       available=True, price=489.99))
+    bestbuy.available, bestbuy.last_checked = True, now - timedelta(hours=3)
+    db.session.commit()
+
+    def shape(window):
+        return [(now - p['timestamp'], p['available'], p['carry']) for p in window['points']]
+
+    windows = {w['key']: w for w in target.availability_windows(now=now)}
+    hour, day, week = windows['hour'], windows['day'], windows['week']
+    failures += report(shape(hour) == [(timedelta(hours=1), True, True),
+                                       (timedelta(minutes=30), False, False),
+                                       (timedelta(minutes=1), False, False)]
+                       and hour['changes'] == 1 and hour['checked'],
+                       'the last hour starts with the state carried in and runs to the latest check',
+                       str(shape(hour)))
+    failures += report(shape(day) == [(timedelta(days=1), False, True),
+                                      (timedelta(hours=2), True, False),
+                                      (timedelta(minutes=30), False, False),
+                                      (timedelta(minutes=1), False, False)]
+                       and day['changes'] == 2, 'the last day shows the restock and the sell-out',
+                       str(shape(day)))
+    failures += report(shape(week)[0] == (timedelta(days=3), False, False)
+                       and not any(p['carry'] for p in week['points']) and week['changes'] == 2,
+                       'a listing first seen inside a range has nothing to carry in', str(shape(week)))
+
+    windows = {w['key']: w for w in bestbuy.availability_windows(now=now)}
+    failures += report(shape(windows['hour']) == [(timedelta(hours=1), True, True), (timedelta(0), True, True)]
+                       and not windows['hour']['checked'] and windows['hour']['changes'] == 0,
+                       'a range with no check holds the last known state out to now',
+                       str(shape(windows['hour'])))
+    failures += report(shape(windows['day']) == [(timedelta(days=1), True, True), (timedelta(hours=3), True, False)]
+                       and windows['day']['checked'],
+                       "a range with a check but no change is flat up to that check",
+                       str(shape(windows['day'])))
+    failures += report(all(not w['points'] for w in walmart.availability_windows(now=now)),
+                       'a listing with nothing logged has no points, whatever last_checked says')
+
+    from app.routes.main import _availability_chart_ranges
+    with app.test_request_context():
+        ranges = {r['key']: r for r in _availability_chart_ranges(target)}
+        empty = _availability_chart_ranges(walmart)
+    ticks_ok = True
+    for key, spacing in (('hour', 600_000), ('day', 10_800_000), ('week', 86_400_000)):
+        values = [tick['v'] for tick in ranges[key]['ticks']]
+        ticks_ok &= (len(values) >= 5 and all(ranges[key]['start'] <= v <= ranges[key]['end'] for v in values)
+                     and all(tick['label'] for tick in ranges[key]['ticks']))
+        # A DST change can make one gap an hour longer or shorter.
+        ticks_ok &= all(abs((b - a) - spacing) <= 3_600_000 for a, b in zip(values, values[1:]))
+    failures += report(ticks_ok, 'every range has labelled ticks on round times inside it',
+                       str({k: len(r['ticks']) for k, r in ranges.items()}))
+    points = ranges['hour']['points']
+    failures += report(points[0]['t'] == ranges['hour']['start'] and points[0]['carry']
+                       and points[-1]['t'] <= ranges['hour']['end'] and ranges['hour']['last_checked'],
+                       'the page gets time-axis points from each range start to the latest check')
+    failures += report(empty == [], 'a listing with nothing logged gets no chart ranges')
+
+    client = app.test_client()
+    html = client.get(f'/product/{target.id}').get_data(as_text=True)
+    failures += report('id="availabilityChart"' in html and '"ticks"' in html,
+                       'the listing page draws the chart from the history')
+    html = client.get(f'/product/{walmart.id}').get_data(as_text=True)
+    failures += report('id="availabilityChart"' not in html and 'No stock history recorded yet' in html,
+                       'a listing with nothing logged says so instead of drawing an empty chart')
+
+    body = client.get(f'/api/products/{target.id}').get_json()
+    history = body['product']['availability_history']
+    failures += report([h['available'] for h in history] == [False, True, False]
+                       and all(h['price'] == 499.99 for h in history),
+                       'the API lists the logged changes oldest first, with their prices', str(history))
+    return failures
+
+
+def check_backfill():
+    """stock_checks' changes from before the logged history are copied across, once."""
+    print("Retired stock_checks")
+    failures = 0
+    products = seed(stock_of((False, 499.99), (True, 489.99), (False, 479.99)))
+    target, bestbuy = products['target'], products['bestbuy']
+    base = max(p.created_at for p in products.values())
+
+    def at(minutes):
+        return (base + timedelta(minutes=minutes)).strftime('%Y-%m-%d %H:%M:%S.%f')
+
+    db.session.execute(text('CREATE TABLE stock_checks (id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL, '
+                            'available BOOLEAN NOT NULL, timestamp DATETIME NOT NULL)'))
+    try:
+        checks = [(target.id, 1, 0), (target.id, 2, 0), (target.id, 3, 1), (target.id, 4, 1),
+                  (target.id, 5, 0), (target.id, 11, 0), (target.id, 12, 1),
+                  (bestbuy.id, -5, 0), (bestbuy.id, 1, 1), (bestbuy.id, 2, 1),
+                  (9999, 1, 1)]
+        for product_id, minutes, available in checks:
+            db.session.execute(text('INSERT INTO stock_checks (product_id, available, timestamp) '
+                                    'VALUES (:p, :a, :t)'), {'p': product_id, 'a': available, 't': at(minutes)})
+        db.session.add(PriceHistory(product_id=target.id, price=450.0, timestamp=base + timedelta(minutes=2.5)))
+        # The first row the new history logged for Target; checks after it are already covered.
+        db.session.add(AvailabilityHistory(product_id=target.id, timestamp=base + timedelta(minutes=10),
+                                           available=False, price=499.99))
+        db.session.commit()
+
+        added = backfill_from_stock_checks()
+        rows = [(round((r.timestamp - base).total_seconds() / 60), r.available, r.price) for r in history_of(target)]
+        failures += report(rows == [(1, False, None), (3, True, 450.0), (5, False, 450.0), (10, False, 499.99)],
+                           'the changes before the first logged row are copied, with the price then', str(rows))
+        rows = [(round((r.timestamp - base).total_seconds() / 60), r.available) for r in history_of(bestbuy)]
+        failures += report(rows == [(1, True)],
+                           'a listing with no logged history gets its first state, not checks from before it existed',
+                           str(rows))
+        failures += report(added == 4 and AvailabilityHistory.query.filter_by(product_id=9999).count() == 0,
+                           'checks of a deleted listing are left alone', f"added {added}")
+        failures += report(backfill_from_stock_checks() == 0, 'running it again copies nothing')
+    finally:
+        db.session.rollback()
+        db.session.execute(text('DROP TABLE IF EXISTS stock_checks'))
+        db.session.commit()
+    failures += report(backfill_from_stock_checks() == 0, 'a database without stock_checks is left alone')
+    return failures
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('-v', '--verbose', action='store_true', help="show the app's own log output")
@@ -423,6 +558,8 @@ def main():
         failed += check_rollup()
         failed += check_routes(app)
         failed += check_seed()
+        failed += check_chart(app)
+        failed += check_backfill()
 
     print()
     print('All checks passed' if not failed else f'{failed} check(s) failed')

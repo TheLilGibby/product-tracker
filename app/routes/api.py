@@ -75,9 +75,11 @@ def product_to_dict(product, include_history=False):
             {'price': h.price, 'timestamp': h.timestamp.isoformat() + 'Z'}
             for h in product.price_histories
         ]
+        # One entry per logged stock change, plus the listing's first
+        # observation, oldest first, with what it cost at that moment.
         data['availability_history'] = [
-            {'available': c.available, 'timestamp': c.timestamp.isoformat() + 'Z'}
-            for c in product.stock_checks
+            {'available': h.available, 'price': h.price, 'timestamp': h.timestamp.isoformat() + 'Z'}
+            for h in sorted(product.availability_histories, key=lambda h: (h.timestamp, h.id))
         ]
     return data
 

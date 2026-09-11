@@ -5,5 +5,4 @@ from app.models.product import (
     Product,
     ProductGroup,
     ProductGroupMember,
-    StockCheck,
 )

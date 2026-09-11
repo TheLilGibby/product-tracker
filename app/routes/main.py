@@ -287,7 +287,7 @@ def add_product():
                         product.available = product_data.get('available', False)
                         product.image_url = product_data.get('image_url')
                         product.last_checked = datetime.utcnow()
-                        product.record_stock_check()
+                        product.record_availability(product.last_checked)
                         
                         # Add price history if we have a price
                         if product.current_price:
@@ -438,7 +438,8 @@ def add_product():
         )
         product.price_histories.append(history)
 
-    product.record_stock_check()
+    product.last_checked = datetime.utcnow()
+    product.record_availability(product.last_checked)
         
     # Save to database
     db.session.add(product)
@@ -458,15 +459,35 @@ def _clock(moment, twelve_hour, seconds=False):
     return moment.strftime('%H:%M:%S' if seconds else '%H:%M')
 
 
+def _epoch_ms(moment):
+    """Naive UTC as milliseconds since the epoch, the availability chart's x unit."""
+    return int((moment - datetime(1970, 1, 1)).total_seconds() * 1000)
+
+
+# How far apart the availability chart's x-axis ticks sit in each window. They
+# fall on round local times: every 10 minutes, every 3 hours, each midnight.
+_CHART_TICK_STEPS = {
+    'hour': timedelta(minutes=10),
+    'day': timedelta(hours=3),
+    'week': timedelta(days=1),
+}
+
+
 def _availability_chart_ranges(product):
     """
     The availability chart's time windows, labelled for display.
+
+    The x axis is real time (epoch milliseconds). The history only logs
+    changes, so its points are uneven, and spacing them evenly would give an
+    hour-long blip the same width as a quiet day.
 
     Labels are rendered here rather than in the browser because the times are
     shown in the timezone the user picked in settings, which the browser has no
     way to know. Each window gets the axis labels its span deserves: a clock
     time is enough inside an hour, a weekday is needed across a day, and a date
     across a week.
+
+    Returns [] when the listing has no stock history yet.
     """
     timezone = session.get('timezone', current_app.config.get('DEFAULT_TIMEZONE', 'UTC'))
     twelve_hour = session.get('time_format',
@@ -483,36 +504,62 @@ def _availability_chart_ranges(product):
             return _clock(moment, twelve_hour)
         if key == 'day':
             return f"{moment.strftime('%a')} {_clock(moment, twelve_hour)}"
-        return f"{moment.strftime('%b')} {moment.day}, {_clock(moment, twelve_hour)}"
+        return f"{moment.strftime('%a')} {moment.strftime('%b')} {moment.day}"
 
     def full_label(moment):
         return (f"{moment.strftime('%a')}, {moment.strftime('%b')} {moment.day}, "
                 f"{moment.year} at {_clock(moment, twelve_hour, seconds=True)} "
                 f"{moment.strftime('%Z')}".strip())
 
-    now_local = localize(datetime.utcnow())
+    def axis_ticks(key, start, end):
+        """Ticks on round local times between start and end (naive UTC)."""
+        wall = localize(start).replace(tzinfo=None)
+        if key == 'hour':
+            wall = wall.replace(minute=wall.minute - wall.minute % 10, second=0, microsecond=0)
+        elif key == 'day':
+            wall = wall.replace(hour=wall.hour - wall.hour % 3, minute=0, second=0, microsecond=0)
+        else:
+            wall = wall.replace(hour=0, minute=0, second=0, microsecond=0)
+        ticks = []
+        while True:
+            # Stepping the wall clock, not UTC, keeps ticks on the hour across DST.
+            moment = target_tz.localize(wall)
+            at = moment.astimezone(pytz.utc).replace(tzinfo=None)
+            if at > end:
+                return ticks
+            if at >= start:
+                ticks.append({'v': _epoch_ms(at), 'label': axis_label(key, moment)})
+            wall += _CHART_TICK_STEPS[key]
+
+    last_checked = full_label(localize(product.last_checked)) if product.last_checked else None
     ranges = []
     for window in product.availability_windows():
+        start, end = window['start'], window['end']
         points = []
         for point in window['points']:
-            moment = localize(point['timestamp'])
+            full = full_label(localize(point['timestamp']))
+            if point['carry']:
+                full += (' (carried in from before this range)' if point['timestamp'] == start
+                         else ' (last known state)')
             points.append({
-                'x': axis_label(window['key'], moment),
+                't': _epoch_ms(point['timestamp']),
                 'y': 1 if point['available'] else 0,
-                'full': full_label(moment),
-                'carry': bool(point.get('carry')),
+                'full': full,
+                'carry': point['carry'],
             })
         ranges.append({
             'key': window['key'],
             'label': window['label'],
-            'checks': window['checks'],
+            'start': _epoch_ms(start),
+            'end': _epoch_ms(end),
+            'ticks': axis_ticks(window['key'], start, end),
             'changes': window['changes'],
+            'checked': window['checked'],
+            'last_checked': last_checked,
             'points': points,
-            # Where "now" sits on this axis, so a window with no check-ins of
-            # its own can still draw the line it is holding rather than a dot.
-            'edge': {'x': axis_label(window['key'], now_local),
-                     'full': full_label(now_local)},
         })
+    if not any(r['points'] for r in ranges):
+        return []
     return ranges
 
 
@@ -520,9 +567,7 @@ def _availability_chart_ranges(product):
 def product_detail(product_id):
     """Product detail page."""
     product = Product.query.get_or_404(product_id)
-    chart_points = product.availability_chart_points()
     return render_template('products/detail.html', product=product,
-                           chart_points=chart_points,
                            chart_ranges=_availability_chart_ranges(product),
                            chart_default='day')
 
@@ -575,7 +620,7 @@ def update_product(product_id):
     product.available = product_data.get('available', False)
     product.image_url = product_data.get('image_url') or product.image_url
     product.last_checked = datetime.utcnow()
-    product.record_stock_check()
+    product.record_availability(product.last_checked)
     
     # Record price history if price changed
     if product.current_price is not None and product.current_price != old_price:
