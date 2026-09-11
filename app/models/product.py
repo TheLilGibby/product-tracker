@@ -1,21 +1,8 @@
+import logging
 from datetime import datetime, timedelta
 from app import db
 
-def _thin_availability(points, max_points):
-    """Drop redundant check-ins, keeping both sides of every status change."""
-    if not max_points or len(points) <= max_points:
-        return points
-    span = (points[-1]['timestamp'] - points[0]['timestamp']).total_seconds()
-    step = max(span / max_points, 0.001)
-    kept = [points[0]]
-    for index in range(1, len(points) - 1):
-        point = points[index]
-        at_a_change = (point['available'] != points[index - 1]['available']
-                       or point['available'] != points[index + 1]['available'])
-        if at_a_change or (point['timestamp'] - kept[-1]['timestamp']).total_seconds() >= step:
-            kept.append(point)
-    kept.append(points[-1])
-    return kept
+logger = logging.getLogger(__name__)
 
 
 class Product(db.Model):
@@ -51,51 +38,42 @@ class Product(db.Model):
     
     # Relationship with price history
     price_histories = db.relationship('PriceHistory', backref='product', lazy=True, cascade='all, delete-orphan')
-    stock_checks = db.relationship(
-        'StockCheck',
-        backref='product',
-        lazy=True,
-        cascade='all, delete-orphan',
-        order_by='StockCheck.timestamp.asc()',
-    )
-    
+
     def __repr__(self):
         return f'<Product {self.name}>'
 
-    def record_stock_check(self, available=None, timestamp=None):
-        """Record one tracker check-in for the availability timeline."""
-        check = StockCheck(
-            available=bool(self.available if available is None else available),
-            timestamp=timestamp or datetime.utcnow(),
-        )
-        self.stock_checks.append(check)
-        return check
+    def record_availability(self, now=None):
+        """
+        Log this listing's stock state if it differs from the last one logged.
 
-    def availability_chart_points(self, limit=200):
-        """Chronological check-ins for the availability graph (newest-capped)."""
-        checks = list(self.stock_checks or [])
-        if limit and len(checks) > limit:
-            checks = checks[-limit:]
-        points = [{'timestamp': c.timestamp, 'available': bool(c.available)} for c in checks]
-        if not points:
-            if self.created_at is not None:
-                points.append({'timestamp': self.created_at, 'available': bool(self.available)})
-            if (
-                self.last_checked is not None
-                and (not points or self.last_checked != points[-1]['timestamp'])
-            ):
-                points.append({'timestamp': self.last_checked, 'available': bool(self.available)})
-            return points
-        if (
-            len(points) == 1
-            and self.created_at is not None
-            and self.created_at < points[0]['timestamp']
-        ):
-            points.insert(0, {
-                'timestamp': self.created_at,
-                'available': points[0]['available'],
-            })
-        return points
+        The only writer of AvailabilityHistory. Every path that checks a
+        listing (the scheduler, Update Now, the API refresh, adding a product)
+        calls it right after setting available and last_checked. The first
+        call logs the starting state; after that a row is added only on a
+        change, with the price at that moment.
+
+        The comparison is against the newest logged row, not the value the
+        caller just overwrote, so a change that reached product.available
+        without being logged is still logged by the next check.
+
+        Returns the new row, or None when the state is unchanged.
+        """
+        available = bool(self.available)
+        last = None
+        if self.id is not None:
+            last = (AvailabilityHistory.query
+                    .filter_by(product_id=self.id)
+                    .order_by(AvailabilityHistory.timestamp.desc(), AvailabilityHistory.id.desc())
+                    .first())
+        if last is not None and last.available == available:
+            return None
+        row = AvailabilityHistory(timestamp=now or datetime.utcnow(), available=available,
+                                  price=self.current_price)
+        self.availability_histories.append(row)
+        if last is not None:
+            logger.info(f"Stock changed for product {self.id}: "
+                        f"{'in stock' if available else 'out of stock'}")
+        return row
 
     # The ranges the detail-page chart can show, widest last.
     AVAILABILITY_WINDOWS = (
@@ -104,72 +82,68 @@ class Product(db.Model):
         ('week', 'Last 7 days', timedelta(days=7)),
     )
 
-    def availability_windows(self, now=None, max_points=400):
+    def availability_windows(self, now=None):
         """
-        Check-ins split into the ranges the availability chart can show.
+        The stock timeline split into the ranges the availability chart shows.
 
-        Returns one entry per window in AVAILABILITY_WINDOWS, oldest point
-        first, each with the count of check-ins that fell inside it and the
-        number of times the stock status changed there.
+        Built from AvailabilityHistory, which holds one row per stock change
+        plus the first observation, and closed with last_checked: the state
+        held at least until the latest check, so the line runs to it instead
+        of stopping at the last change.
 
-        Every window starts with the last check-in from BEFORE it, flagged
-        'carry'. Availability is a step function, so a window whose own
-        check-ins all predate it is not empty - it is a flat line at whatever
-        the last known state was - and without the carry point it would render
-        as a blank graph that looks like a broken tracker.
+        Each window starts with the state carried in from before it, placed at
+        the window's start and flagged 'carry', so a window with no change of
+        its own is a flat line at that state rather than an empty graph. When
+        the listing was not checked inside a window at all, 'checked' is False
+        and the carried state is held out to now, also flagged 'carry'.
 
-        Windows longer than max_points are thinned, but a point is always kept
-        when the status differs from its neighbour on either side, so every
-        transition survives at full resolution and the shape of the line is
-        exact however many identical check-ins sit between changes.
+        Returns one dict per window with 'key', 'label', 'start' and 'end'
+        (naive UTC), 'points' (oldest first), 'changes' (stock status flips
+        inside the window) and 'checked'.
         """
         now = now or datetime.utcnow()
         floor = now - max(span for _, _, span in self.AVAILABILITY_WINDOWS)
 
         points = []
         if self.id is not None:
-            carry = (StockCheck.query
-                     .filter(StockCheck.product_id == self.id,
-                             StockCheck.timestamp < floor)
-                     .order_by(StockCheck.timestamp.desc())
+            carry = (AvailabilityHistory.query
+                     .filter(AvailabilityHistory.product_id == self.id,
+                             AvailabilityHistory.timestamp < floor)
+                     .order_by(AvailabilityHistory.timestamp.desc(), AvailabilityHistory.id.desc())
                      .first())
+            rows = (AvailabilityHistory.query
+                    .filter(AvailabilityHistory.product_id == self.id,
+                            AvailabilityHistory.timestamp >= floor)
+                    .order_by(AvailabilityHistory.timestamp.asc(), AvailabilityHistory.id.asc())
+                    .all())
             if carry is not None:
-                points.append({'timestamp': carry.timestamp,
-                               'available': bool(carry.available)})
-            points.extend(
-                {'timestamp': check.timestamp, 'available': bool(check.available)}
-                for check in (StockCheck.query
-                              .filter(StockCheck.product_id == self.id,
-                                      StockCheck.timestamp >= floor)
-                              .order_by(StockCheck.timestamp.asc())
-                              .all())
-            )
-        if not points:
-            # No check-in rows at all: fall back to whatever the product itself
-            # can say about when it was created and last looked at.
-            points = self.availability_chart_points()
+                rows.insert(0, carry)
+            points = [{'timestamp': row.timestamp, 'available': bool(row.available)} for row in rows]
+        # Nothing logged means no state is known yet, whatever last_checked says
+        # (a listing added without a successful scrape still has one).
+        if points and self.last_checked is not None and self.last_checked > points[-1]['timestamp']:
+            points.append({'timestamp': self.last_checked, 'available': bool(self.available)})
 
         windows = []
         for key, label, span in self.AVAILABILITY_WINDOWS:
             start = now - span
-            inside = [point for point in points if point['timestamp'] >= start]
             before = [point for point in points if point['timestamp'] < start]
-
-            series = [dict(point, carry=False) for point in inside]
+            series = [dict(point, carry=False) for point in points if point['timestamp'] >= start]
             if before:
-                series.insert(0, dict(before[-1], carry=True))
-
-            changes = 0
-            for index in range(1, len(series)):
-                if series[index]['available'] != series[index - 1]['available']:
-                    changes += 1
-
+                series.insert(0, dict(before[-1], timestamp=start, carry=True))
+            checked = bool(points) and self.last_checked is not None and self.last_checked >= start
+            if series and not checked:
+                series.append(dict(series[-1], timestamp=now, carry=True))
+            changes = sum(1 for older, newer in zip(series, series[1:])
+                          if older['available'] != newer['available'])
             windows.append({
                 'key': key,
                 'label': label,
-                'points': _thin_availability(series, max_points),
-                'checks': len(inside),
+                'start': start,
+                'end': now,
+                'points': series,
                 'changes': changes,
+                'checked': checked,
             })
         return windows
 
@@ -260,9 +234,13 @@ class AvailabilityHistory(db.Model):
     """
     One row per observed stock change on a listing, plus its first observation.
 
-    Written in exactly one place, check_all_products in app/tasks.py. price is
-    the listing's price at that moment, so a restock can be read against what
-    it cost.
+    The only stock history. Product.record_availability is its only writer and
+    every check path calls it. price is the listing's price at that moment, so
+    a restock can be read against what it cost. A check that changed nothing
+    leaves no row; the listing's last_checked records the latest one.
+
+    It replaced stock_checks, which logged every check without a price. That
+    table is retired: see create_db.py.
     """
     __tablename__ = 'availability_histories'
     __table_args__ = (
@@ -282,15 +260,3 @@ class AvailabilityHistory(db.Model):
     def __repr__(self):
         state = 'in stock' if self.available else 'out of stock'
         return f'<AvailabilityHistory product={self.product_id} {state} @ {self.timestamp}>'
-class StockCheck(db.Model):
-    """One stock check-in from the product tracker timeline."""
-    __tablename__ = 'stock_checks'
-
-    id = db.Column(db.Integer, primary_key=True)
-    product_id = db.Column(db.Integer, db.ForeignKey('products.id'), nullable=False, index=True)
-    available = db.Column(db.Boolean, nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
-
-    def __repr__(self):
-        status = 'in stock' if self.available else 'out of stock'
-        return f'<StockCheck {status} @ {self.timestamp}>' 

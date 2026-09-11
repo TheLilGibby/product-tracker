@@ -126,8 +126,17 @@
         padding-bottom: 0.5rem;
     }
 
+    .product-details {
+        display: grid;
+        grid-template-columns: minmax(300px, 1fr) 2fr;
+        gap: 2rem;
+    }
+
+    /* Both grids stack on a phone. The details grid's 300px first column
+       alone would push its second column off a 400px screen. */
     @media (max-width: 800px) {
-        .product-hero {
+        .product-hero,
+        .product-details {
             grid-template-columns: 1fr;
         }
     }
@@ -193,7 +202,7 @@
     <article class="product-hero-chart">
         <h3>Availability History</h3>
         {% if chart_ranges %}
-            <p class="chart-subtitle">Stock check-ins from the product tracker timeline</p>
+            <p class="chart-subtitle">Every logged stock change, drawn through the latest check</p>
             <div class="chart-range-toggle" role="group" aria-label="Chart time range">
                 {% for range in chart_ranges %}
                 <button type="button" data-range="{{ range.key }}"
@@ -205,12 +214,12 @@
             </div>
             <p class="chart-note" id="availabilityChartNote"></p>
         {% else %}
-            <p>No stock check-ins recorded yet. They will appear here after the tracker checks this product.</p>
+            <p>No stock history recorded yet. It will appear here after the tracker checks this product.</p>
         {% endif %}
     </article>
 </div>
 
-<div style="display: grid; grid-template-columns: minmax(300px, 1fr) 2fr; gap: 2rem;">
+<div class="product-details">
     <div>
         <div>
             <h3>Current Status</h3>
@@ -449,9 +458,10 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
     (function() {
-        // One pre-labelled series per time range. The labels are built on the
-        // server because they are in the timezone chosen in settings, which the
-        // browser cannot know; switching ranges here costs no round trip.
+        // One series per time range, on a real time axis (epoch milliseconds).
+        // The tick and tooltip labels are built on the server because they are
+        // in the timezone chosen in settings, which the browser cannot know;
+        // switching ranges here costs no round trip.
         const RANGES = {{ chart_ranges|tojson|safe }};
         const DEFAULT_RANGE = {{ chart_default|tojson|safe }};
         const STORAGE_KEY = 'availabilityChartRange';
@@ -507,31 +517,22 @@
                 : { accent: accent, fill: 'rgba(77, 124, 15, 0.18)', tick: '#374151', grid: 'rgba(17, 24, 39, 0.08)' };
         }
 
-        function seriesFor(range) {
-            const points = range.points.slice();
-            if (!range.checks && points.length === 1) {
-                // Nothing was checked inside this window, so the one point is
-                // the state carried in from before it. Hold that state out to
-                // now rather than drawing a single dot against the left edge.
-                points.push({ x: range.edge.x, y: points[0].y,
-                              full: range.edge.full, carry: true });
-            }
-            return points;
-        }
-
         function noteFor(range) {
-            if (!range.checks) {
-                if (!range.points.length) {
-                    return 'No check-ins in this window yet.';
-                }
-                return 'No check-ins in this window. The line holds the last known '
-                    + 'state, recorded ' + range.points[0].full + '.';
+            if (!range.points.length) {
+                return 'No stock history in this range yet.';
             }
-            const checks = range.checks + (range.checks === 1 ? ' check-in' : ' check-ins');
-            const changes = range.changes === 1
-                ? '1 change in stock status'
-                : range.changes + ' changes in stock status';
-            return checks + ', ' + changes + '.';
+            if (!range.checked) {
+                // The server held the carried-in state out to now.
+                return 'Not checked in this range'
+                    + (range.last_checked ? '; last checked ' + range.last_checked : '')
+                    + '. The line holds the last known state.';
+            }
+            const changes = range.changes === 0
+                ? 'No change in stock status'
+                : range.changes === 1
+                    ? '1 change in stock status'
+                    : range.changes + ' changes in stock status';
+            return changes + ' in this range. Last checked ' + range.last_checked + '.';
         }
 
         function draw(key) {
@@ -539,7 +540,9 @@
                 return;
             }
             const range = byKey(key);
-            const points = seriesFor(range);
+            const points = range.points;
+            const tickLabels = {};
+            range.ticks.forEach(function(tick) { tickLabels[tick.v] = tick.label; });
             const colors = palette();
 
             buttons.forEach(function(button) {
@@ -556,18 +559,18 @@
             chart = new Chart(canvas, {
                 type: 'line',
                 data: {
-                    labels: points.map(function(point) { return point.x; }),
                     datasets: [{
                         label: 'In stock',
-                        data: points.map(function(point) { return point.y; }),
+                        data: points.map(function(point) { return { x: point.t, y: point.y }; }),
                         borderColor: colors.accent,
                         backgroundColor: colors.fill,
                         borderWidth: 2,
                         fill: true,
                         stepped: true,
                         tension: 0,
-                        // Carried points are not check-ins, so they get no
-                        // marker - they only anchor the line at the left edge.
+                        // Carried points are not observations, so they get no
+                        // marker - they only hold the line at a range's edges.
+                        // Every other dot is a logged change or the latest check.
                         pointRadius: points.map(function(point) {
                             return point.carry && points.length > 1 ? 0 : 4;
                         }),
@@ -581,7 +584,8 @@
                     maintainAspectRatio: false,
                     animation: false,
                     interaction: {
-                        mode: 'index',
+                        mode: 'nearest',
+                        axis: 'x',
                         intersect: false
                     },
                     plugins: {
@@ -602,12 +606,23 @@
                     },
                     scales: {
                         x: {
+                            type: 'linear',
+                            min: range.start,
+                            max: range.end,
+                            // Ticks sit on round local times the server chose.
+                            afterBuildTicks: function(axis) {
+                                axis.ticks = range.ticks.map(function(tick) {
+                                    return { value: tick.v };
+                                });
+                            },
                             ticks: {
                                 maxRotation: 45,
                                 minRotation: 0,
                                 autoSkip: true,
-                                maxTicksLimit: 8,
-                                color: colors.tick
+                                color: colors.tick,
+                                callback: function(value) {
+                                    return tickLabels[value] || '';
+                                }
                             },
                             grid: {
                                 color: colors.grid

@@ -1,5 +1,6 @@
 from app import create_app, db
-from app.models.product import Product, PriceHistory, StockCheck
+from app.history_backfill import backfill_from_stock_checks
+from app.models.product import Product, PriceHistory
 import os
 import pathlib
 import sqlite3
@@ -101,6 +102,22 @@ with app.app_context():
     try:
         db.create_all()
         print("Database tables created successfully!")
+
+        # stock_checks is retired (2026-09-11). It logged every check without
+        # a price, alongside availability_histories, which logs each stock
+        # change with the price then. availability_histories is now the only
+        # stock history, and Product.record_availability is its only writer.
+        # Nothing writes stock_checks any more and its rows are left in place.
+        # It is no longer a model, so a new database never gets the table. The
+        # stock changes it saw before a listing's first availability_histories
+        # row are copied across once, so the charts keep that stretch.
+        try:
+            copied = backfill_from_stock_checks()
+            if copied:
+                print(f"Copied {copied} stock changes from stock_checks into availability_histories")
+        except Exception as e:
+            db.session.rollback()
+            print(f"Error copying stock_checks history: {e}")
     except Exception as e:
         print(f"ERROR creating database tables: {e}")
         # Try to diagnose the issue
