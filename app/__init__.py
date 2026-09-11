@@ -13,6 +13,10 @@ from logging.handlers import RotatingFileHandler
 db = SQLAlchemy()
 migrate = Migrate()
 
+# The app-wide BackgroundScheduler, set by create_app. Stays None when the app
+# is testing or when SCHEDULER_ENABLED is off.
+scheduler = None
+
 # Windows consoles default to cp1252; product names carry characters like ™ and –
 # which would raise UnicodeEncodeError inside the handler ("--- Logging error ---")
 for _stream in (sys.stdout, sys.stderr):
@@ -187,16 +191,29 @@ def create_app(config_name='default'):
         db.create_all()
         _ensure_schema()
     
-    # Initialize and start the scheduler if not in testing mode. This must run
+    # Initialize and start the scheduler unless this app is testing or has
+    # SCHEDULER_ENABLED=0. When it does run it must run
     # exactly once: every init_scheduler() call starts a BackgroundScheduler and
     # a second one made check_auto_cart_opportunities fire twice per minute.
-    if not app.config.get('TESTING', False):
-        global scheduler
+    global scheduler
+    if app.config.get('TESTING', False):
+        scheduler = None
+    elif not app.config.get('SCHEDULER_ENABLED', True):
+        # Everything that is not the designated instance runs with
+        # SCHEDULER_ENABLED=0 TELEGRAM_ALERTS_ENABLED=0: the database and the UI
+        # stay live, but nothing here polls retailers or auto-carts.
+        scheduler = None
+        app.logger.info(
+            "SCHEDULER_ENABLED=0: background scheduler is off - no check, "
+            "auto-cart or snapshot job will run in this instance")
+    else:
         from app.tasks import init_scheduler
         scheduler = init_scheduler(app)
         
         # Ensure the scheduler shuts down when the app exits
-        atexit.register(lambda: scheduler.shutdown(wait=False))
+        atexit.register(
+            lambda: scheduler.shutdown(wait=False)
+            if scheduler is not None and scheduler.running else None)
         
         # Get interval details for logging
         minutes = app.config.get('CHECK_INTERVAL_MINUTES', 0)

@@ -84,6 +84,24 @@ You can customize the application by setting the following environment variables
 - `DASHBOARD_PASSWORD`: HTTP Basic password for every page (any username). Blank means no login, which is fine on localhost but **required before exposing the app publicly**
 - `PUBLIC_URL`: Externally reachable base URL used for links in Telegram messages (ignored while `DASHBOARD_PASSWORD` is blank)
 - `SNAPSHOT_INTERVAL_MINUTES`: Post a dashboard screenshot to Telegram every N minutes (`0` = off)
+- `TELEGRAM_ALERTS_ENABLED`: `0` silences Telegram in this process (default `1`)
+- `SCHEDULER_ENABLED`: `0` starts no background scheduler in this process (default `1`)
+- `INSTANCE_LABEL`: Short name prefixed to every Telegram post, so a stray sender can be identified
+
+**Only one instance may be the designated one.** Every other process that loads the
+app - a second dev server, a preview, a check script - reads the same `.env` and would
+otherwise post the same alerts again and, worse, run its own auto-cart job, which fires
+real cart attempts at retailers. Anything that is not the designated instance sets both:
+
+```bash
+SCHEDULER_ENABLED=0 TELEGRAM_ALERTS_ENABLED=0
+```
+
+With `SCHEDULER_ENABLED=0` no `BackgroundScheduler` is created at all (no check job, no
+auto-cart job, no snapshot job), and changing the check interval on the settings page
+does not start one either. The database and the UI stay fully live: `/update-all-products`
+and the per-product **Update Now** button still scrape on demand: they call
+`check_all_products` directly rather than going through the scheduler.
 
 The easiest way to set these is a `.env` file next to `docker-compose.yml` (copy `.env.example`);
 Docker Compose reads it automatically. Never commit `.env`.
