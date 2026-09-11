@@ -119,6 +119,17 @@ class Config:
     # Short name of this instance, prefixed to every Telegram post so a stray
     # sender can be told apart from the real one (e.g. INSTANCE_LABEL=live).
     INSTANCE_LABEL = os.environ.get('INSTANCE_LABEL', '').strip()[:32]
+    # The same rule for the background scheduler, and for a sharper reason: a
+    # second instance against the same database is a duplicate auto-carter, not
+    # just a duplicate scraper - check_auto_cart_opportunities runs every 60s and
+    # fires real cart attempts at retailers. With SCHEDULER_ENABLED=0 no
+    # BackgroundScheduler is created at all (no check job, no auto-cart job, no
+    # snapshot job) while the database and the UI stay fully live; the manual
+    # Update Now buttons still work, because they scrape directly rather than
+    # directly. The pair every non-designated instance sets is
+    # SCHEDULER_ENABLED=0 TELEGRAM_ALERTS_ENABLED=0.
+    SCHEDULER_ENABLED = os.environ.get('SCHEDULER_ENABLED', '1').strip().lower() not in (
+        '0', 'false', 'no', 'off', '')
     
 
     # Minimum minutes between auto-cart attempts for the same product

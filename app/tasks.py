@@ -409,7 +409,18 @@ def init_scheduler(app):
     
     Args:
         app: Flask application instance
+
+    Returns:
+        The started BackgroundScheduler, or None when SCHEDULER_ENABLED is off.
     """
+    # Guarded here rather than only at the create_app call site because the
+    # settings page calls init_scheduler() again to apply a new check interval,
+    # and that would otherwise start the scheduler this instance is meant not to
+    # have. Returning None leaves app.scheduler unset for the caller to see.
+    if not app.config.get('SCHEDULER_ENABLED', True):
+        logger.info("SCHEDULER_ENABLED is off - not starting a scheduler")
+        return None
+
     logger.info("Initializing scheduler")
     
     with app.app_context():
@@ -474,6 +485,8 @@ def init_scheduler(app):
         
         # Register a function to shut down the scheduler when the app exits
         atexit.register(lambda: app.scheduler.shutdown() if hasattr(app, 'scheduler') else None)
+
+        return app.scheduler
 
 def check_all_products_with_context(app):
     """
