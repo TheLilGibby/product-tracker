@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}Add New Product - Product Tracker{% endblock %}
+{% block title %}Add New Product - Tracker_{% endblock %}
 
 {% block content %}
 <header class="mb-4">
@@ -45,16 +45,27 @@
     
     <fieldset>
         <legend>Notification Preferences</legend>
-        
-        <label>
-            <input type="checkbox" id="notify_price" name="notify_price" checked>
-            Notify me when price drops
-        </label>
-        
-        <label>
-            <input type="checkbox" id="notify_availability" name="notify_availability" checked>
-            Notify me when product becomes available
-        </label>
+        <ul class="checkbox-list">
+            <li>
+                <label for="notify_price">
+                    <input type="checkbox" id="notify_price" name="notify_price" checked>
+                    Notify me when price drops
+                </label>
+            </li>
+            <li>
+                <label for="notify_availability">
+                    <input type="checkbox" id="notify_availability" name="notify_availability" checked>
+                    Notify me when product becomes available
+                </label>
+            </li>
+            <li>
+                <label for="notify_cart">
+                    <input type="checkbox" id="notify_cart" name="notify_cart" checked>
+                    Notify me when this product is added to cart
+                </label>
+            </li>
+        </ul>
+        <small>Telegram (and Discord, if set) can ping you when the listing exists / is in stock, and separately when it actually lands in your cart.</small>
     </fieldset>
     
     <fieldset style="margin-top: 1rem;">
@@ -75,7 +86,7 @@
     
     <div style="margin-top: 2rem;">
         <button type="submit">Add Product</button>
-        <a href="{{ url_for('main.index') }}" role="button" class="secondary">Cancel</a>
+        <a href="{{ url_for('main.index') }}" class="button secondary">Cancel</a>
     </div>
 </form>
 {% endblock %} 

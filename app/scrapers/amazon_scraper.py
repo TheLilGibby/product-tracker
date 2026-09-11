@@ -120,6 +120,113 @@ PRICE_CONTAINER_IDS = (
 PRICE_RE = re.compile(r'(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}')
 
 
+def amazon_cookies_file_path():
+    """Where pasted Amazon cookies are stored so they survive restarts."""
+    if os.path.isdir('/app/data'):
+        return os.path.join('/app/data', 'amazon_cookies.txt')
+    return os.path.join(os.path.expanduser('~'), '.chrome_profiles', 'amazon_cookies.txt')
+
+
+def load_amazon_cookies():
+    """Cookie header string for the logged-in Amazon session, or ''."""
+    env_value = (os.environ.get('AMAZON_COOKIES') or '').strip()
+    if env_value:
+        return env_value
+    path = amazon_cookies_file_path()
+    try:
+        if os.path.isfile(path):
+            with open(path, 'r', encoding='utf-8') as handle:
+                return handle.read().strip()
+    except OSError as exc:
+        logger.warning(f"Could not read Amazon cookies file: {exc}")
+    return ''
+
+
+# A Cookie header is visible ASCII and spaces. Anything outside that - a
+# newline above all else - is how a pasted value turns into extra lines in
+# .env, where it would set arbitrary config on the next load. Rejected rather
+# than stripped: silently dropping part of a credential yields a cookie that
+# fails later in a confusing way.
+_COOKIE_HEADER_RE = re.compile(r'^[\x20-\x7e]*$')
+
+
+def validate_cookie_header(cookie_header):
+    """Return the cleaned header, or raise ValueError if it cannot be stored."""
+    cookie_header = (cookie_header or '').strip()
+    if not _COOKIE_HEADER_RE.match(cookie_header):
+        raise ValueError(
+            'Amazon cookies contain characters that are not valid in a Cookie '
+            'header (a line break or a control character). Copy the value '
+            'again as a single line.'
+        )
+    return cookie_header
+
+
+def save_amazon_cookies(cookie_header):
+    """Persist Amazon cookies to the process env and the data file."""
+    cookie_header = validate_cookie_header(cookie_header)
+    os.environ['AMAZON_COOKIES'] = cookie_header
+    path = amazon_cookies_file_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # The file holds live session cookies. os.open sets the mode as the file is
+    # created, so it never exists world-readable; an existing file keeps its
+    # old mode, hence the chmod. Both are no-ops on Windows, which is fine -
+    # the deployment that matters here is the Linux container.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+        handle.write(cookie_header)
+    try:
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        logger.debug(f"Could not tighten permissions on the cookies file: {exc}")
+    return path
+
+
+# Names shown in Chrome Application → Cookies → https://www.amazon.com
+AMAZON_COOKIE_FIELDS = (
+    ('at-main', 'amazon_at_main'),
+    ('sess-at-main', 'amazon_sess_at_main'),
+    ('session-id', 'amazon_session_id'),
+    ('session-token', 'amazon_session_token'),
+    ('ubid-main', 'amazon_ubid_main'),
+)
+
+
+def _clean_cookie_value(cookie_name, value):
+    """Strip table copy/paste extras: wrapping quotes and a leading name=."""
+    value = (value or '').strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        value = value[1:-1].strip()
+    prefix = cookie_name + '='
+    if value.lower().startswith(prefix.lower()):
+        value = value[len(prefix):].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1].strip()
+    return value
+
+
+def cookie_header_from_form(form):
+    """
+    Build a Cookie header from the settings form.
+
+    Named fields (Application → Cookies table) are the main path. A pasted
+    full header in amazon_cookies still works if the user has one.
+    """
+    if form.get('clear_amazon_cookies'):
+        return ''
+
+    full = (form.get('amazon_cookies') or '').strip()
+    if full:
+        return full
+
+    parts = []
+    for cookie_name, field_name in AMAZON_COOKIE_FIELDS:
+        value = _clean_cookie_value(cookie_name, form.get(field_name))
+        if value:
+            parts.append(f'{cookie_name}={value}')
+    return '; '.join(parts)
+
+
 def _env_flag(name, default):
     value = os.environ.get(name)
     if value is None:
@@ -240,6 +347,55 @@ class AmazonScraper:
             except Exception:
                 pass
     
+    def _parse_cookie_header(self, cookie_header):
+        cookies = []
+        for pair in (cookie_header or '').split(';'):
+            pair = pair.strip()
+            if not pair or '=' not in pair:
+                continue
+            name, value = pair.split('=', 1)
+            name, value = name.strip(), _clean_cookie_value(name.strip(), value)
+            if name:
+                cookies.append((name, value))
+        return cookies
+
+    def _apply_amazon_cookies(self, driver):
+        """Inject the user's Amazon session cookies into this browser."""
+        cookie_header = load_amazon_cookies()
+        if not cookie_header:
+            logger.warning("No Amazon cookies configured; cart will be a guest session")
+            return 0
+
+        applied = 0
+        for name, value in self._parse_cookie_header(cookie_header):
+            added = False
+            for domain in ('.amazon.com', 'www.amazon.com', 'amazon.com'):
+                try:
+                    driver.add_cookie({
+                        'name': name,
+                        'value': value,
+                        'domain': domain,
+                        'path': '/',
+                    })
+                    applied += 1
+                    added = True
+                    break
+                except Exception:
+                    continue
+            if not added:
+                logger.debug(f"Could not add Amazon cookie {name}")
+        logger.info(f"Applied {applied} Amazon cookie(s) for a logged-in cart")
+        return applied
+
+    def _amazon_looks_signed_in(self, driver):
+        """Best-effort check of the Amazon nav account line."""
+        try:
+            el = driver.find_element(By.ID, 'nav-link-accountList-nav-line-1')
+            text = (el.text or '').strip().lower()
+            return bool(text) and 'sign in' not in text
+        except Exception:
+            return False
+
     def scrape_product(self, url):
         """
         Scrape product information from Amazon URL
@@ -338,6 +494,17 @@ class AmazonScraper:
         logger.debug(f"Navigating to {url}")
         driver.get(url)
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+
+        # A pasted Amazon session (Settings -> Amazon cookies, or AMAZON_COOKIES)
+        # is laid on top of the persistent profile. Cookies can only be added
+        # once the browser is on the domain, hence after the first load, and the
+        # page is loaded again so the session actually applies to it.
+        if load_amazon_cookies():
+            if self._apply_amazon_cookies(driver):
+                driver.get(url)
+                WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                if not self._amazon_looks_signed_in(driver):
+                    logger.warning("Amazon cookies were applied but the page does not look signed in")
 
         blocked = detect_block_page(driver.page_source)
         if blocked:

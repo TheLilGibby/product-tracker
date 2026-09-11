@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}Test Auto-Cart - Product Tracker{% endblock %}
+{% block title %}Test Auto-Cart - Tracker_{% endblock %}
 
 {% block content %}
 <h1>Test Auto-Cart Functionality</h1>
@@ -54,15 +54,26 @@
             
             <fieldset>
                 <legend>Notification Settings</legend>
-                <label>
-                    <input type="checkbox" id="notify_price" name="notify_price" checked>
-                    Notify on Price Drop
-                </label>
-                
-                <label>
-                    <input type="checkbox" id="notify_availability" name="notify_availability" checked>
-                    Notify on Availability
-                </label>
+                <ul class="checkbox-list">
+                    <li>
+                        <label for="notify_price">
+                            <input type="checkbox" id="notify_price" name="notify_price" checked>
+                            Notify on Price Drop
+                        </label>
+                    </li>
+                    <li>
+                        <label for="notify_availability">
+                            <input type="checkbox" id="notify_availability" name="notify_availability" checked>
+                            Notify on Availability
+                        </label>
+                    </li>
+                    <li>
+                        <label for="notify_cart">
+                            <input type="checkbox" id="notify_cart" name="notify_cart" checked>
+                            Notify when added to cart
+                        </label>
+                    </li>
+                </ul>
                 
                 <div>
                     <label for="discord_webhook">Discord Webhook URL (Optional)</label>

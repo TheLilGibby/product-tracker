@@ -4,7 +4,7 @@ from app.models.product import Product, PriceHistory
 from app.groups import grouped_view
 from app.scrapers import add_to_cart, detect_store_type, get_scraper, store_choices
 from app.tasks import check_all_products, get_store_backoff_state
-from app.notifications import send_product_alert
+from app.notifications import send_product_alert, notify_cart_success
 from app.notifications.telegram import TelegramNotifier, get_telegram_settings
 from datetime import datetime, timedelta
 import logging
@@ -103,8 +103,57 @@ def utility_functions():
             return localized_dt.strftime('%Y-%m-%d %I:%M:%S %p %Z')
         else:  # 24h format (default)
             return localized_dt.strftime('%Y-%m-%d %H:%M:%S %Z')
+
+    def time_ago(dt):
+        """Compact relative age, e.g. "4m ago".
+
+        Easier to scan down a list than a full timestamp. Falls back to a plain
+        date once "d ago" stops being meaningful.
+        """
+        if dt is None:
+            return "Never"
+
+        # Stored naive in UTC, same assumption format_datetime makes
+        if dt.tzinfo is None:
+            dt = pytz.utc.localize(dt)
+
+        seconds = (datetime.now(pytz.utc) - dt).total_seconds()
+
+        # Negative means clock skew; treat it as current rather than "in -2m"
+        if seconds < 45:
+            return "just now"
+
+        minutes = seconds / 60
+        if minutes < 60:
+            return f"{int(minutes)}m ago"
+
+        hours = minutes / 60
+        if hours < 24:
+            return f"{int(hours)}h ago"
+
+        days = hours / 24
+        if days < 30:
+            return f"{int(days)}d ago"
+
+        return dt.strftime("%Y-%m-%d")
+
+    def product_image_url(product):
+        """Stored image, or a retailer CDN URL derived from the product link."""
+        if product.image_url:
+            return product.image_url
+        url = getattr(product, 'url', '') or ''
+        lowered = url.lower()
+        if 'bestbuy.com' in lowered:
+            getter = getattr(BestBuyScraper, 'image_url_from_url', None)
+            if getter:
+                return getter(url)
+        if 'gamestop.com' in lowered:
+            from app.scrapers.gamestop_scraper import GameStopScraper
+            return GameStopScraper.image_url_from_url(url)
+        return None
         
-    return {'format_datetime': format_datetime}
+    return {'format_datetime': format_datetime, 'product_image_url': product_image_url,
+            'time_ago': time_ago}
 
 @main_bp.route('/')
 def index():
@@ -139,6 +188,7 @@ def add_product():
     discord_webhook = request.form.get('discord_webhook')
     notify_price = 'notify_price' in request.form
     notify_availability = 'notify_availability' in request.form
+    notify_cart = 'notify_cart' in request.form
     
     # Get auto-cart settings
     auto_cart_enabled = 'auto_cart_enabled' in request.form
@@ -210,6 +260,7 @@ def add_product():
                     discord_webhook_url=discord_webhook if discord_webhook else None,
                     notify_on_price_drop=notify_price,
                     notify_on_availability=notify_availability,
+                    notify_on_cart=notify_cart,
                     auto_cart_enabled=auto_cart_enabled,
                     auto_cart_quantity=auto_cart_quantity
                 )
@@ -236,6 +287,7 @@ def add_product():
                         product.available = product_data.get('available', False)
                         product.image_url = product_data.get('image_url')
                         product.last_checked = datetime.utcnow()
+                        product.record_stock_check()
                         
                         # Add price history if we have a price
                         if product.current_price:
@@ -309,13 +361,14 @@ def add_product():
             product = Product(
                 name=f"{store_type.capitalize()} Product - {url.split('/')[-1]}",
                 url=url,
-                image_url=None,
+                image_url=BestBuyScraper.image_url_from_url(url) if store_type == 'bestbuy' else None,
                 current_price=None,
                 target_price=float(target_price) if target_price else None,
                 available=False,
                 discord_webhook_url=discord_webhook if discord_webhook else None,
                 notify_on_price_drop=notify_price,
                 notify_on_availability=notify_availability,
+                notify_on_cart=notify_cart,
                 auto_cart_enabled=auto_cart_enabled,
                 auto_cart_quantity=auto_cart_quantity
             )
@@ -337,13 +390,14 @@ def add_product():
             product = Product(
                 name=f"{store_type.capitalize()} Product - {url.split('/')[-1]}",
                 url=url,
-                image_url=None,
+                image_url=BestBuyScraper.image_url_from_url(url) if store_type == 'bestbuy' else None,
                 current_price=None,
                 target_price=float(target_price) if target_price else None,
                 available=False,
                 discord_webhook_url=discord_webhook if discord_webhook else None,
                 notify_on_price_drop=notify_price,
                 notify_on_availability=notify_availability,
+                notify_on_cart=notify_cart,
                 auto_cart_enabled=auto_cart_enabled,
                 auto_cart_quantity=auto_cart_quantity
             )
@@ -371,6 +425,7 @@ def add_product():
         discord_webhook_url=discord_webhook if discord_webhook else None,
         notify_on_price_drop=notify_price,
         notify_on_availability=notify_availability,
+        notify_on_cart=notify_cart,
         auto_cart_enabled=auto_cart_enabled,
         auto_cart_quantity=auto_cart_quantity
     )
@@ -382,6 +437,8 @@ def add_product():
             timestamp=datetime.utcnow()
         )
         product.price_histories.append(history)
+
+    product.record_stock_check()
         
     # Save to database
     db.session.add(product)
@@ -390,11 +447,84 @@ def add_product():
     flash('Product added successfully!', 'success')
     return redirect(url_for('main.product_detail', product_id=product.id))
 
+def _clock(moment, twelve_hour, seconds=False):
+    """The time of day, written the way a person would say it."""
+    if twelve_hour:
+        hour = moment.hour % 12 or 12
+        text = f"{hour}:{moment.strftime('%M')}"
+        if seconds:
+            text += f":{moment.strftime('%S')}"
+        return f"{text} {moment.strftime('%p')}"
+    return moment.strftime('%H:%M:%S' if seconds else '%H:%M')
+
+
+def _availability_chart_ranges(product):
+    """
+    The availability chart's time windows, labelled for display.
+
+    Labels are rendered here rather than in the browser because the times are
+    shown in the timezone the user picked in settings, which the browser has no
+    way to know. Each window gets the axis labels its span deserves: a clock
+    time is enough inside an hour, a weekday is needed across a day, and a date
+    across a week.
+    """
+    timezone = session.get('timezone', current_app.config.get('DEFAULT_TIMEZONE', 'UTC'))
+    twelve_hour = session.get('time_format',
+                              current_app.config.get('TIME_FORMAT', '24h')) == '12h'
+    target_tz = pytz.timezone(timezone)
+
+    def localize(moment):
+        if moment.tzinfo is None:
+            moment = pytz.utc.localize(moment)
+        return moment.astimezone(target_tz)
+
+    def axis_label(key, moment):
+        if key == 'hour':
+            return _clock(moment, twelve_hour)
+        if key == 'day':
+            return f"{moment.strftime('%a')} {_clock(moment, twelve_hour)}"
+        return f"{moment.strftime('%b')} {moment.day}, {_clock(moment, twelve_hour)}"
+
+    def full_label(moment):
+        return (f"{moment.strftime('%a')}, {moment.strftime('%b')} {moment.day}, "
+                f"{moment.year} at {_clock(moment, twelve_hour, seconds=True)} "
+                f"{moment.strftime('%Z')}".strip())
+
+    now_local = localize(datetime.utcnow())
+    ranges = []
+    for window in product.availability_windows():
+        points = []
+        for point in window['points']:
+            moment = localize(point['timestamp'])
+            points.append({
+                'x': axis_label(window['key'], moment),
+                'y': 1 if point['available'] else 0,
+                'full': full_label(moment),
+                'carry': bool(point.get('carry')),
+            })
+        ranges.append({
+            'key': window['key'],
+            'label': window['label'],
+            'checks': window['checks'],
+            'changes': window['changes'],
+            'points': points,
+            # Where "now" sits on this axis, so a window with no check-ins of
+            # its own can still draw the line it is holding rather than a dot.
+            'edge': {'x': axis_label(window['key'], now_local),
+                     'full': full_label(now_local)},
+        })
+    return ranges
+
+
 @main_bp.route('/product/<int:product_id>')
 def product_detail(product_id):
     """Product detail page."""
     product = Product.query.get_or_404(product_id)
-    return render_template('products/detail.html', product=product)
+    chart_points = product.availability_chart_points()
+    return render_template('products/detail.html', product=product,
+                           chart_points=chart_points,
+                           chart_ranges=_availability_chart_ranges(product),
+                           chart_default='day')
 
 @main_bp.route('/product/<int:product_id>/update')
 def update_product(product_id):
@@ -445,6 +575,7 @@ def update_product(product_id):
     product.available = product_data.get('available', False)
     product.image_url = product_data.get('image_url') or product.image_url
     product.last_checked = datetime.utcnow()
+    product.record_stock_check()
     
     # Record price history if price changed
     if product.current_price is not None and product.current_price != old_price:
@@ -503,6 +634,41 @@ def delete_product(product_id):
         
     return redirect(url_for('main.index'))
 
+@main_bp.route('/product/<int:product_id>/toggle-tracking', methods=['POST'])
+def toggle_tracking(product_id):
+    """Turn scheduled checking (and auto-cart) on or off for one product.
+
+    Answers JSON for the dashboard switch and redirects for a plain form post,
+    so it works without JavaScript too.
+    """
+    product = Product.query.get_or_404(product_id)
+    wants_json = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+
+    # An explicit 'enabled' wins, so a retried request is idempotent
+    requested = request.form.get('enabled', (request.get_json(silent=True) or {}).get('enabled'))
+    if requested is None:
+        enabled = not product.tracking_enabled
+    else:
+        enabled = str(requested).lower() in ('1', 'true', 'on', 'yes')
+
+    try:
+        product.tracking_enabled = enabled
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error toggling tracking for product {product_id}: {e}")
+        if wants_json:
+            return jsonify({'success': False, 'error': str(e)}), 500
+        flash(f'Could not change tracking: {e}', 'danger')
+        return redirect(url_for('main.index'))
+
+    if wants_json:
+        return jsonify({'success': True, 'id': product.id, 'tracking_enabled': product.tracking_enabled})
+
+    flash(f"Tracking {'resumed' if enabled else 'paused'} for {product.name}.", 'success')
+    return redirect(url_for('main.index'))
+
+
 @main_bp.route('/product/<int:product_id>/update-notifications', methods=['POST'])
 def update_notification_settings(product_id):
     """Update notification settings for a product."""
@@ -513,6 +679,7 @@ def update_notification_settings(product_id):
         product.discord_webhook_url = request.form.get('discord_webhook')
         product.notify_on_price_drop = 'notify_price' in request.form
         product.notify_on_availability = 'notify_availability' in request.form
+        product.notify_on_cart = 'notify_cart' in request.form
         
         # Save changes
         db.session.commit()
@@ -641,6 +808,7 @@ def add_product_to_cart(product_id):
         if result.get('success'):
             # Update the cart count in the session
             update_cart_count()
+            notify_cart_success(product, cart_url=result.get('cart_url'))
             
             flash(f"Product added to cart successfully! {result.get('message', '')}", 'success')
             
@@ -780,34 +948,54 @@ def wiki():
         logging.error(f"Error loading wiki: {str(e)}")
         return render_template('wiki.html', html_content="<p>Error loading wiki content.</p>")
 
+def _telegram_template_context():
+    """Status fields for the Telegram section on the settings page."""
+    bot_token, chat_id = get_telegram_settings()
+    if bot_token and len(bot_token) > 12:
+        masked_token = f"{bot_token[:6]}…{bot_token[-4:]}"
+    else:
+        masked_token = '(set)' if bot_token else None
+    return {
+        'telegram_configured': bool(bot_token and chat_id),
+        'telegram_masked_token': masked_token,
+        'telegram_chat_id': chat_id,
+    }
+
+
 @main_bp.route('/settings')
 def settings():
     """Display settings page"""
     import pytz
     timezones = pytz.all_timezones
-    return render_template('settings.html', timezones=timezones, os=os)
+    from app.scrapers.amazon_scraper import load_amazon_cookies
+    public_url = (current_app.config.get('PRODUCT_TRACKER_PUBLIC_URL') or '').rstrip('/')
+    return render_template(
+        'settings.html',
+        timezones=timezones,
+        os=os,
+        amazon_cookies_configured=bool(load_amazon_cookies()),
+        public_url=public_url,
+        auth_user=current_app.config.get('AUTH_USER') or 'admin',
+        auth_enabled=bool(current_app.config.get('AUTH_PASSWORD')),
+        **_telegram_template_context(),
+    )
 
 @main_bp.route('/update-newegg-cookies', methods=['POST'])
 def update_newegg_cookies():
     """Update Newegg cookies for auto-cart functionality"""
     if request.method == 'POST':
-        cookies = request.form.get('newegg_cookies', '')
-
-        # This value is written into .env verbatim, and .env is line-oriented:
-        # a newline in the middle of it appends whatever follows as its own
-        # setting. That is enough to overwrite SECRET_KEY, API_TOKEN or
-        # DATABASE_URI from a settings form. Refuse rather than sanitise, so a
-        # paste that meant something is never silently changed into something
-        # else.
-        if any(char in cookies for char in ('\r', '\n', '\x00')):
-            flash('Newegg cookies cannot contain line breaks. Paste the Cookie '
-                  'header as a single line.', 'error')
-            return redirect(url_for('main.settings'))
-        if "'" in cookies:
-            flash("Newegg cookies cannot contain a single quote.", 'error')
-            return redirect(url_for('main.settings'))
+        from app.scrapers.amazon_scraper import validate_cookie_header
 
         try:
+            # Same .env injection the Amazon paste had: this value is written
+            # into NEWEGG_COOKIES=<value>, so a newline in it appends config
+            # lines that python-dotenv reads on the next load.
+            cookies = validate_cookie_header(request.form.get('newegg_cookies', ''))
+            # The line below is single-quoted, so a quote inside the value would
+            # end it early and turn the rest into settings of its own.
+            if "'" in cookies:
+                flash("Newegg cookies cannot contain a single quote.", 'error')
+                return redirect(url_for('main.settings'))
             # Save the cookies to environment variable for the current process
             os.environ['NEWEGG_COOKIES'] = cookies
 
@@ -846,6 +1034,48 @@ def update_newegg_cookies():
             flash(f'Error updating Newegg cookies: {str(e)}', 'error')
 
         return redirect(url_for('main.settings'))
+
+@main_bp.route('/update-amazon-cookies', methods=['POST'])
+def update_amazon_cookies():
+    """Save Amazon session cookies for logged-in auto-cart."""
+    from app.scrapers.amazon_scraper import (
+        cookie_header_from_form, save_amazon_cookies, validate_cookie_header,
+    )
+    try:
+        # Validated before anything is written: the value is interpolated into
+        # .env below, where an embedded newline would add a config line.
+        cookies = validate_cookie_header(cookie_header_from_form(request.form))
+        save_amazon_cookies(cookies)
+
+        env_path = os.path.join(os.getcwd(), '.env')
+        env_lines = []
+        if os.path.exists(env_path):
+            with open(env_path, 'r') as f:
+                env_lines = f.readlines()
+
+        cookie_line = f'AMAZON_COOKIES={cookies}\n'
+        cookie_line_found = False
+        for i, line in enumerate(env_lines):
+            if line.startswith('AMAZON_COOKIES='):
+                env_lines[i] = cookie_line
+                cookie_line_found = True
+                break
+        if not cookie_line_found:
+            env_lines.append(cookie_line)
+        with open(env_path, 'w') as f:
+            f.writelines(env_lines)
+
+        if cookies.strip():
+            if 'at-main=' not in cookies:
+                flash('Saved, but at-main was empty. Sign in on amazon.com and copy at-main from Application → Cookies or login may fail.', 'warning')
+            else:
+                flash('Amazon cookies updated. Add to Cart will use your logged-in Amazon session.', 'success')
+        else:
+            flash('Amazon cookies cleared. Add to Cart will use a guest session.', 'success')
+    except Exception as e:
+        flash(f'Error updating Amazon cookies: {str(e)}', 'error')
+
+    return redirect(url_for('main.settings'))
 
 @main_bp.route('/auto-cart-testing')
 def auto_cart_testing():
@@ -895,7 +1125,13 @@ def get_products_json():
             product_data = {
                 'id': product.id,
                 'name': product.name,
-                'image_url': product.image_url,
+                'url': product.url,
+                'store': product.store,
+                'store_label': product.store_label,
+                'image_url': product.image_url or (
+                    BestBuyScraper.image_url_from_url(product.url)
+                    if hasattr(BestBuyScraper, 'image_url_from_url') else None
+                ),
                 'current_price': product.current_price,
                 'target_price': product.target_price,
                 'available': product.available,
@@ -905,6 +1141,11 @@ def get_products_json():
                 # vanish on the first refresh.
                 'alerts_enabled': bool(product.notify_on_price_drop or product.notify_on_availability),
                 'auto_cart_enabled': bool(product.auto_cart_enabled),
+                'last_checked_utc': product.last_checked.isoformat() + 'Z' if product.last_checked else None,
+                'notify_on_price_drop': product.notify_on_price_drop,
+                'notify_on_availability': product.notify_on_availability,
+                'notify_on_cart': product.notify_on_cart,
+                'tracking_enabled': product.tracking_enabled,
             }
             products_data.append(product_data)
         
@@ -953,6 +1194,7 @@ def add_test_product():
     # Get notification settings
     notify_price = 'notify_price' in request.form
     notify_availability = 'notify_availability' in request.form
+    notify_cart = 'notify_cart' in request.form
     discord_webhook = request.form.get('discord_webhook', '')
     
     # Create the product in the database using the correct field names
@@ -965,6 +1207,7 @@ def add_test_product():
         auto_cart_quantity=auto_cart_quantity,
         notify_on_price_drop=notify_price,
         notify_on_availability=notify_availability,
+        notify_on_cart=notify_cart,
         created_at=datetime.now()
     )
     
@@ -1025,18 +1268,8 @@ def update_cart_count():
 
 @main_bp.route('/telegram')
 def telegram_settings():
-    """Display Telegram alert channel status and a test-message form."""
-    bot_token, chat_id = get_telegram_settings()
-    if bot_token and len(bot_token) > 12:
-        masked_token = f"{bot_token[:6]}…{bot_token[-4:]}"
-    else:
-        masked_token = '(set)' if bot_token else None
-    return render_template(
-        'telegram.html',
-        configured=bool(bot_token and chat_id),
-        masked_token=masked_token,
-        chat_id=chat_id,
-    )
+    """Old Telegram page; the form now lives on Settings."""
+    return redirect(url_for('main.settings') + '#telegram')
 
 
 @main_bp.route('/telegram/test', methods=['POST'])
@@ -1044,16 +1277,17 @@ def telegram_test():
     """Send a test alert to the configured Telegram channel."""
     if not TelegramNotifier.is_configured():
         flash('Telegram is not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in your .env file and restart.', 'danger')
-        return redirect(url_for('main.telegram_settings'))
+        return redirect(url_for('main.settings') + '#telegram')
 
     message = request.form.get('message', '').strip()
     if message:
         success = TelegramNotifier.send_message(html.escape(message))
     else:
-        # No custom text: send a realistic sample price-drop alert
+        from app.public_urls import tracker_home_url
         success = TelegramNotifier.send_notification(
             product_name='Test Product (Product Tracker)',
-            product_url=url_for('main.index', _external=True),
+            product_url='https://example.com/product',
+            tracker_url=tracker_home_url() or url_for('main.index', _external=True),
             current_price=79.99,
             old_price=99.99,
         )
@@ -1062,7 +1296,7 @@ def telegram_test():
         flash('Test alert sent to Telegram.', 'success')
     else:
         flash('Telegram rejected the message. Check the bot token, that the bot is an admin of the channel, and app.log for details.', 'danger')
-    return redirect(url_for('main.telegram_settings'))
+    return redirect(url_for('main.settings') + '#telegram')
 
 
 @main_bp.route('/api/telegram/send', methods=['POST'])

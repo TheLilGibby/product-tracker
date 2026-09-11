@@ -90,6 +90,9 @@ class TestScraper(BaseScraper):
         }
         
         # Apply scenario-specific modifications
+        # NOTE: 'availability' is this scraper's original key; every other scraper
+        # (and the update path in tasks.py) uses 'available'. Both are kept in sync
+        # below so either reader sees the same state.
         if self.scenario == 'success':
             product_info['availability'] = True
             product_info['price'] = round(self.price, 2)
@@ -111,6 +114,9 @@ class TestScraper(BaseScraper):
             time.sleep(3)
             product_info['availability'] = True
             product_info['price'] = round(self.price, 2)
+        
+        # Mirror onto the key the rest of the app reads
+        product_info['available'] = product_info['availability']
         
         return product_info
     

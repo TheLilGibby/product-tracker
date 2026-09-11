@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}Settings - Product Tracker{% endblock %}
+{% block title %}Settings - Tracker_{% endblock %}
 
 {% block content %}
 <header class="mb-4">
@@ -13,25 +13,35 @@
     <article style="margin-bottom: 2rem;">
         <h3>Check Interval Settings</h3>
         <p>Control how frequently products are checked for updates.</p>
+
+        {% set interval_minutes = config.CHECK_INTERVAL_MINUTES|int %}
+        {% set interval_seconds = config.CHECK_INTERVAL_SECONDS|int %}
+        <p>
+            Current interval:
+            <strong>
+                {% if interval_minutes and interval_seconds %}
+                    every {{ interval_minutes }} minute{{ 's' if interval_minutes != 1 else '' }} and {{ interval_seconds }} second{{ 's' if interval_seconds != 1 else '' }}
+                {% elif interval_minutes %}
+                    every {{ interval_minutes }} minute{{ 's' if interval_minutes != 1 else '' }}
+                {% else %}
+                    every {{ interval_seconds }} second{{ 's' if interval_seconds != 1 else '' }}
+                {% endif %}
+            </strong>
+        </p>
         
         <form method="post" action="{{ url_for('main.update_check_interval') }}" style="display: flex; gap: 1rem; align-items: flex-end;">
             <div>
                 <label for="check_interval_minutes">Minutes</label>
-                <input type="number" id="check_interval_minutes" name="check_interval_minutes" min="0" value="{{ config.CHECK_INTERVAL_MINUTES }}">
+                <input type="number" id="check_interval_minutes" name="check_interval_minutes" min="0" value="{{ interval_minutes }}">
             </div>
             <div>
                 <label for="check_interval_seconds">Seconds</label>
-                <input type="number" id="check_interval_seconds" name="check_interval_seconds" min="0" max="59" value="{{ config.CHECK_INTERVAL_SECONDS }}">
+                <input type="number" id="check_interval_seconds" name="check_interval_seconds" min="0" max="59" value="{{ interval_seconds }}">
             </div>
             <button type="submit">Apply</button>
         </form>
-        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: #6c757d;">
-            Minimum interval: 10 seconds. Current setting: 
-            {% if config.CHECK_INTERVAL_SECONDS > 0 %}
-                Products are checked every {{ config.CHECK_INTERVAL_MINUTES }} minutes and {{ config.CHECK_INTERVAL_SECONDS }} seconds
-            {% else %}
-                Products are checked every {{ config.CHECK_INTERVAL_MINUTES }} minutes
-            {% endif %}
+        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-light);">
+            Minimum interval: 10 seconds.
         </p>
     </article>
     
@@ -51,7 +61,7 @@
             </div>
             <button type="submit">Apply</button>
         </form>
-        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: #6c757d;">Current timezone: {{ current_timezone }}</p>
+        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-light);">Current timezone: {{ current_timezone }}</p>
     </article>
     
     <!-- Time Format Toggle -->
@@ -78,11 +88,115 @@
         </form>
     </article>
 
-    <!-- Telegram Alerts -->
+    <!-- Appearance -->
     <article style="margin-bottom: 2rem;">
+        <h3>Appearance</h3>
+        <p>Choose a colour theme. <strong>System</strong> follows whatever your
+           operating system is set to, and changes with it.</p>
+
+        <div class="theme-switch" role="group" aria-label="Colour theme">
+            <button type="button" data-theme-choice="light" title="Light theme" aria-pressed="false">
+                <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm0 1a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM8 0a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 0zm0 13a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 13zm8-5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2a.5.5 0 0 1 .5.5zM3 8a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2A.5.5 0 0 1 3 8zm10.657-5.657a.5.5 0 0 1 0 .707l-1.414 1.415a.5.5 0 1 1-.707-.708l1.414-1.414a.5.5 0 0 1 .707 0zm-9.193 9.193a.5.5 0 0 1 0 .707L3.05 13.657a.5.5 0 0 1-.707-.707l1.414-1.414a.5.5 0 0 1 .707 0zm9.193 2.121a.5.5 0 0 1-.707 0l-1.414-1.414a.5.5 0 0 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .707zM4.464 4.465a.5.5 0 0 1-.707 0L2.343 3.05a.5.5 0 1 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .708z"/></svg>
+                <span>Light</span>
+            </button>
+            <button type="button" data-theme-choice="dark" title="Dark theme" aria-pressed="false">
+                <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6 .278a.768.768 0 0 1 .08.858 7.208 7.208 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277.527 0 1.04-.055 1.533-.16a.787.787 0 0 1 .81.316.733.733 0 0 1-.031.893A8.349 8.349 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.752.752 0 0 1 6 .278z"/></svg>
+                <span>Dark</span>
+            </button>
+            <button type="button" data-theme-choice="system" title="Match system theme" aria-pressed="false">
+                <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M14 2a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h12zM2 1a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2H2z"/><path d="M5 13.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5z"/></svg>
+                <span>System</span>
+            </button>
+        </div>
+        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-light);">
+            Saved in this browser only, so each device and browser can differ.
+        </p>
+    </article>
+
+    <!-- Telegram Alerts -->
+    <article id="telegram" style="margin-bottom: 2rem;">
         <h3>Telegram Alerts</h3>
-        <p>Send all product alerts to a Telegram channel in addition to per-product Discord webhooks.</p>
-        <a href="{{ url_for('main.telegram_settings') }}" role="button" class="secondary">Configure &amp; test Telegram</a>
+        <p>Send price-drop, in-stock, and cart-success alerts to a Telegram channel, in addition to per-product Discord webhooks. Each product has its own on/off switches: ping when the listing exists / is in stock, and separately when it is added to your cart.</p>
+
+        {% if telegram_configured %}
+            <p><strong style="color: var(--ok-text);">Configured</strong> — alerts for all tracked products will be sent to this channel.</p>
+            <table>
+                <tr><th style="text-align: left;">Bot token</th><td><code>{{ telegram_masked_token }}</code></td></tr>
+                <tr><th style="text-align: left;">Chat ID</th><td><code>{{ telegram_chat_id }}</code></td></tr>
+            </table>
+        {% else %}
+            <p><strong style="color: var(--bad-text);">Not configured.</strong>
+            Set <code>TELEGRAM_BOT_TOKEN</code> and <code>TELEGRAM_CHAT_ID</code> in your <code>.env</code> file and restart the app.</p>
+        {% endif %}
+
+        <details>
+            <summary>How to set up the Telegram channel</summary>
+            <div style="margin-top: 0.5rem; padding: 1rem; background-color: var(--accent-bg); border-radius: 5px;">
+                <ol style="margin-bottom: 0;">
+                    <li>In Telegram, message <strong>@BotFather</strong>, send <code>/newbot</code> and follow the prompts. Copy the bot token.</li>
+                    <li>Create a channel (or open an existing one) and add your bot as an <strong>Administrator</strong> with permission to post messages.</li>
+                    <li>Find the channel's chat ID:
+                        <ul>
+                            <li>Public channel: use its username, e.g. <code>@my_deals_channel</code></li>
+                            <li>Private channel: forward a post from the channel to <strong>@userinfobot</strong> — the ID looks like <code>-1001234567890</code></li>
+                        </ul>
+                    </li>
+                    <li>Add both values to <code>.env</code>:
+                        <pre style="margin: 0.5rem 0;">TELEGRAM_BOT_TOKEN=123456789:ABCdef...
+TELEGRAM_CHAT_ID=-1001234567890</pre>
+                    </li>
+                    <li>Restart the app, then use the test form below.</li>
+                </ol>
+            </div>
+        </details>
+
+        <h4 style="margin-top: 1.5rem;">Send a Test Alert</h4>
+        <form method="post" action="{{ url_for('main.telegram_test') }}">
+            <div style="margin-bottom: 1rem;">
+                <label for="telegram_message">Custom message (optional)</label>
+                <textarea id="telegram_message" name="message" rows="3" placeholder="Leave blank to send a sample price-drop alert"></textarea>
+            </div>
+            <button type="submit" {% if not telegram_configured %}disabled{% endif %}>Send Test Alert</button>
+        </form>
+
+        <h4 style="margin-top: 1.5rem;">API</h4>
+        <p>Other tools can push alerts into the channel through this endpoint:</p>
+        <pre style="font-size: 0.8rem;">POST {{ url_for('main.api_telegram_send', _external=True) }}
+Content-Type: application/json
+
+{"message": "GPU back in stock!", "image_url": "https://example.com/gpu.jpg"}</pre>
+        <p style="font-size: 0.875rem; color: var(--text-light);">Returns <code>{"success": true}</code>, or an error with status 400 (missing message), 503 (not configured) or 502 (Telegram rejected it).</p>
+    </article>
+
+    <!-- Cloudflare public URL -->
+    <article id="cloudflare" style="margin-bottom: 2rem;">
+        <h3>Public Access (Cloudflare)</h3>
+        <p>A Cloudflare quick tunnel publishes this app at a <code>trycloudflare.com</code> URL so you can open it from your phone or another network. Local access at <code>http://127.0.0.1:5000</code> stays unchanged.</p>
+
+        {% if public_url %}
+            <p><strong style="color: var(--ok-text);">Tunnel URL</strong></p>
+            <p><a href="{{ public_url }}" target="_blank" rel="noopener">{{ public_url }}</a></p>
+            <p style="font-size: 0.875rem; color: var(--text-light);">Telegram “Open in tracker” links use this address, so tapping an alert on your phone opens the product page here.</p>
+        {% else %}
+            <p><strong style="color: var(--bad-text);">No public URL configured.</strong>
+            Start <code>cloudflared</code> and set <code>PRODUCT_TRACKER_PUBLIC_URL</code> in <code>.env</code> to the printed hostname.</p>
+        {% endif %}
+
+        <table>
+            <tr><th style="text-align: left;">Viewing and preference saves</th>
+                <td>Open — dashboard, Telegram links, timezone / interval / alert toggles do not ask for a password</td></tr>
+            <tr><th style="text-align: left;">Add to cart / delete / cookie paste</th>
+                <td>{% if auth_enabled %}Password required on the public URL (user <code>{{ auth_user }}</code>){% else %}Open{% endif %}</td></tr>
+        </table>
+
+        <details>
+            <summary>How to start the tunnel</summary>
+            <div style="margin-top: 0.5rem; padding: 1rem; background-color: var(--accent-bg); border-radius: 5px;">
+                <p>Quick tunnels get a new hostname every time <code>cloudflared</code> restarts. With the app already running:</p>
+                <pre style="margin: 0.5rem 0;">%USERPROFILE%\.local\bin\cloudflared.exe tunnel --url http://127.0.0.1:5000</pre>
+                <p style="margin-bottom: 0;">Copy the <code>https://….trycloudflare.com</code> line it prints into <code>PRODUCT_TRACKER_PUBLIC_URL</code> in <code>.env</code>. Viewing the tracker through the tunnel does not require a login.</p>
+            </div>
+        </details>
     </article>
 
     <!-- Newegg Cookies Settings Form -->
@@ -120,9 +234,70 @@
             
             <button type="submit" style="margin-top: 1rem;">Update Cookies</button>
         </form>
-        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: #6c757d;">
+        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-light);">
             These cookies allow the auto-cart system to add items to your cart as your logged-in account. 
             They will be saved securely and only used for auto-cart operations on products you select.
+        </p>
+    </article>
+
+    <!-- Amazon Cookies Settings Form -->
+    <article style="margin-bottom: 2rem;">
+        <h3>Amazon Auto-Cart Settings</h3>
+        <p>Copy five values from Chrome’s cookie table. Do not use the Network tab — Amazon hides cookies there.</p>
+        {% if amazon_cookies_configured %}
+            <p><strong style="color: var(--ok-text);">Cookies saved</strong> — Amazon add-to-cart will try your logged-in account. Submit new values to replace them (they expire when Amazon signs you out).</p>
+        {% else %}
+            <p><strong style="color: var(--bad-text);">No cookies saved.</strong> Without them, Amazon add-to-cart is a guest cart and often fails.</p>
+        {% endif %}
+
+        <div style="margin: 1rem 0; padding: 1rem; background-color: var(--accent-bg); border-radius: 5px;">
+            <p style="margin-top: 0;"><strong>How to copy each value</strong></p>
+            <ol style="margin-bottom: 0;">
+                <li>On amazon.com, make sure you are signed in.</li>
+                <li>Press F12 → click <strong>Application</strong> at the top of DevTools (not Network). If you don’t see it, click <strong>»</strong> and pick Application.</li>
+                <li>Left sidebar: <strong>Cookies</strong> → <code>https://www.amazon.com</code>.</li>
+                <li>In the table, find the <strong>Name</strong> that matches each box below, double-click its <strong>Value</strong>, copy, and paste it into that box.</li>
+            </ol>
+        </div>
+
+        <form method="post" action="{{ url_for('main.update_amazon_cookies') }}">
+            <div style="margin-bottom: 1rem;">
+                <label for="amazon_at_main"><code>at-main</code> <span style="color: var(--bad-text);">(required — this is the login)</span></label>
+                <input type="text" id="amazon_at_main" name="amazon_at_main" autocomplete="off" spellcheck="false" placeholder="Paste the Value cell for at-main">
+            </div>
+            <div style="margin-bottom: 1rem;">
+                <label for="amazon_sess_at_main"><code>sess-at-main</code></label>
+                <input type="text" id="amazon_sess_at_main" name="amazon_sess_at_main" autocomplete="off" spellcheck="false" placeholder="Paste the Value cell for sess-at-main">
+            </div>
+            <div style="margin-bottom: 1rem;">
+                <label for="amazon_session_id"><code>session-id</code></label>
+                <input type="text" id="amazon_session_id" name="amazon_session_id" autocomplete="off" spellcheck="false" placeholder="Paste the Value cell for session-id">
+            </div>
+            <div style="margin-bottom: 1rem;">
+                <label for="amazon_session_token"><code>session-token</code> <small>(this one is long)</small></label>
+                <textarea id="amazon_session_token" name="amazon_session_token" rows="3" autocomplete="off" spellcheck="false" placeholder="Paste the Value cell for session-token" style="font-family: monospace; font-size: 0.8rem;"></textarea>
+            </div>
+            <div style="margin-bottom: 1rem;">
+                <label for="amazon_ubid_main"><code>ubid-main</code></label>
+                <input type="text" id="amazon_ubid_main" name="amazon_ubid_main" autocomplete="off" spellcheck="false" placeholder="Paste the Value cell for ubid-main">
+            </div>
+
+            <details>
+                <summary>I already have a full Cookie header</summary>
+                <div style="margin-top: 0.5rem;">
+                    <label for="amazon_cookies">Full Cookie header (optional)</label>
+                    <textarea id="amazon_cookies" name="amazon_cookies" rows="3" style="font-family: monospace; font-size: 0.8rem;" placeholder="session-id=...; session-token=...; at-main=..."></textarea>
+                    <small>If you fill this, it is used instead of the boxes above.</small>
+                </div>
+            </details>
+
+            <div style="margin-top: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                <button type="submit">Save Amazon cookies</button>
+                <button type="submit" name="clear_amazon_cookies" value="1" class="secondary">Clear saved cookies</button>
+            </div>
+        </form>
+        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-light);">
+            If <code>at-main</code> is missing from the cookie table, you are not fully signed in. Cookies expire; paste fresh values if add-to-cart starts failing.
         </p>
     </article>
 </div>

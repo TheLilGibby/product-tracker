@@ -1,22 +1,156 @@
 {% extends 'base.html' %}
 
-{% block title %}{{ product.name }} - Product Tracker{% endblock %}
+{% block title %}{{ product.name }} - Tracker_{% endblock %}
+
+{% block extra_css %}
+<style>
+    .product-hero {
+        display: grid;
+        grid-template-columns: minmax(220px, 320px) 1fr;
+        gap: 2rem;
+        align-items: stretch;
+        margin-bottom: 2rem;
+    }
+
+    /* Only the actions are left on the top row, so it collapses to the
+       right-hand side and no longer needs a full row of its own. */
+    .product-actions {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 1rem;
+    }
+
+    .product-hero-image {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .product-hero-image img {
+        width: 100%;
+        max-height: 320px;
+        object-fit: contain;
+        background: var(--surface);
+        border-radius: 5px;
+    }
+
+    .product-hero-image .image-placeholder {
+        height: 300px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--surface);
+        border-radius: 5px;
+    }
+
+    .product-hero-meta h2 {
+        margin: 0.85rem 0 0.2rem;
+        font-size: 1.3rem;
+        line-height: 1.25;
+    }
+
+    .product-hero-meta p {
+        margin: 0;
+        font-size: 0.9rem;
+    }
+
+    .product-hero-chart {
+        margin: 0;
+        min-height: 280px;
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border-radius: 5px;
+        padding: 1rem 1.25rem 0.75rem;
+        color: var(--text);
+    }
+
+    .product-hero-chart h3,
+    .product-hero-chart h3:first-child {
+        margin-top: 0;
+        color: var(--text);
+    }
+
+    .chart-subtitle {
+        margin: 0;
+        font-size: 0.9rem;
+        opacity: 0.7;
+    }
+
+    /* Colours come from the card, not from a palette of their own, so the
+       toggle reads correctly whether the page is in light or dark mode. */
+    .chart-range-toggle {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        margin: 0.75rem 0 0.25rem;
+    }
+
+    .chart-range-toggle button {
+        margin: 0;
+        padding: 0.35rem 0.7rem;
+        font-size: 0.82rem;
+        line-height: 1.2;
+        border: 1px solid currentColor;
+        border-radius: 999px;
+        background: transparent;
+        color: inherit;
+        opacity: 0.6;
+        cursor: pointer;
+    }
+
+    .chart-range-toggle button:hover,
+    .chart-range-toggle button:focus-visible {
+        opacity: 1;
+    }
+
+    .chart-range-toggle button[aria-pressed="true"] {
+        background: var(--accent, #4d7c0f);
+        border-color: var(--accent, #4d7c0f);
+        color: var(--accent-text);
+        opacity: 1;
+    }
+
+    .chart-note {
+        margin: 0.4rem 0 0;
+        font-size: 0.82rem;
+        opacity: 0.7;
+        min-height: 1.2em;
+    }
+
+    .availability-chart-wrap {
+        position: relative;
+        flex: 1;
+        min-height: 260px;
+        padding-bottom: 0.5rem;
+    }
+
+    @media (max-width: 800px) {
+        .product-hero {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+{% endblock %}
 
 {% block content %}
-<div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2rem;">
+<div class="product-actions">
     <div>
-        <h2>{{ product.name }}</h2>
-    </div>
-    <div class="product-actions">
-        <a href="{{ product.url }}" target="_blank" rel="noopener noreferrer" role="button">
+        <a href="{{ url_for('main.index') }}" class="button secondary" aria-label="Back to product list">
+            <svg class="icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem;">
+                <path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8z"/>
+            </svg>
+            Back
+        </a>
+        <a href="{{ product.url }}" target="_blank" rel="noopener noreferrer" class="button" style="margin-left: 0.5rem;">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem;">
                 <path fill-rule="evenodd" d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/>
                 <path fill-rule="evenodd" d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5z"/>
             </svg>
             View on retailer site
         </a>
-
-        <a href="{{ url_for('main.update_product', product_id=product.id) }}" role="button">
+        <a href="{{ url_for('main.update_product', product_id=product.id) }}" class="button" style="margin-left: 0.5rem;">
             <svg class="icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem;">
                 <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
                 <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
@@ -37,19 +171,48 @@
     </div>
 </div>
 
-<div style="display: grid; grid-template-columns: minmax(300px, 1fr) 2fr; gap: 2rem;">
-    <div>
-        {% if product.image_url %}
-            <img src="{{ product.image_url }}" alt="{{ product.name }}" style="max-width: 100%; border-radius: 5px;">
+<div class="product-hero">
+    <div class="product-hero-image">
+        {% set image_url = product_image_url(product) %}
+        {% if image_url %}
+            <img src="{{ image_url }}" alt="{{ product.name }}" referrerpolicy="no-referrer">
         {% else %}
-            <div style="height: 300px; display: flex; align-items: center; justify-content: center; background: #f9fafb; border-radius: 5px;">
-                <svg class="icon" style="width: 4rem; height: 4rem; color: #9ca3af;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <div class="image-placeholder">
+                <svg class="icon" style="width: 4rem; height: 4rem; color: var(--text-light);" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                 </svg>
             </div>
         {% endif %}
 
-        <div style="margin-top: 1.5rem;">
+        <div class="product-hero-meta">
+            <h2>{{ product.name }}</h2>
+            <p><a href="{{ product.url }}" target="_blank" rel="noopener noreferrer">View on retailer site</a></p>
+        </div>
+    </div>
+
+    <article class="product-hero-chart">
+        <h3>Availability History</h3>
+        {% if chart_ranges %}
+            <p class="chart-subtitle">Stock check-ins from the product tracker timeline</p>
+            <div class="chart-range-toggle" role="group" aria-label="Chart time range">
+                {% for range in chart_ranges %}
+                <button type="button" data-range="{{ range.key }}"
+                        aria-pressed="{{ 'true' if range.key == chart_default else 'false' }}">{{ range.label }}</button>
+                {% endfor %}
+            </div>
+            <div class="availability-chart-wrap">
+                <canvas id="availabilityChart" aria-label="Availability over time"></canvas>
+            </div>
+            <p class="chart-note" id="availabilityChartNote"></p>
+        {% else %}
+            <p>No stock check-ins recorded yet. They will appear here after the tracker checks this product.</p>
+        {% endif %}
+    </article>
+</div>
+
+<div style="display: grid; grid-template-columns: minmax(300px, 1fr) 2fr; gap: 2rem;">
+    <div>
+        <div>
             <h3>Current Status</h3>
             
             <div style="margin-bottom: 1rem;">
@@ -82,7 +245,7 @@
             </div>
             
             <p style="margin-top: 0.5rem; color: var(--text-light);">
-                Last checked: {{ format_datetime(product.last_checked, current_timezone) }}
+                Last checked: <span title="{{ format_datetime(product.last_checked, current_timezone) }}">{{ time_ago(product.last_checked) }}</span>
             </p>
         </div>
 
@@ -95,7 +258,7 @@
                         <input type="checkbox" id="auto_cart_enabled" name="auto_cart_enabled" {% if product.auto_cart_enabled %}checked{% endif %}>
                         Enable Auto Cart
                     </label>
-                    <p style="margin-top: 0.25rem; font-size: 0.875rem; color: #6c757d;">
+                    <p style="margin-top: 0.25rem; font-size: 0.875rem; color: var(--text-light);">
                         Automatically add this product to cart when it becomes available or drops below target price
                     </p>
                 </div>
@@ -134,7 +297,7 @@
                     
                     {% if result_data and result_data.screenshot %}
                         <h5>Screenshot:</h5>
-                        <img src="data:image/png;base64,{{ result_data.screenshot }}" alt="Cart screenshot" style="max-width: 100%; border: 1px solid #dee2e6; border-radius: 5px;">
+                        <img src="data:image/png;base64,{{ result_data.screenshot }}" alt="Cart screenshot" style="max-width: 100%; border: var(--border-width) solid var(--border); border-radius: 5px;">
                     {% endif %}
                 </div>
             {% endif %}
@@ -164,9 +327,9 @@
                                         {% set prev_price = product.price_histories[loop.index].price %}
                                         {% set change = history.price - prev_price %}
                                         {% if change > 0 %}
-                                            <span style="color: #b91c1c;">+${{ "%.2f"|format(change) }}</span>
+                                            <span style="color: var(--bad-text);">+${{ "%.2f"|format(change) }}</span>
                                         {% elif change < 0 %}
-                                            <span style="color: #065f46;">${{ "%.2f"|format(change) }}</span>
+                                            <span style="color: var(--ok-text);">${{ "%.2f"|format(change) }}</span>
                                         {% else %}
                                             <span style="color: var(--text-light);">No change</span>
                                         {% endif %}
@@ -194,16 +357,27 @@
                 
                 <fieldset>
                     <legend>Notification Preferences</legend>
-                    
-                    <label>
-                        <input type="checkbox" id="notify_price" name="notify_price" {% if product.notify_on_price_drop %}checked{% endif %}>
-                        Notify me when price drops
-                    </label>
-                    
-                    <label>
-                        <input type="checkbox" id="notify_availability" name="notify_availability" {% if product.notify_on_availability %}checked{% endif %}>
-                        Notify me when product becomes available
-                    </label>
+                    <ul class="checkbox-list">
+                        <li>
+                            <label for="notify_price">
+                                <input type="checkbox" id="notify_price" name="notify_price" {% if product.notify_on_price_drop %}checked{% endif %}>
+                                Notify me when price drops
+                            </label>
+                        </li>
+                        <li>
+                            <label for="notify_availability">
+                                <input type="checkbox" id="notify_availability" name="notify_availability" {% if product.notify_on_availability %}checked{% endif %}>
+                                Notify me when product becomes available
+                            </label>
+                        </li>
+                        <li>
+                            <label for="notify_cart">
+                                <input type="checkbox" id="notify_cart" name="notify_cart" {% if product.notify_on_cart %}checked{% endif %}>
+                                Notify me when this product is added to cart
+                            </label>
+                        </li>
+                    </ul>
+                    <small>In-stock pings and cart-success pings are separate. Cart alerts go to Telegram (and Discord, if a webhook is set) only after a successful add.</small>
                 </fieldset>
                 
                 <div style="margin-top: 1rem;">
@@ -220,7 +394,7 @@
             <h3>Danger Zone</h3>
             <p>Remove this product from your tracking list. This action cannot be undone.</p>
             <form method="post" action="{{ url_for('main.delete_product', product_id=product.id) }}" onsubmit="return confirm('Are you sure you want to delete this product? This action cannot be undone.');">
-                <button type="submit" style="background-color: #b91c1c; border-color: #b91c1c;">Delete Product</button>
+                <button type="submit" style="background-color: var(--bad-text); border-color: var(--bad-text);">Delete Product</button>
             </form>
         </article>
     </div>
@@ -265,7 +439,227 @@
     }
     
     .complete-purchase-btn:hover {
-        background-color: #3f6c0f;
+        background-color: var(--accent-hover);
     }
 </style>
+{% endblock %}
+
+{% block scripts %}
+{% if chart_ranges %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+    (function() {
+        // One pre-labelled series per time range. The labels are built on the
+        // server because they are in the timezone chosen in settings, which the
+        // browser cannot know; switching ranges here costs no round trip.
+        const RANGES = {{ chart_ranges|tojson|safe }};
+        const DEFAULT_RANGE = {{ chart_default|tojson|safe }};
+        const STORAGE_KEY = 'availabilityChartRange';
+
+        const canvas = document.getElementById('availabilityChart');
+        const note = document.getElementById('availabilityChartNote');
+        const buttons = Array.prototype.slice.call(
+            document.querySelectorAll('.chart-range-toggle button'));
+        let chart = null;
+
+        function byKey(key) {
+            for (let i = 0; i < RANGES.length; i++) {
+                if (RANGES[i].key === key) return RANGES[i];
+            }
+            return RANGES[0];
+        }
+
+        function remembered() {
+            try {
+                const saved = window.localStorage.getItem(STORAGE_KEY);
+                if (saved && byKey(saved).key === saved) return saved;
+            } catch (err) {
+                // Private window or blocked storage: the default is fine.
+            }
+            return DEFAULT_RANGE;
+        }
+
+        function remember(key) {
+            try {
+                window.localStorage.setItem(STORAGE_KEY, key);
+            } catch (err) {
+                // Nothing to do - remembering the choice is a convenience.
+            }
+        }
+
+        function isDark() {
+            // An explicit choice from the theme switcher wins; otherwise the
+            // page is following the OS.
+            const forced = document.documentElement.getAttribute('data-theme');
+            if (forced === 'dark') { return true; }
+            if (forced === 'light') { return false; }
+            return !!(window.matchMedia
+                && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        }
+
+        function palette() {
+            // Chart.js cannot resolve var(), so read the accent Simple.css
+            // computed for the active theme.
+            const accent = getComputedStyle(document.documentElement)
+                .getPropertyValue('--accent').trim() || '#4d7c0f';
+            return isDark()
+                ? { accent: accent, fill: 'rgba(163, 230, 53, 0.16)', tick: '#9ca3af', grid: 'rgba(229, 231, 235, 0.14)' }
+                : { accent: accent, fill: 'rgba(77, 124, 15, 0.18)', tick: '#374151', grid: 'rgba(17, 24, 39, 0.08)' };
+        }
+
+        function seriesFor(range) {
+            const points = range.points.slice();
+            if (!range.checks && points.length === 1) {
+                // Nothing was checked inside this window, so the one point is
+                // the state carried in from before it. Hold that state out to
+                // now rather than drawing a single dot against the left edge.
+                points.push({ x: range.edge.x, y: points[0].y,
+                              full: range.edge.full, carry: true });
+            }
+            return points;
+        }
+
+        function noteFor(range) {
+            if (!range.checks) {
+                if (!range.points.length) {
+                    return 'No check-ins in this window yet.';
+                }
+                return 'No check-ins in this window. The line holds the last known '
+                    + 'state, recorded ' + range.points[0].full + '.';
+            }
+            const checks = range.checks + (range.checks === 1 ? ' check-in' : ' check-ins');
+            const changes = range.changes === 1
+                ? '1 change in stock status'
+                : range.changes + ' changes in stock status';
+            return checks + ', ' + changes + '.';
+        }
+
+        function draw(key) {
+            if (!canvas || typeof Chart === 'undefined') {
+                return;
+            }
+            const range = byKey(key);
+            const points = seriesFor(range);
+            const colors = palette();
+
+            buttons.forEach(function(button) {
+                button.setAttribute('aria-pressed',
+                    button.getAttribute('data-range') === range.key ? 'true' : 'false');
+            });
+            if (note) {
+                note.textContent = noteFor(range);
+            }
+
+            if (chart) {
+                chart.destroy();
+            }
+            chart = new Chart(canvas, {
+                type: 'line',
+                data: {
+                    labels: points.map(function(point) { return point.x; }),
+                    datasets: [{
+                        label: 'In stock',
+                        data: points.map(function(point) { return point.y; }),
+                        borderColor: colors.accent,
+                        backgroundColor: colors.fill,
+                        borderWidth: 2,
+                        fill: true,
+                        stepped: true,
+                        tension: 0,
+                        // Carried points are not check-ins, so they get no
+                        // marker - they only anchor the line at the left edge.
+                        pointRadius: points.map(function(point) {
+                            return point.carry && points.length > 1 ? 0 : 4;
+                        }),
+                        pointHoverRadius: 6,
+                        pointBackgroundColor: colors.accent,
+                        spanGaps: false
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                title: function(items) {
+                                    const point = points[items[0].dataIndex];
+                                    return point ? point.full : '';
+                                },
+                                label: function(context) {
+                                    return context.parsed.y === 1 ? 'In Stock' : 'Out of Stock';
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: {
+                                maxRotation: 45,
+                                minRotation: 0,
+                                autoSkip: true,
+                                maxTicksLimit: 8,
+                                color: colors.tick
+                            },
+                            grid: {
+                                color: colors.grid
+                            }
+                        },
+                        y: {
+                            min: -0.05,
+                            max: 1.05,
+                            afterFit: function(axis) {
+                                axis.width = 92;
+                            },
+                            ticks: {
+                                stepSize: 1,
+                                color: colors.tick,
+                                callback: function(value) {
+                                    if (value === 1) return 'In stock';
+                                    if (value === 0) return 'Out of stock';
+                                    return '';
+                                }
+                            },
+                            grid: {
+                                color: colors.grid
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function start() {
+            buttons.forEach(function(button) {
+                button.addEventListener('click', function() {
+                    const key = button.getAttribute('data-range');
+                    remember(key);
+                    draw(key);
+                });
+            });
+            // The canvas is painted, not styled, so it has to be redrawn
+            // when the theme changes.
+            document.addEventListener('themechange', function() {
+                draw(remembered());
+            });
+
+            draw(remembered());
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', start);
+        } else {
+            start();
+        }
+    })();
+</script>
+{% endif %}
 {% endblock %} 

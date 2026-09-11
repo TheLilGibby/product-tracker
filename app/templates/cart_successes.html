@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}Cart Successes - Product Tracker{% endblock %}
+{% block title %}Cart Successes - Tracker_{% endblock %}
 
 {% block content %}
 <div class="cart-success-container">
@@ -25,8 +25,9 @@
                     
                     <div class="card-content">
                         <div class="product-image">
-                            {% if product.image_url %}
-                                <img src="{{ product.image_url }}" alt="{{ product.name }}">
+                            {% set image_url = product_image_url(product) %}
+                            {% if image_url %}
+                                <img src="{{ image_url }}" alt="{{ product.name }}" referrerpolicy="no-referrer">
                             {% else %}
                                 <div class="no-image">
                                     <svg class="icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -77,12 +78,12 @@
         </div>
     {% else %}
         <div class="empty-state">
-            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 16 16" style="color: #9ca3af; margin-bottom: 1rem;">
+            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 16 16" style="color: var(--text-light); margin-bottom: 1rem;">
                 <path d="M0 2.5A.5.5 0 0 1 .5 2H2a.5.5 0 0 1 .485.379L2.89 4H14.5a.5.5 0 0 1 .485.621l-1.5 6A.5.5 0 0 1 13 11H4a.5.5 0 0 1-.485-.379L1.61 3H.5a.5.5 0 0 1-.5-.5zM3.14 5l1.25 5h8.22l1.25-5H3.14zM5 13a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm7 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/>
             </svg>
             <h3>No Recent Cart Successes</h3>
             <p>Products that are successfully added to cart will appear here for 24 hours.</p>
-            <a href="{{ url_for('main.index') }}" role="button">Return to Dashboard</a>
+            <a href="{{ url_for('main.index') }}" class="button">Return to Dashboard</a>
         </div>
     {% endif %}
 </div>
@@ -144,7 +145,7 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        background-color: #f9fafb;
+        background-color: var(--surface);
         border-radius: 4px;
     }
     
@@ -165,7 +166,7 @@
     .no-image svg {
         width: 50px;
         height: 50px;
-        color: #d1d5db;
+        color: var(--border);
     }
     
     .product-details {
@@ -207,7 +208,7 @@
     }
     
     .complete-purchase-btn:hover {
-        background-color: #3f6c0f;
+        background-color: var(--accent-hover);
     }
     
     .details-btn {

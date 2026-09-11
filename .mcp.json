@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "product-tracker": {
+      "command": "venv/Scripts/python.exe",
+      "args": ["mcp_server.py"],
+      "env": {
+        "PRODUCT_TRACKER_URL": "http://localhost:5000",
+        "PRODUCT_TRACKER_TIMEOUT": "180"
+      }
+    }
+  }
+}

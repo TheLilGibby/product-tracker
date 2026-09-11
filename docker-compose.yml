@@ -36,6 +36,11 @@ services:
       - CHECK_INTERVAL_SECONDS=${CHECK_INTERVAL_SECONDS:-0}
       - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-UTC}
       - NEWEGG_COOKIES=${NEWEGG_COOKIES:-}
+      - AMAZON_COOKIES=${AMAZON_COOKIES:-}
+      - API_TOKEN=${API_TOKEN:-}
+      - PRODUCT_TRACKER_PUBLIC_URL=${PRODUCT_TRACKER_PUBLIC_URL:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/healthz"]
       interval: 30s

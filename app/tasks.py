@@ -6,7 +6,7 @@ from flask import current_app
 from app import db
 from app.models.product import AvailabilityHistory, Product, PriceHistory
 from app.scrapers import detect_store_type, get_scraper, is_by_design_refusal
-from app.notifications import send_product_alert
+from app.notifications import send_product_alert, notify_cart_success
 import urllib.parse
 import threading
 import atexit
@@ -230,6 +230,30 @@ def get_store_backoff_state(now=None):
             'minutes_remaining': (_minutes_until(retry_at, now) if backed_off else 0),
         })
     return rows
+_BAD_SCRAPE_NAMES = {
+    'unknown product',
+    'robot or human?',
+    'robot or human',
+    'access denied',
+    'sorry, you have been blocked',
+    'attention required',
+    'attention required!',
+}
+
+
+def usable_scraped_name(name):
+    """Return a real product name, or None if the scrape hit a wall/placeholder."""
+    if not name:
+        return None
+    cleaned = str(name).strip()
+    if not cleaned:
+        return None
+    lower = cleaned.lower()
+    if lower in _BAD_SCRAPE_NAMES:
+        return None
+    if any(token in lower for token in ('captcha', 'verify you', 'are you a robot', 'you have been blocked')):
+        return None
+    return cleaned
 
 def check_all_products():
     """
@@ -260,8 +284,8 @@ def check_all_products():
             logger.info("Using existing app context for scheduled task")
         
         try:
-            # Get all products from database
-            products = Product.query.all()
+            # Products switched off from the dashboard are skipped, not deleted
+            products = Product.query.filter(Product.tracking_enabled == True).all()
             logger.info(f"Found {len(products)} products to check")
             
             for product in products:
@@ -320,16 +344,19 @@ def check_all_products():
                     old_price = product.current_price
                     old_availability = product.available
                     
-                    # Only accept a real name; scrapers return "Unknown Product" when extraction fails
-                    scraped_name = product_data.get('name')
-                    if scraped_name and scraped_name != "Unknown Product":
+                    # Only accept a real name; scrapers return "Unknown Product" or a
+                    # bot-wall title when extraction fails, and a wall has no image.
+                    scraped_name = usable_scraped_name(product_data.get('name'))
+                    if scraped_name:
                         product.name = scraped_name
+                        product.image_url = product_data.get('image_url') or product.image_url
                     product.current_price = product_data.get('price') or product.current_price
                     product.available = product_data.get('available', False)
-                    product.image_url = product_data.get('image_url') or product.image_url
                     product.last_checked = datetime.utcnow()
                     record_availability(product, product.last_checked)
 
+                    product.record_stock_check()
+                    
                     # Record price history if price changed
                     if product.current_price is not None and product.current_price != old_price:
                         history = PriceHistory(
@@ -387,8 +414,8 @@ def init_scheduler(app):
     
     with app.app_context():
         # Get interval from app config (minutes and seconds)
-        minutes = app.config.get('CHECK_INTERVAL_MINUTES', 15)
-        seconds = app.config.get('CHECK_INTERVAL_SECONDS', 0)
+        minutes = app.config.get('CHECK_INTERVAL_MINUTES', 0)
+        seconds = app.config.get('CHECK_INTERVAL_SECONDS', 10)
         
         # Convert to total seconds
         interval_seconds = (minutes * 60) + seconds
@@ -500,6 +527,7 @@ def check_auto_cart_opportunities():
     # 1. Available and notify_on_availability is True, OR
     # 2. Below target price and notify_on_price_drop is True
     eligible_products = Product.query.filter(
+        Product.tracking_enabled == True,
         Product.auto_cart_enabled == True,
         db.or_(
             db.and_(
@@ -571,7 +599,7 @@ def check_auto_cart_opportunities():
                     had_successful_cart = True
 
                     # Send notification about auto-cart success
-                    send_product_alert(product, is_auto_cart=True, cart_url=result.get('cart_url'))
+                    notify_cart_success(product, cart_url=result.get('cart_url'))
                 elif is_by_design_refusal(message):
                     # Not a failure: the scraper looked at the page and correctly
                     # declined. Said once at INFO, and dropped to DEBUG while the
@@ -598,4 +626,117 @@ def check_auto_cart_opportunities():
     # GET /api/cart-count, which every page polls every 30s, so nothing is needed here.
     if had_successful_cart:
         logger.info("Auto-cart succeeded for at least one product; the nav cart badge "
-                    "refreshes on the next /api/cart-count poll") 
+                    "refreshes on the next /api/cart-count poll")
+
+def refresh_product(product):
+    """
+    Scrape a single product, persist any changes, and fire channel alerts.
+
+    Shared by the JSON API (and therefore the MCP server) so a one-off check
+    behaves exactly like a scheduled one.
+
+    Args:
+        product: A Product instance
+
+    Returns:
+        dict: {'success', 'message', 'price_changed', 'became_available',
+               'old_price', 'new_price'}
+    """
+    store_type = detect_store_type(product.url)
+    if not store_type:
+        return {
+            'success': False,
+            'message': f"Could not determine store type for URL: {product.url}",
+            'price_changed': False,
+            'became_available': False,
+            'old_price': product.current_price,
+            'new_price': product.current_price,
+        }
+
+    try:
+        scraper = get_scraper(store_type)
+        if store_type == 'test':
+            # TestScraper uses get_product_info instead of scrape_product
+            product_data = scraper.get_product_info(url=product.url)
+        else:
+            product_data = scraper.scrape_product(product.url)
+    except Exception as e:
+        logger.error(f"Error scraping product {product.id}: {str(e)}", exc_info=True)
+        return {
+            'success': False,
+            'message': f"Error scraping product: {str(e)}",
+            'price_changed': False,
+            'became_available': False,
+            'old_price': product.current_price,
+            'new_price': product.current_price,
+        }
+
+    if not product_data:
+        if not product.image_url and detect_store_type(product.url) == 'bestbuy':
+            from app.scrapers.bestbuy_scraper import BestBuyScraper
+            fallback = BestBuyScraper.image_url_from_url(product.url)
+            if fallback:
+                product.image_url = fallback
+                db.session.commit()
+        return {
+            'success': False,
+            'message': 'Failed to retrieve product information',
+            'price_changed': False,
+            'became_available': False,
+            'old_price': product.current_price,
+            'new_price': product.current_price,
+        }
+
+    old_price = product.current_price
+    old_availability = product.available
+
+    scraped_name = usable_scraped_name(product_data.get('name'))
+    if scraped_name:
+        product.name = scraped_name
+        product.image_url = product_data.get('image_url') or product.image_url
+    product.current_price = product_data.get('price') or product.current_price
+    product.available = product_data.get('available', False)
+    product.last_checked = datetime.utcnow()
+    product.record_stock_check()
+
+    price_changed = product.current_price is not None and product.current_price != old_price
+    if price_changed:
+        db.session.add(PriceHistory(
+            product_id=product.id,
+            price=product.current_price,
+            timestamp=datetime.utcnow()
+        ))
+
+    # Send notifications to every configured channel (Discord webhook, Telegram)
+    if (product.notify_on_price_drop and
+            product.current_price is not None and
+            old_price is not None and
+            product.current_price < old_price):
+        send_product_alert(product, old_price=old_price, is_availability_alert=False)
+
+    became_available = bool(product.available and not old_availability)
+    if product.notify_on_availability and became_available:
+        send_product_alert(product, old_price=old_price, is_availability_alert=True)
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error saving product {product.id}: {str(e)}", exc_info=True)
+        return {
+            'success': False,
+            'message': f"Error saving product: {str(e)}",
+            'price_changed': False,
+            'became_available': False,
+            'old_price': old_price,
+            'new_price': product.current_price,
+        }
+
+    return {
+        'success': True,
+        'message': 'Product refreshed',
+        'price_changed': price_changed,
+        'became_available': became_available,
+        'old_price': old_price,
+        'new_price': product.current_price,
+    }

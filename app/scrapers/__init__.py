@@ -133,6 +133,39 @@ def store_choices():
                for store in supported_stores() if store not in HIDDEN_STORES]
     return sorted(choices, key=lambda choice: choice[1].lower())
 
+# The shared-tree names for the same registry, kept so the JSON API, the MCP
+# server and the templates written against them keep working.
+STORE_DISPLAY_NAMES = STORE_LABELS
+
+
+def store_display_name(store_type):
+    """Human-readable store name for UI (e.g. 'bestbuy' -> 'Best Buy'); 'Unknown' when blank."""
+    if not store_type:
+        return 'Unknown'
+    return STORE_LABELS.get(store_type, store_type.replace('_', ' ').title())
+
+
+def store_label_from_url(url):
+    """
+    Retailer name for a product URL.
+
+    STORE_LABELS when the host is a registered store; otherwise a title-cased
+    hostname (unknown-shop.example -> 'Unknown Shop'), never an exception.
+    """
+    store = detect_store_type(url)
+    if store:
+        return store_display_name(store)
+    if not url:
+        return 'Unknown'
+    try:
+        host = (urlparse(url).hostname or '').lower()
+    except ValueError:
+        return 'Unknown'
+    if host.startswith('www.'):
+        host = host[4:]
+    name = host.split('.')[0] if host else ''
+    return name.replace('-', ' ').title() if name else 'Unknown'
+
 def get_scraper(store_type):
     """
     Get the appropriate scraper based on store type.

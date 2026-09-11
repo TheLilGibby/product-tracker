@@ -2,8 +2,10 @@ import json
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Always load the project-root .env, regardless of the process cwd
+# (the Flask reloader and Docker both change it).
+_ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env')
+load_dotenv(_ENV_PATH, override=False)
 
 
 def parse_store_intervals(raw):
@@ -90,6 +92,18 @@ class Config:
     # Time display format preference (24-hour/military or 12-hour/AM-PM)
     # Options: '24h' or '12h'
     TIME_FORMAT = os.environ.get('TIME_FORMAT', '24h')
+    
+    # Shared secret for the JSON API / MCP server. Leave blank to leave the API open.
+    API_TOKEN = os.environ.get('API_TOKEN', '')
+
+    # HTTP Basic Auth for add-to-cart / delete / cookie paste on the public URL.
+    # Viewing and preference saves stay open. Leave AUTH_PASSWORD blank to disable.
+    AUTH_USER = os.environ.get('AUTH_USER', 'admin')
+    AUTH_PASSWORD = os.environ.get('AUTH_PASSWORD', '')
+
+    # Public URL of the Cloudflare tunnel, for display and external links.
+    # The MCP server should keep using PRODUCT_TRACKER_URL (localhost).
+    PRODUCT_TRACKER_PUBLIC_URL = os.environ.get('PRODUCT_TRACKER_PUBLIC_URL', '').rstrip('/')
     
     # Telegram alerts: one global channel for every product (leave blank to disable)
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')

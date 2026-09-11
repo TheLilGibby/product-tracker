@@ -17,10 +17,13 @@ Product Tracker is a web application that allows you to monitor product prices a
 
 - Amazon
 - Walmart
+- Target
+- GameStop
 - Best Buy
 - Newegg
 - Microcenter
 - B&H Photo Video
+- Adorama
 
 ### Notifications
 
@@ -75,7 +78,7 @@ Product Tracker uses web scraping techniques to extract product information dire
 
 The application uses a background scheduler to periodically check all tracked products:
 
-1. By default, checks run every 15 minutes
+1. By default, checks run every 10 seconds
 2. The check interval can be customized in the application settings
 3. Each run fetches the latest product data from the retailer websites
 

@@ -68,6 +68,9 @@ Then ping me with "Telegram is set up" and I'll run the end-to-end check from my
 - Every product's alerts go to the channel, in addition to any per-product Discord webhook.
 - Each product's existing **Notify on price drop / Notify on availability** checkboxes still control what fires.
 - If Telegram is not configured, nothing changes — the app behaves exactly as before.
+- Alerts include an **Open in tracker** link. When `PRODUCT_TRACKER_PUBLIC_URL` is set
+  (the Cloudflare tunnel), that link opens the product page on the public URL so you
+  can tap it from Telegram on your phone.
 - Other tools can push a message into the channel via `POST /api/telegram/send` with `{"message": "..."}`.
 
 ## One sender only

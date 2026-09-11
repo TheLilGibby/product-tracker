@@ -1,6 +1,6 @@
 import os
 import logging
-from flask import Flask
+from flask import Flask, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from app.config import config
@@ -21,6 +21,39 @@ for _stream in (sys.stdout, sys.stderr):
             _stream.reconfigure(encoding='utf-8', errors='replace')
         except (ValueError, OSError):
             pass
+# Columns that may be missing from databases created before they were added
+# to the Product model. db.create_all() never ALTERs existing tables.
+_PRODUCT_SCHEMA_ADDITIONS = (
+    ('discord_webhook_url', 'VARCHAR(500)'),
+    ('notify_on_price_drop', 'BOOLEAN DEFAULT 1'),
+    ('notify_on_availability', 'BOOLEAN DEFAULT 1'),
+    ('notify_on_cart', 'BOOLEAN DEFAULT 1'),
+    ('auto_cart_enabled', 'BOOLEAN DEFAULT 0'),
+    ('auto_cart_quantity', 'INTEGER DEFAULT 1'),
+    ('last_cart_attempt', 'DATETIME'),
+    ('last_cart_status', 'VARCHAR(100)'),
+    ('tracking_enabled', 'BOOLEAN NOT NULL DEFAULT 1'),
+)
+
+
+def _ensure_schema():
+    """Add any Product columns that exist on the model but not in SQLite."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(db.engine)
+    if 'products' not in inspector.get_table_names():
+        return
+
+    existing = {col['name'] for col in inspector.get_columns('products')}
+    missing = [(name, ddl) for name, ddl in _PRODUCT_SCHEMA_ADDITIONS if name not in existing]
+    if not missing:
+        return
+
+    with db.engine.begin() as conn:
+        for name, ddl in missing:
+            logger.info(f"Adding missing column products.{name}")
+            conn.execute(text(f"ALTER TABLE products ADD COLUMN {name} {ddl}"))
+
 
 # Configure logging
 logging.basicConfig(
@@ -84,6 +117,11 @@ def create_app(config_name='default'):
     # Load configuration
     app.config.from_object(config[config_name])
     config[config_name].init_app(app)
+
+    # Cloudflare (and any other reverse proxy) sends X-Forwarded-For / Proto / Host.
+    # Without this, url_for(_external=True) generates http://127.0.0.1 links.
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
     
     # Initialize extensions with the app
     db.init_app(app)
@@ -119,14 +157,23 @@ def create_app(config_name='default'):
     register_auth(app)
 
     # Register blueprints
-    from app.routes import main_bp
+    from app.routes import main_bp, api_bp
     app.register_blueprint(main_bp)
     from app.routes.groups import groups_bp
     app.register_blueprint(groups_bp)
+    app.register_blueprint(api_bp)
+
+    @app.route('/favicon.ico')
+    def favicon():
+        return send_from_directory(
+            os.path.join(app.root_path, 'static'),
+            'favicon.ico',
+            mimetype='image/vnd.microsoft.icon',
+        )
 
     # Refuse state-changing requests that came from another site. Installed on
-    # the app rather than on main_bp so anything registered later - api_bp, which
-    # is not on this branch yet - is covered by default instead of by remembering.
+    # the app rather than on a blueprint so everything registered above - main,
+    # groups and the JSON API - is covered by default instead of by remembering.
     from app.auth import register_request_guards
     register_request_guards(app)
     
@@ -134,9 +181,11 @@ def create_app(config_name='default'):
     from app.errors import register_error_handlers
     register_error_handlers(app)
     
-    # Create all database tables
+    # Create all database tables, then backfill columns that create_all
+    # will not add to an existing SQLite file.
     with app.app_context():
         db.create_all()
+        _ensure_schema()
     
     # Initialize and start the scheduler if not in testing mode. This must run
     # exactly once: every init_scheduler() call starts a BackgroundScheduler and
@@ -150,8 +199,8 @@ def create_app(config_name='default'):
         atexit.register(lambda: scheduler.shutdown(wait=False))
         
         # Get interval details for logging
-        minutes = app.config.get('CHECK_INTERVAL_MINUTES', 15)
-        seconds = app.config.get('CHECK_INTERVAL_SECONDS', 0)
+        minutes = app.config.get('CHECK_INTERVAL_MINUTES', 0)
+        seconds = app.config.get('CHECK_INTERVAL_SECONDS', 10)
         
         # Log with appropriate format based on whether seconds are included
         if seconds > 0:
