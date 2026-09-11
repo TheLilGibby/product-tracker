@@ -54,14 +54,43 @@ def load_amazon_cookies():
     return ''
 
 
+# A Cookie header is visible ASCII and spaces. Anything outside that - a
+# newline above all else - is how a pasted value turns into extra lines in
+# .env, where it would set arbitrary config on the next load. Rejected rather
+# than stripped: silently dropping part of a credential yields a cookie that
+# fails later in a confusing way.
+_COOKIE_HEADER_RE = re.compile(r'^[\x20-\x7e]*$')
+
+
+def validate_cookie_header(cookie_header):
+    """Return the cleaned header, or raise ValueError if it cannot be stored."""
+    cookie_header = (cookie_header or '').strip()
+    if not _COOKIE_HEADER_RE.match(cookie_header):
+        raise ValueError(
+            'Amazon cookies contain characters that are not valid in a Cookie '
+            'header (a line break or a control character). Copy the value '
+            'again as a single line.'
+        )
+    return cookie_header
+
+
 def save_amazon_cookies(cookie_header):
     """Persist Amazon cookies to the process env and the data file."""
-    cookie_header = (cookie_header or '').strip()
+    cookie_header = validate_cookie_header(cookie_header)
     os.environ['AMAZON_COOKIES'] = cookie_header
     path = amazon_cookies_file_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'w', encoding='utf-8') as handle:
+    # The file holds live session cookies. os.open sets the mode as the file is
+    # created, so it never exists world-readable; an existing file keeps its
+    # old mode, hence the chmod. Both are no-ops on Windows, which is fine -
+    # the deployment that matters here is the Linux container.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as handle:
         handle.write(cookie_header)
+    try:
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        logger.debug(f"Could not tighten permissions on the cookies file: {exc}")
     return path
 
 

@@ -934,9 +934,13 @@ def update_newegg_cookies():
 @main_bp.route('/update-amazon-cookies', methods=['POST'])
 def update_amazon_cookies():
     """Save Amazon session cookies for logged-in auto-cart."""
-    from app.scrapers.amazon_scraper import cookie_header_from_form, save_amazon_cookies
-    cookies = cookie_header_from_form(request.form)
+    from app.scrapers.amazon_scraper import (
+        cookie_header_from_form, save_amazon_cookies, validate_cookie_header,
+    )
     try:
+        # Validated before anything is written: the value is interpolated into
+        # .env below, where an embedded newline would add a config line.
+        cookies = validate_cookie_header(cookie_header_from_form(request.form))
         save_amazon_cookies(cookies)
 
         env_path = os.path.join(os.getcwd(), '.env')
@@ -945,7 +949,7 @@ def update_amazon_cookies():
             with open(env_path, 'r') as f:
                 env_lines = f.readlines()
 
-        cookie_line = f'AMAZON_COOKIES={cookies.strip()}\n'
+        cookie_line = f'AMAZON_COOKIES={cookies}\n'
         cookie_line_found = False
         for i, line in enumerate(env_lines):
             if line.startswith('AMAZON_COOKIES='):
