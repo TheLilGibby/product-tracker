@@ -2,6 +2,117 @@
 
 {% block title %}Product Tracker - Dashboard{% endblock %}
 
+{% block extra_css %}
+<style>
+    /* Row switches: a submit button dressed as a toggle, so the table keeps
+       working with JavaScript disabled. One form per cell, one POST per flip. */
+    .switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        min-width: 4.6rem;
+        padding: 0.2rem 0.55rem 0.2rem 0.3rem;
+        border: 1px solid #d1d5db;
+        border-radius: 999px;
+        background-color: #f3f4f6;
+        color: #4b5563;
+        font-size: 0.75rem;
+        font-weight: bold;
+        line-height: 1.4;
+        cursor: pointer;
+        transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+
+    .switch:hover {
+        border-color: #9ca3af;
+    }
+
+    .switch:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+    }
+
+    .switch-knob {
+        width: 0.85rem;
+        height: 0.85rem;
+        border-radius: 50%;
+        background-color: #9ca3af;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+        transition: background-color 0.12s ease, transform 0.12s ease;
+    }
+
+    /* Alerts on */
+    .switch-on {
+        background-color: #d1fae5;
+        border-color: #6ee7b7;
+        color: #065f46;
+    }
+
+    .switch-on .switch-knob {
+        background-color: #059669;
+        transform: translateX(0.15rem);
+    }
+
+    /* Auto-cart armed: deliberately the loudest thing in the row. This one can
+       spend a real cart attempt, so it should never blend in with Alerts. */
+    .switch-armed {
+        background-color: #fef3c7;
+        border-color: #f59e0b;
+        color: #92400e;
+    }
+
+    .switch-armed .switch-knob {
+        background-color: #d97706;
+        transform: translateX(0.15rem);
+    }
+
+    /* simple.css flips the whole page on prefers-color-scheme, so the switches
+       have to follow or they sit as three bright chips on a dark row. */
+    @media (prefers-color-scheme: dark) {
+        .switch {
+            border-color: #4b5563;
+            background-color: #2b2b2b;
+            color: #cbd5e1;
+        }
+
+        .switch:hover {
+            border-color: #9ca3af;
+        }
+
+        .switch-knob {
+            background-color: #6b7280;
+        }
+
+        .switch-on {
+            background-color: #064e3b;
+            border-color: #10b981;
+            color: #a7f3d0;
+        }
+
+        .switch-on .switch-knob {
+            background-color: #34d399;
+        }
+
+        .switch-armed {
+            background-color: #4a2f06;
+            border-color: #f59e0b;
+            color: #fde68a;
+        }
+
+        .switch-armed .switch-knob {
+            background-color: #fbbf24;
+        }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .switch,
+        .switch-knob {
+            transition: none;
+        }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <header class="mb-4">
     <div style="display: flex; justify-content: space-between; align-items: flex-start;">
@@ -56,6 +167,8 @@
                     <th>Target Price</th>
                     <th>Status</th>
                     <th>Last Checked</th>
+                    <th style="text-align: center;">Alerts</th>
+                    <th style="text-align: center;">Auto-cart</th>
                     <th>Actions</th>
                 </tr>
             </thead>
@@ -100,6 +213,27 @@
                             <span style="font-size: 0.875rem;">
                                 {{ format_datetime(product.last_checked, current_timezone) }}
                             </span>
+                        </td>
+                        {% set alerts_on = product.notify_on_price_drop or product.notify_on_availability %}
+                        <td style="text-align: center;">
+                            <form method="POST" action="{{ url_for('main.toggle_product_flag', product_id=product.id, field='alerts') }}" style="margin: 0;">
+                                <button type="submit" role="switch" aria-checked="{{ 'true' if alerts_on else 'false' }}"
+                                        class="switch{% if alerts_on %} switch-on{% endif %}"
+                                        title="{% if alerts_on %}Alerts are on. Click to silence this product.{% else %}Alerts are off. Click to be notified about price drops and restocks.{% endif %}">
+                                    <span class="switch-knob"></span>
+                                    <span class="switch-text">{{ 'On' if alerts_on else 'Off' }}</span>
+                                </button>
+                            </form>
+                        </td>
+                        <td style="text-align: center;">
+                            <form method="POST" action="{{ url_for('main.toggle_product_flag', product_id=product.id, field='auto_cart') }}" style="margin: 0;">
+                                <button type="submit" role="switch" aria-checked="{{ 'true' if product.auto_cart_enabled else 'false' }}"
+                                        class="switch{% if product.auto_cart_enabled %} switch-armed{% endif %}"
+                                        title="{% if product.auto_cart_enabled %}Armed: a cart attempt can fire within a minute of this going in stock. Click to disarm.{% else %}Not armed. Click to let the tracker add this to the cart by itself. It never checks out.{% endif %}">
+                                    <span class="switch-knob"></span>
+                                    <span class="switch-text">{{ 'Armed' if product.auto_cart_enabled else 'Off' }}</span>
+                                </button>
+                            </form>
                         </td>
                         <td>
                             <a href="{{ url_for('main.product_detail', product_id=product.id) }}" role="button" style="padding: 0.25rem 0.5rem; margin: 0 0.25rem 0 0;">Details</a>
@@ -221,6 +355,39 @@
                 });
         }
         
+        // Build one toggle cell for a rebuilt row. This mirrors the server-rendered
+        // markup in the table above; if you change one, change the other, or the
+        // switches will change shape 30 seconds after every page load.
+        function buildToggleCell(productId, field, isOn, onClass, label, title) {
+            const cell = document.createElement('td');
+            cell.style.textAlign = 'center';
+
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = `/product/${productId}/toggle/${field}`;
+            form.style.margin = '0';
+
+            const button = document.createElement('button');
+            button.type = 'submit';
+            button.setAttribute('role', 'switch');
+            button.setAttribute('aria-checked', isOn ? 'true' : 'false');
+            button.className = isOn ? `switch ${onClass}` : 'switch';
+            button.title = title;
+
+            const knob = document.createElement('span');
+            knob.className = 'switch-knob';
+            button.appendChild(knob);
+
+            const text = document.createElement('span');
+            text.className = 'switch-text';
+            text.textContent = label;
+            button.appendChild(text);
+
+            form.appendChild(button);
+            cell.appendChild(form);
+            return cell;
+        }
+
         // Function to update the table with new data
         function updateTable(products) {
             const tableBody = table.querySelector('tbody');
@@ -319,6 +486,26 @@
                 timeCell.appendChild(timeSpan);
                 row.appendChild(timeCell);
                 
+                // Alerts cell
+                const alertsOn = !!product.alerts_enabled;
+                row.appendChild(buildToggleCell(
+                    product.id, 'alerts', alertsOn, 'switch-on',
+                    alertsOn ? 'On' : 'Off',
+                    alertsOn
+                        ? 'Alerts are on. Click to silence this product.'
+                        : 'Alerts are off. Click to be notified about price drops and restocks.'
+                ));
+
+                // Auto-cart cell
+                const armed = !!product.auto_cart_enabled;
+                row.appendChild(buildToggleCell(
+                    product.id, 'auto_cart', armed, 'switch-armed',
+                    armed ? 'Armed' : 'Off',
+                    armed
+                        ? 'Armed: a cart attempt can fire within a minute of this going in stock. Click to disarm.'
+                        : 'Not armed. Click to let the tracker add this to the cart by itself. It never checks out.'
+                ));
+
                 // Action cell
                 const actionCell = document.createElement('td');
                 
