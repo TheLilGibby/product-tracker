@@ -1,3 +1,4 @@
+import json
 import re
 import logging
 import requests
@@ -35,7 +36,7 @@ class BestBuyScraper:
                 'name': self.extract_name(soup),
                 'price': self.extract_price(soup),
                 'available': self.extract_availability(soup),
-                'image_url': self.extract_image_url(soup)
+                'image_url': self.extract_image_url(soup) or self.image_url_from_url(url, response.text)
             }
         except Exception as e:
             logger.error(f"Error scraping Best Buy product: {str(e)}")
@@ -190,10 +191,47 @@ class BestBuyScraper:
             logger.error(f"Error extracting availability: {str(e)}")
             return False
     
+    @staticmethod
+    def extract_sku(url, html=None):
+        """Numeric SKU from a Best Buy URL, or from product-page HTML when given."""
+        if url:
+            for pattern in (r'/sku/(\d{7,8})', r'[?&]skuId=(\d{7,8})', r'/(\d{7,8})\.p\b'):
+                match = re.search(pattern, url)
+                if match:
+                    return match.group(1)
+        if html:
+            match = re.search(r'data-testid="pdp-[a-z-]+-(\d{7,8})"', html)
+            if match:
+                return match.group(1)
+            match = re.search(r'"sku"\s*:\s*"?(\d{7,8})"?', html)
+            if match:
+                return match.group(1)
+        return None
+
+    @staticmethod
+    def pisces_image_url(sku):
+        """Best Buy CDN URL for a numeric SKU. Alphanumeric combo IDs are not valid here."""
+        sku = str(sku or '').strip()
+        if not sku.isdigit():
+            return None
+        return f"https://pisces.bbystatic.com/image2/BestBuy_US/images/products/{sku[:4]}/{sku}_sd.jpg"
+
+    @classmethod
+    def image_url_from_url(cls, url, html=None):
+        """Build a product image URL from a Best Buy link without loading the PDP."""
+        return cls.pisces_image_url(cls.extract_sku(url, html))
+
     def extract_image_url(self, soup):
         """Extract product image URL from Best Buy page"""
         logger.debug("BestBuyScraper: Extracting image URL")
         try:
+            product = self._jsonld_product(soup)
+            if product:
+                image = self._first_jsonld_image(product.get('image'))
+                if image:
+                    logger.debug(f"Found image URL from JSON-LD: {image}")
+                    return image
+
             # Try various image selectors (covering different layouts)
             image_selectors = [
                 '.primary-image',
@@ -214,6 +252,12 @@ class BestBuyScraper:
                     image_url = img.get('data-src')
                     logger.debug(f"Found image URL from data-src: {image_url}")
                     return image_url
+
+            for img in soup.select('img[src*="pisces.bbystatic.com"], img[data-src*="pisces.bbystatic.com"]'):
+                src = img.get('src') or img.get('data-src')
+                if src and src.startswith('http'):
+                    logger.debug(f"Found image URL from pisces img: {src}")
+                    return src
                 
             # Try meta image
             meta_img = soup.find('meta', {'property': 'og:image'})
@@ -221,19 +265,43 @@ class BestBuyScraper:
                 image_url = meta_img.get('content')
                 logger.debug(f"Found image URL from meta: {image_url}")
                 return image_url
-            
-            # Try JSON-LD data for image URL
-            script_tags = soup.find_all('script', {'type': 'application/ld+json'})
-            for script in script_tags:
-                if script and script.string and 'image' in script.string:
-                    image_match = re.search(r'"image"\s*:\s*"(https?://[^"]+)"', script.string)
-                    if image_match:
-                        image_url = image_match.group(1)
-                        logger.debug(f"Found image URL from JSON-LD: {image_url}")
-                        return image_url
-            
+
             logger.warning("Could not find product image URL")
             return None
         except Exception as e:
             logger.error(f"Error extracting image URL: {str(e)}")
-            return None 
+            return None
+
+    @staticmethod
+    def _jsonld_product(soup):
+        for script in soup.find_all('script', type='application/ld+json'):
+            raw = script.string or script.get_text()
+            if not raw or 'Product' not in raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                continue
+            candidates = data if isinstance(data, list) else [data]
+            for item in candidates:
+                if not isinstance(item, dict):
+                    continue
+                if item.get('@type') == 'Product':
+                    return item
+                for node in item.get('@graph') or []:
+                    if isinstance(node, dict) and node.get('@type') == 'Product':
+                        return node
+        return None
+
+    @staticmethod
+    def _first_jsonld_image(images):
+        if isinstance(images, str) and images.startswith('http'):
+            return images
+        if isinstance(images, dict) and str(images.get('url') or '').startswith('http'):
+            return images['url']
+        if isinstance(images, list):
+            for item in images:
+                found = BestBuyScraper._first_jsonld_image(item)
+                if found:
+                    return found
+        return None 

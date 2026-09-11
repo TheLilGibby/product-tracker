@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}Test Auto-Cart Functionality - Product Tracker{% endblock %}
+{% block title %}Test Auto-Cart Functionality - Tracker_{% endblock %}
 
 {% block content %}
 <article>
@@ -46,7 +46,7 @@
     </form>
 
     {% if test_result %}
-    <div style="margin-top: 2rem; padding: 1rem; border: 1px solid #ccc; border-radius: 0.5rem;">
+    <div style="margin-top: 2rem; padding: 1rem; border: var(--border-width) solid var(--border); border-radius: 0.5rem;">
         <h3>Test Result</h3>
         
         <div style="margin: 1rem 0;">
@@ -66,7 +66,7 @@
         {% if test_result.screenshot %}
         <div style="margin: 1rem 0;">
             <strong>Screenshot:</strong>
-            <img src="data:image/png;base64,{{ test_result.screenshot }}" alt="Cart screenshot" style="max-width: 100%; border: 1px solid #dee2e6; border-radius: 5px; margin-top: 0.5rem;">
+            <img src="data:image/png;base64,{{ test_result.screenshot }}" alt="Cart screenshot" style="max-width: 100%; border: var(--border-width) solid var(--border); border-radius: 5px; margin-top: 0.5rem;">
         </div>
         {% endif %}
     </div>

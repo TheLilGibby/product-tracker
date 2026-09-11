@@ -8,6 +8,7 @@ Usage:
 Reads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from .env / the environment.
 """
 import html
+import os
 import sys
 
 from dotenv import load_dotenv
@@ -30,6 +31,7 @@ def main():
         ok = TelegramNotifier.send_notification(
             product_name="Test Product (Product Tracker)",
             product_url="https://example.com/product",
+            tracker_url=os.environ.get("PRODUCT_TRACKER_PUBLIC_URL") or None,
             current_price=79.99,
             old_price=99.99,
         )

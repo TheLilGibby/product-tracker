@@ -5,8 +5,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 from flask import current_app
 from app import db
 from app.models.product import Product, PriceHistory
-from app.scrapers import get_scraper
-from app.notifications import send_product_alert
+from app.scrapers import get_scraper, detect_store_type
+from app.notifications import send_product_alert, notify_cart_success
 import urllib.parse
 import threading
 import atexit
@@ -19,6 +19,31 @@ scheduler = None
 
 # Lock for check_all_products to prevent concurrent execution
 check_lock = threading.Lock()
+
+_BAD_SCRAPE_NAMES = {
+    'unknown product',
+    'robot or human?',
+    'robot or human',
+    'access denied',
+    'sorry, you have been blocked',
+    'attention required',
+    'attention required!',
+}
+
+
+def usable_scraped_name(name):
+    """Return a real product name, or None if the scrape hit a wall/placeholder."""
+    if not name:
+        return None
+    cleaned = str(name).strip()
+    if not cleaned:
+        return None
+    lower = cleaned.lower()
+    if lower in _BAD_SCRAPE_NAMES:
+        return None
+    if any(token in lower for token in ('captcha', 'verify you', 'are you a robot', 'you have been blocked')):
+        return None
+    return cleaned
 
 def check_all_products():
     """
@@ -49,36 +74,14 @@ def check_all_products():
             logger.info("Using existing app context for scheduled task")
         
         try:
-            # Get all products from database
-            products = Product.query.all()
+            # Products switched off from the dashboard are skipped, not deleted
+            products = Product.query.filter(Product.tracking_enabled == True).all()
             logger.info(f"Found {len(products)} products to check")
-            
-            # Map domains to store types
-            domain_to_store = {
-                'amazon.com': 'amazon',
-                'www.amazon.com': 'amazon',
-                'walmart.com': 'walmart',
-                'www.walmart.com': 'walmart',
-                'newegg.com': 'newegg',
-                'www.newegg.com': 'newegg',
-                'microcenter.com': 'microcenter',
-                'www.microcenter.com': 'microcenter',
-                'bestbuy.com': 'bestbuy',
-                'www.bestbuy.com': 'bestbuy',
-                'bhphotovideo.com': 'bh',
-                'www.bhphotovideo.com': 'bh',
-                'test-store.example.com': 'test',
-            }
             
             for product in products:
                 try:
                     # Get store type from URL domain
-                    domain = urllib.parse.urlparse(product.url).netloc.lower()
-                    store_type = None
-                    for d, s in domain_to_store.items():
-                        if d in domain:
-                            store_type = s
-                            break
+                    store_type = detect_store_type(product.url)
                     
                     if not store_type:
                         logger.error(f"Could not determine store type for URL: {product.url}")
@@ -104,6 +107,12 @@ def check_all_products():
                             
                         if not product_data:
                             logger.error(f"Failed to retrieve data for product {product.id}")
+                            if not product.image_url and store_type == 'bestbuy':
+                                from app.scrapers.bestbuy_scraper import BestBuyScraper
+                                fallback = BestBuyScraper.image_url_from_url(product.url)
+                                if fallback:
+                                    product.image_url = fallback
+                                    db.session.commit()
                             continue
                     except Exception as e:
                         logger.error(f"Error scraping product {product.id}: {str(e)}")
@@ -113,11 +122,14 @@ def check_all_products():
                     old_price = product.current_price
                     old_availability = product.available
                     
-                    product.name = product_data.get('name') or product.name
+                    scraped_name = usable_scraped_name(product_data.get('name'))
+                    if scraped_name:
+                        product.name = scraped_name
+                        product.image_url = product_data.get('image_url') or product.image_url
                     product.current_price = product_data.get('price') or product.current_price
                     product.available = product_data.get('available', False)
-                    product.image_url = product_data.get('image_url') or product.image_url
                     product.last_checked = datetime.utcnow()
+                    product.record_stock_check()
                     
                     # Record price history if price changed
                     if product.current_price is not None and product.current_price != old_price:
@@ -176,8 +188,8 @@ def init_scheduler(app):
     
     with app.app_context():
         # Get interval from app config (minutes and seconds)
-        minutes = app.config.get('CHECK_INTERVAL_MINUTES', 15)
-        seconds = app.config.get('CHECK_INTERVAL_SECONDS', 0)
+        minutes = app.config.get('CHECK_INTERVAL_MINUTES', 0)
+        seconds = app.config.get('CHECK_INTERVAL_SECONDS', 10)
         
         # Convert to total seconds
         interval_seconds = (minutes * 60) + seconds
@@ -260,6 +272,7 @@ def check_auto_cart_opportunities():
     # 1. Available and notify_on_availability is True, OR
     # 2. Below target price and notify_on_price_drop is True
     eligible_products = Product.query.filter(
+        Product.tracking_enabled == True,
         Product.auto_cart_enabled == True,
         db.or_(
             db.and_(
@@ -278,24 +291,6 @@ def check_auto_cart_opportunities():
     logger.info(f"Found {len(eligible_products)} products eligible for auto-cart")
     
     from app.scrapers import add_to_cart
-    from urllib.parse import urlparse
-    
-    # Map domains to store types
-    domain_to_store = {
-        'amazon.com': 'amazon',
-        'www.amazon.com': 'amazon',
-        'walmart.com': 'walmart',
-        'www.walmart.com': 'walmart',
-        'newegg.com': 'newegg',
-        'www.newegg.com': 'newegg',
-        'microcenter.com': 'microcenter',
-        'www.microcenter.com': 'microcenter',
-        'bestbuy.com': 'bestbuy',
-        'www.bestbuy.com': 'bestbuy',
-        'bhphotovideo.com': 'bh',
-        'www.bhphotovideo.com': 'bh',
-        'test-store.example.com': 'test',
-    }
     
     # Track if we had any successful cart additions
     had_successful_cart = False
@@ -303,13 +298,7 @@ def check_auto_cart_opportunities():
     for product in eligible_products:
         try:
             # Determine store type from URL
-            domain = urlparse(product.url).netloc.lower()
-            
-            store_type = None
-            for d, s in domain_to_store.items():
-                if d in domain:
-                    store_type = s
-                    break
+            store_type = detect_store_type(product.url)
             
             if not store_type:
                 logger.warning(f"Could not determine store type for {product.url}")
@@ -332,9 +321,7 @@ def check_auto_cart_opportunities():
                 if result.get('success'):
                     logger.info(f"Successfully added product {product.id} to cart")
                     had_successful_cart = True
-                    
-                    # Send notification about auto-cart success
-                    send_product_alert(product, is_auto_cart=True, cart_url=result.get('cart_url'))
+                    notify_cart_success(product, cart_url=result.get('cart_url'))
                 else:
                     logger.warning(f"Failed to add product {product.id} to cart: {result.get('message', 'Unknown error')}")
             except Exception as e:
@@ -360,3 +347,116 @@ def check_auto_cart_opportunities():
                     update_cart_count()
         except Exception as e:
             logger.error(f"Error updating cart count after auto-cart: {str(e)}", exc_info=True) 
+
+def refresh_product(product):
+    """
+    Scrape a single product, persist any changes, and fire channel alerts.
+
+    Shared by the JSON API (and therefore the MCP server) so a one-off check
+    behaves exactly like a scheduled one.
+
+    Args:
+        product: A Product instance
+
+    Returns:
+        dict: {'success', 'message', 'price_changed', 'became_available',
+               'old_price', 'new_price'}
+    """
+    store_type = detect_store_type(product.url)
+    if not store_type:
+        return {
+            'success': False,
+            'message': f"Could not determine store type for URL: {product.url}",
+            'price_changed': False,
+            'became_available': False,
+            'old_price': product.current_price,
+            'new_price': product.current_price,
+        }
+
+    try:
+        scraper = get_scraper(store_type)
+        if store_type == 'test':
+            # TestScraper uses get_product_info instead of scrape_product
+            product_data = scraper.get_product_info(url=product.url)
+        else:
+            product_data = scraper.scrape_product(product.url)
+    except Exception as e:
+        logger.error(f"Error scraping product {product.id}: {str(e)}", exc_info=True)
+        return {
+            'success': False,
+            'message': f"Error scraping product: {str(e)}",
+            'price_changed': False,
+            'became_available': False,
+            'old_price': product.current_price,
+            'new_price': product.current_price,
+        }
+
+    if not product_data:
+        if not product.image_url and detect_store_type(product.url) == 'bestbuy':
+            from app.scrapers.bestbuy_scraper import BestBuyScraper
+            fallback = BestBuyScraper.image_url_from_url(product.url)
+            if fallback:
+                product.image_url = fallback
+                db.session.commit()
+        return {
+            'success': False,
+            'message': 'Failed to retrieve product information',
+            'price_changed': False,
+            'became_available': False,
+            'old_price': product.current_price,
+            'new_price': product.current_price,
+        }
+
+    old_price = product.current_price
+    old_availability = product.available
+
+    scraped_name = usable_scraped_name(product_data.get('name'))
+    if scraped_name:
+        product.name = scraped_name
+        product.image_url = product_data.get('image_url') or product.image_url
+    product.current_price = product_data.get('price') or product.current_price
+    product.available = product_data.get('available', False)
+    product.last_checked = datetime.utcnow()
+    product.record_stock_check()
+
+    price_changed = product.current_price is not None and product.current_price != old_price
+    if price_changed:
+        db.session.add(PriceHistory(
+            product_id=product.id,
+            price=product.current_price,
+            timestamp=datetime.utcnow()
+        ))
+
+    # Send notifications to every configured channel (Discord webhook, Telegram)
+    if (product.notify_on_price_drop and
+            product.current_price is not None and
+            old_price is not None and
+            product.current_price < old_price):
+        send_product_alert(product, old_price=old_price, is_availability_alert=False)
+
+    became_available = bool(product.available and not old_availability)
+    if product.notify_on_availability and became_available:
+        send_product_alert(product, old_price=old_price, is_availability_alert=True)
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error saving product {product.id}: {str(e)}", exc_info=True)
+        return {
+            'success': False,
+            'message': f"Error saving product: {str(e)}",
+            'price_changed': False,
+            'became_available': False,
+            'old_price': old_price,
+            'new_price': product.current_price,
+        }
+
+    return {
+        'success': True,
+        'message': 'Product refreshed',
+        'price_changed': price_changed,
+        'became_available': became_available,
+        'old_price': old_price,
+        'new_price': product.current_price,
+    }

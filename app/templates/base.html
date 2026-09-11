@@ -3,241 +3,729 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Product Tracker{% endblock %}</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/simple-css-framework@2.0.3/dist/simple.min.css">
+    <title>{% block title %}Tracker_{% endblock %}</title>
+    <script>
+        // Applied before first paint so an explicitly chosen theme does not
+        // flash the system one. "system" stores nothing and leaves the
+        // attribute off, which hands control back to prefers-color-scheme.
+        (function () {
+            try {
+                var stored = localStorage.getItem("theme");
+                if (stored === "light" || stored === "dark") {
+                    document.documentElement.setAttribute("data-theme", stored);
+                }
+            } catch (e) {
+                // Private mode or blocked storage: fall back to system.
+            }
+        })();
+    </script>
+    <link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABIklEQVR4nM2X4RHCMAiFC+cGLtRdnMtdupAzxIsnXspF8p6SXvmTaCjvK4S2kYW0UkqJ1kVEmHiSIfoPjLDi6+0a+m/3BwUhWcK/gshInBWOQHoQOlPcx+jtJZ0pjkDo6IIZEF2A8iabIe4h2iyo/4Pd3ey6mWlqjzAy8zEhP45i+HVdCKsi0R16GMQEqX0NWNdtRECRmDBAJODnaBy7ThlRJLVsGeSI9kvPwAbOEbugAGiGzA/1F7QEaJ+jHUOXYG2CRWlnu0HtHY08YL6l14u27RnFq9ov8awysOmv+rsSjHauL4MfGXEzsclRz4P27uv4yQCyF7LFdwA9xxni3rT90ZJlQkRfxuqdsyFGn+VyyoPJKY5mSwCBWsrhlIVhj+dPykQfRfqcxR8AAAAASUVORK5CYII=">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" sizes="any">
+    <link rel="icon" href="{{ url_for('static', filename='img/favicon-32.png') }}" type="image/png" sizes="32x32">
+    <link rel="icon" href="{{ url_for('static', filename='img/logo.svg') }}" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/apple-touch-icon.png') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/simple.min.css') }}">
     <style>
-        /* Custom styles to enhance SimpleCSS */
+        /* ------------------------------------------------------------------
+           App layer on top of Simple.css.
+
+           Simple.css supplies the base typography, forms, tables and dark
+           mode. Everything below is either brand colour or a component
+           Simple.css has no opinion about (product cards, badges, flash
+           messages, the nav dropdown).
+
+           Any Simple.css variable overridden here must be set in BOTH :root
+           and the dark media query: this block loads after simple.min.css,
+           so a bare :root would otherwise also beat Simple.css's dark values.
+           ------------------------------------------------------------------ */
+
+        /* Theme has three states. "System" stores nothing and leaves
+           <html> without a data-theme, so Simple.css's own
+           prefers-color-scheme rule drives it. An explicit Light or Dark
+           has to beat that media query, so each [data-theme] block
+           restates the whole Simple.css palette as well as the brand one.
+           Custom properties cannot be shared between selectors, hence the
+           duplication. */
+
         :root {
+            --page-width: 76rem;
+
+            /* Brand green, replacing Simple.css's default accent */
             --accent: #4d7c0f;
-            --accent-bg: #ecfdf5;
+            --accent-hover: #3f6212;
+            --accent-bg: #f1f7e8;
+
+            /* Full-bleed masthead */
+            --brand-bg: #4d7c0f;
+            --brand-text: #ffffff;
+            --brand-border: rgba(255, 255, 255, 0.45);
+
+            /* Recessed panels: product imagery and chart wells */
+            --surface: #f9fafb;
+
+            /* Status palette, shared by badges and flash messages */
+            --ok-bg: #d1fae5;   --ok-text: #065f46;
+            --bad-bg: #fee2e2;  --bad-text: #b91c1c;
+            --info-bg: #dbeafe; --info-text: #1e40af;
+            --warn-bg: #fff7ed; --warn-text: #9a3412;
         }
-        
-        /* Header styles */
-        body > header {
-            padding: 1rem;
+
+        /* System dark - skipped when the user has explicitly chosen light */
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                --accent: #a3e635;
+                --accent-hover: #bef264;
+                --accent-bg: #26301a;
+
+                --brand-bg: #2f4a09;
+                --brand-text: #f7fee7;
+                --brand-border: rgba(255, 255, 255, 0.28);
+
+                --surface: #2b2b2b;
+
+                --ok-bg: #06301f;   --ok-text: #6ee7b7;
+                --bad-bg: #3b1113;  --bad-text: #fca5a5;
+                --info-bg: #14243f; --info-text: #93c5fd;
+                --warn-bg: #3a2408; --warn-text: #fcd34d;
+            }
+        }
+
+        /* Forced light, even on a dark OS */
+        :root[data-theme="light"] {
+            color-scheme: light;
+
+            --bg: #fff;
+            --text: #212121;
+            --text-light: #585858;
+            --border: #898ea4;
+            --code: #d81b60;
+            --preformatted: #444;
+            --marked: #fd3;
+            --disabled: #efefef;
+
+            --accent: #4d7c0f;
+            --accent-hover: #3f6212;
+            --accent-bg: #f1f7e8;
+            --accent-text: var(--bg);
+
+            --brand-bg: #4d7c0f;
+            --brand-text: #ffffff;
+            --brand-border: rgba(255, 255, 255, 0.45);
+
+            --surface: #f9fafb;
+
+            --ok-bg: #d1fae5;   --ok-text: #065f46;
+            --bad-bg: #fee2e2;  --bad-text: #b91c1c;
+            --info-bg: #dbeafe; --info-text: #1e40af;
+            --warn-bg: #fff7ed; --warn-text: #9a3412;
+        }
+
+        /* Forced dark, even on a light OS */
+        :root[data-theme="dark"] {
+            color-scheme: dark;
+
+            --bg: #212121;
+            --text: #dcdcdc;
+            --text-light: #ababab;
+            --border: #898ea4;
+            --code: #f06292;
+            --preformatted: #ccc;
+            --disabled: #111;
+
+            --accent: #a3e635;
+            --accent-hover: #bef264;
+            --accent-bg: #26301a;
+            --accent-text: var(--bg);
+
+            --brand-bg: #2f4a09;
+            --brand-text: #f7fee7;
+            --brand-border: rgba(255, 255, 255, 0.28);
+
+            --surface: #2b2b2b;
+
+            --ok-bg: #06301f;   --ok-text: #6ee7b7;
+            --bad-bg: #3b1113;  --bad-text: #fca5a5;
+            --info-bg: #14243f; --info-text: #93c5fd;
+            --warn-bg: #3a2408; --warn-text: #fcd34d;
+        }
+
+        /* Simple.css dims media inside its dark media query only */
+        :root[data-theme="dark"] img,
+        :root[data-theme="dark"] video {
+            opacity: 0.8;
+        }
+
+        /* Tracking on/off switch. A real checkbox so it is keyboard
+           reachable and announces its state; the box itself is hidden and
+           the <span> is drawn as the track. */
+        .switch {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            margin: 0;
+            font-size: 0.8rem;
+            font-weight: normal;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .switch input {
+            position: absolute;
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .switch-track {
+            position: relative;
+            flex-shrink: 0;
+            width: 2.15rem;
+            height: 1.2rem;
+            border-radius: 999px;
+            background: var(--border);
+            transition: background-color 0.15s ease-in-out;
+        }
+
+        .switch-track::after {
+            content: "";
+            position: absolute;
+            top: 0.15rem;
+            left: 0.15rem;
+            width: 0.9rem;
+            height: 0.9rem;
+            border-radius: 50%;
+            background: var(--bg);
+            transition: transform 0.15s ease-in-out;
+        }
+
+        .switch input:checked + .switch-track {
             background: var(--accent);
-            color: white;
-            margin-bottom: 2rem;
         }
-        
+
+        .switch input:checked + .switch-track::after {
+            transform: translateX(0.95rem);
+        }
+
+        .switch input:focus-visible + .switch-track {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
+        .switch input:disabled + .switch-track {
+            opacity: 0.5;
+            cursor: progress;
+        }
+
+        .switch-label {
+            color: var(--text-light);
+            min-width: 2.2rem;
+        }
+
+        /* A paused row should read as inactive without becoming unreadable */
+        tr.is-paused td:not(:last-child) {
+            opacity: 0.55;
+        }
+
+        /* Theme switcher: a three-way segmented control on the settings page.
+           It used to sit in the masthead and drew its colours from the brand
+           bar; on a normal page background those white-alpha fills washed out,
+           so the selected state now uses the accent colour like other
+           controls. */
+        .theme-switch {
+            display: inline-flex;
+            flex-wrap: wrap;
+            border: var(--border-width) solid var(--border);
+            border-radius: var(--standard-border-radius);
+            overflow: hidden;
+        }
+
+        .theme-switch button {
+            appearance: none;
+            background: transparent;
+            color: var(--text);
+            border: none;
+            border-radius: 0;
+            margin: 0;
+            padding: 0.45rem 0.8rem;
+            font-size: 0.85rem;
+            line-height: 1;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            opacity: 0.65;
+        }
+
+        .theme-switch button + button {
+            border-left: var(--border-width) solid var(--border);
+        }
+
+        .theme-switch button:hover,
+        .theme-switch button:focus-visible {
+            opacity: 1;
+        }
+
+        .theme-switch button[aria-pressed="true"] {
+            background: var(--accent);
+            color: var(--accent-text, #fff);
+            opacity: 1;
+        }
+
+        /* Simple.css lays <body> out as a three-column grid with the content
+           in the middle. Widen that centre column rather than replacing the
+           grid, and add a row track so the footer sits at the bottom on
+           short pages. */
+        body {
+            grid-template-columns: 1fr min(var(--page-width), 92%) 1fr;
+            grid-template-rows: auto 1fr auto;
+            /* Simple.css defaults to 1.15rem, which is loose for a data table */
+            font-size: 1rem;
+            min-height: 100vh;
+            min-height: 100dvh;
+        }
+
+        /* <header> and <footer> are full-bleed, so their contents need the
+           same centred width that the grid gives <main>. */
+        main {
+            padding-top: 0.6rem;
+        }
+
+        /* Simple.css ships a display-sized scale - h2 2.6rem, h3 2rem, both
+           with 3rem of space above - which suits an article, not a dashboard:
+           a single product title filled the viewport. Tightened here rather
+           than per-template so every page keeps one scale. The masthead brand
+           has its own size below and is unaffected. */
+        h1 { font-size: 1.9rem; }
+        h2 { font-size: 1.5rem; margin-top: 1.75rem; }
+        h3 { font-size: 1.2rem; margin-top: 1.5rem; }
+        h4 { font-size: 1.05rem; margin-top: 1.25rem; }
+
+        .container {
+            width: min(var(--page-width), 92%);
+            margin-inline: auto;
+        }
+
+        /* Simple.css indents a header whose content is a single wrapper div */
+        body > header > *:only-child {
+            margin-block-start: 0;
+        }
+
+        /* Masthead */
+        body > header {
+            background: var(--brand-bg);
+            color: var(--brand-text);
+            border-bottom: none;
+            text-align: center;
+            padding: 0.9rem 0 0.8rem;
+        }
+
         body > header h1 {
+            max-width: none;
+            margin: 0;
+            font-size: 1.5rem;
+        }
+
+        .site-brand {
+            display: flex;
+            align-items: center;
+            gap: 0.7rem;
+            justify-content: center;
+        }
+
+        .site-brand a,
+        .site-brand a:visited,
+        .site-brand a:hover,
+        .site-brand a:focus {
+            color: var(--brand-text);
+            text-decoration: none;
+        }
+
+        /* Simple.css centres nav pills and colours them for a light bar;
+           keep them centred but invert the colours for the green masthead. */
+        body > header nav {
+            padding-top: 0.6rem;
+        }
+
+        body > header nav ul {
+            justify-content: center;
+        }
+
+        body > header nav a,
+        body > header nav a:visited {
+            color: var(--brand-text);
+            border-color: var(--brand-border);
+            margin: 0 0.25rem;
+        }
+
+        body > header nav a:hover,
+        body > header nav a.current,
+        body > header nav a[aria-current="page"] {
+            background: rgba(255, 255, 255, 0.16);
+            border-color: var(--brand-text);
+            color: var(--brand-text);
+        }
+
+        /* Nav dropdown. Simple.css gives <details> a border, background and
+           padding, none of which suit a nav item. */
+        .nav-dropdown {
+            position: relative;
+            display: inline-block;
+            margin: 0 0.25rem;
+            padding: 0;
+            background: transparent;
+            border: none;
+            box-shadow: none;
+        }
+
+        .nav-dropdown > summary {
+            list-style: none;
+            cursor: pointer;
+            color: var(--brand-text);
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            margin: 0;
+            padding: 0.1rem 1rem;
+            font-weight: normal;
+            background: transparent;
+            border: var(--border-width) solid var(--brand-border);
+            border-radius: var(--standard-border-radius);
+        }
+
+        .nav-dropdown > summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .nav-dropdown > summary::after {
+            content: "";
+            width: 0;
+            height: 0;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid currentColor;
+        }
+
+        .nav-dropdown[open] > summary,
+        .nav-dropdown > summary:hover {
+            background: rgba(255, 255, 255, 0.16);
+            border-color: var(--brand-text);
+        }
+
+        /* Simple.css's details[open] > summary adds a 0.5rem bottom margin,
+           which outranks the margin: 0 above and only applies once the menu
+           is open - so the masthead grew by that much on every click and
+           shrank again on close. The menu is absolutely positioned and needs
+           no room made for it. */
+        .nav-dropdown[open] > summary {
+            margin-bottom: 0;
+        }
+
+        .nav-dropdown-menu {
+            position: absolute;
+            top: calc(100% + 0.4rem);
+            left: 0;
+            min-width: 13rem;
+            background: var(--bg);
+            border: var(--border-width) solid var(--border);
+            border-radius: var(--standard-border-radius);
+            box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
+            padding: 0.35rem 0;
+            z-index: 20;
+        }
+
+        .nav-dropdown-menu a,
+        .nav-dropdown-menu a:visited {
+            display: block;
+            color: var(--text);
+            background: none;
+            border: none;
+            border-radius: 0;
+            margin: 0;
+            padding: 0.45rem 0.85rem;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+
+        .nav-dropdown-menu a:hover,
+        .nav-dropdown-menu a:focus {
+            background: var(--accent-bg);
+            color: var(--accent);
+        }
+
+        body > footer {
+            margin-top: 3rem;
+            padding: 1.5rem 0;
+        }
+
+        body > footer p {
             margin: 0;
         }
-        
-        body > header nav {
-            margin-top: 1rem;
+
+        /* Tables: Simple.css already handles borders, padding and striping.
+           Keep only the horizontal scroll wrapper and the brand header tint. */
+        .table-responsive {
+            overflow-x: auto;
+            margin-bottom: 1.5rem;
         }
-        
-        body > header nav a {
-            color: white;
-            margin-right: 1rem;
+
+        table {
+            width: 100%;
+            margin: 0;
+            font-size: 0.95rem;
         }
-        
-        /* Card styles for products */
+
+        th {
+            color: var(--accent);
+        }
+
+        td, th {
+            vertical-align: middle;
+        }
+
+        /* Product cards */
         .product-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
             gap: 1.5rem;
         }
-        
+
         .product-card {
-            border: 1px solid var(--border);
-            border-radius: 5px;
+            border: var(--border-width) solid var(--border);
+            border-radius: var(--standard-border-radius);
             padding: 0;
             overflow: hidden;
         }
-        
+
         .product-card img {
             max-height: 200px;
             width: 100%;
             object-fit: contain;
-            background-color: #f9fafb;
+            background-color: var(--surface);
             padding: 1rem;
         }
-        
+
         .product-card-content {
             padding: 1rem;
         }
-        
+
         .product-card-footer {
             padding: 0.5rem 1rem;
             background-color: var(--accent-bg);
             display: flex;
             justify-content: space-between;
         }
-        
-        /* Table styles for products */
-        .table-responsive {
-            overflow-x: auto;
-            margin-bottom: 1.5rem;
-        }
-        
-        table {
-            border-collapse: collapse;
-            width: 100%;
-            font-size: 0.95rem;
-        }
-        
-        table th {
-            text-align: left;
-            background-color: var(--accent-bg);
-            color: var(--accent);
-            font-weight: bold;
-        }
-        
-        table td, table th {
-            padding: 0.75rem;
-            vertical-align: middle;
-            border: 1px solid var(--border);
-        }
-        
-        table tr:nth-child(even) {
-            background-color: #f9fafb;
-        }
-        
-        table tr:hover {
-            background-color: #f3f4f6;
-        }
-        
+
         /* Price display */
         .current-price {
             font-size: 1.25rem;
             font-weight: bold;
             color: var(--accent);
         }
-        
+
         .target-price {
             font-size: 0.9rem;
             color: var(--text-light);
         }
-        
+
         /* Badges */
         .badge {
             display: inline-block;
             padding: 0.25rem 0.5rem;
-            border-radius: 4px;
+            border-radius: var(--standard-border-radius);
             font-size: 0.75rem;
             font-weight: bold;
         }
-        
-        .badge-success {
-            background-color: #d1fae5;
-            color: #065f46;
-        }
-        
-        .badge-danger {
-            background-color: #fee2e2;
-            color: #b91c1c;
-        }
-        
-        .badge-info {
-            background-color: #dbeafe;
-            color: #1e40af;
-        }
-        
+
+        .badge-success { background-color: var(--ok-bg);   color: var(--ok-text); }
+        .badge-danger  { background-color: var(--bad-bg);  color: var(--bad-text); }
+        .badge-info    { background-color: var(--info-bg); color: var(--info-text); }
+
         /* Flash messages */
-        .flash-messages {
-            margin-bottom: 1.5rem;
+        .flash-messages:empty {
+            display: none;
         }
-        
+
         .flash-message {
-            padding: 0.75rem;
-            border-radius: 5px;
+            padding: 0.75rem 1rem;
+            border-radius: var(--standard-border-radius);
             margin-bottom: 0.5rem;
         }
-        
-        .flash-success {
-            background-color: #d1fae5;
-            color: #065f46;
+
+        .flash-success { background-color: var(--ok-bg);   color: var(--ok-text); }
+        .flash-danger  { background-color: var(--bad-bg);  color: var(--bad-text); }
+        .flash-info    { background-color: var(--info-bg); color: var(--info-text); }
+        .flash-warning { background-color: var(--warn-bg); color: var(--warn-text); }
+
+        /* Cart badge */
+        .cart-link {
+            position: relative;
         }
-        
-        .flash-danger {
-            background-color: #fee2e2;
-            color: #b91c1c;
+
+        .cart-badge {
+            position: absolute;
+            top: -6px;
+            right: -10px;
+            background-color: #b91c1c;
+            color: #fff;
+            font-size: 0.7rem;
+            font-weight: bold;
+            min-width: 18px;
+            height: 18px;
+            padding: 0 4px;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
         }
-        
-        .flash-info {
-            background-color: #dbeafe;
-            color: #1e40af;
+
+        .nav-dropdown-menu .cart-link {
+            padding-right: 2.25rem;
         }
-        
-        .flash-warning {
-            background-color: #fff7ed;
-            color: #9a3412;
+
+        .nav-dropdown-menu .cart-badge {
+            top: 50%;
+            right: 0.5rem;
+            transform: translateY(-50%);
         }
-        
-        /* Layout utilities */
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 0 1rem;
+
+        /* Stack checkbox options one per row */
+        .checkbox-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.65rem;
+            margin: 0.5rem 0;
+            padding: 0;
+            list-style: none;
         }
-        
-        .mb-4 {
-            margin-bottom: 1.5rem;
+
+        .checkbox-list li {
+            margin: 0;
+            padding: 0;
         }
-        
-        .text-right {
-            text-align: right;
+
+        .checkbox-list label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin: 0;
+            font-weight: normal;
         }
-        
+
+        .checkbox-list input[type="checkbox"] {
+            margin: 0;
+            flex-shrink: 0;
+        }
+
+        /* Page title with its primary action on the same line */
+        .page-heading {
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .page-heading-actions {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .page-heading h2 {
+            margin: 0;
+        }
+
+        /* Button variants. Simple.css ships a single button style; these two
+           class names were already used throughout the markup. */
+        button.secondary,
+        .button.secondary,
+        input[type="submit"].secondary {
+            background-color: var(--bg);
+            border-color: var(--border);
+            color: var(--text);
+        }
+
+        button.secondary:hover,
+        .button.secondary:hover {
+            background-color: var(--accent-bg);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        button.outline,
+        .button.outline {
+            background-color: transparent;
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        button.outline:hover,
+        .button.outline:hover {
+            background-color: var(--accent);
+            color: var(--accent-text);
+        }
+
+        /* Utilities */
         .icon {
             display: inline-block;
             width: 1em;
             height: 1em;
             vertical-align: -0.125em;
         }
-        
-        /* Cart badge and link styles */
-        .cart-link {
-            position: relative;
-            padding-right: 0.5rem;
-        }
-        
-        .cart-badge {
+
+        .visually-hidden {
             position: absolute;
-            top: -8px;
-            right: -8px;
-            background-color: #b91c1c;
-            color: white;
-            font-size: 0.75rem;
-            font-weight: bold;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            width: 1px;
+            height: 1px;
+            margin: -1px;
+            padding: 0;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            white-space: nowrap;
+            border: 0;
         }
+
+        .mb-4 { margin-bottom: 1.5rem; }
+        .text-right { text-align: right; }
     </style>
     {% block extra_css %}{% endblock %}
 </head>
 <body>
     <header>
         <div class="container">
-            <h1>Product Tracker</h1>
-            <nav>
-                <a href="{{ url_for('main.index') }}">Home</a>
-                <a href="{{ url_for('main.add_product') }}">Add Product</a>
-                <a href="{{ url_for('main.add_test_product') }}">Add Test Product</a>
-                <a href="{{ url_for('main.test_cart') }}">Test Auto-Cart</a>
-                <a href="{{ url_for('main.cart_successes') }}" class="cart-link">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem; vertical-align: text-bottom;">
-                        <path d="M0 1.5A.5.5 0 0 1 .5 1H2a.5.5 0 0 1 .485.379L2.89 3H14.5a.5.5 0 0 1 .491.592l-1.5 8A.5.5 0 0 1 13 12H4a.5.5 0 0 1-.491-.408L2.01 3.607 1.61 2H.5a.5.5 0 0 1-.5-.5zM3.102 4l1.313 7h8.17l1.313-7H3.102zM5 12a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-7 1a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm7 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/>
-                    </svg>
-                    Cart Successes
-                    {% if (session.get('cart_count', 0) | int) > 0 %}
-                        <span class="cart-badge">{{ session.get('cart_count', 0) }}</span>
-                    {% endif %}
+            <h1 class="site-brand">
+                <a href="{{ url_for('main.index') }}">
+                    Tracker_
                 </a>
-                <a href="{{ url_for('main.wiki') }}">Wiki</a>
-                <a href="{{ url_for('main.settings') }}">Settings</a>
-                <a href="{{ url_for('main.telegram_settings') }}">Telegram</a>
+            </h1>
+            <nav>
+                <ul>
+                    <li><a href="{{ url_for('main.index') }}">Products</a></li>
+                    <li><details class="nav-dropdown">
+                    <summary>Tests</summary>
+                    <div class="nav-dropdown-menu">
+                        <a href="{{ url_for('main.test_auto_cart') }}">Add Test Product</a>
+                        <a href="{{ url_for('main.test_cart') }}">Test Auto-Cart</a>
+                        <a href="{{ url_for('main.cart_successes') }}" class="cart-link">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 0.25rem; vertical-align: text-bottom;">
+                                <path d="M0 1.5A.5.5 0 0 1 .5 1H2a.5.5 0 0 1 .485.379L2.89 3H14.5a.5.5 0 0 1 .491.592l-1.5 8A.5.5 0 0 1 13 12H4a.5.5 0 0 1-.491-.408L2.01 3.607 1.61 2H.5a.5.5 0 0 1-.5-.5zM3.102 4l1.313 7h8.17l1.313-7H3.102zM5 12a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-7 1a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm7 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/>
+                            </svg>
+                            Cart Successes
+                            {% if (session.get('cart_count', 0) | int) > 0 %}
+                                <span class="cart-badge">{{ session.get('cart_count', 0) }}</span>
+                            {% endif %}
+                        </a>
+                    </div>
+                    </details></li>
+                    <li><a href="{{ url_for('main.wiki') }}">Wiki</a></li>
+                    <li><a href="{{ url_for('main.settings') }}">Settings</a></li>
+                </ul>
             </nav>
         </div>
     </header>
 
-    <main class="container">
+    <main>
         <div class="flash-messages">
             {% with messages = get_flashed_messages(with_categories=true) %}
                 {% if messages %}
@@ -255,7 +743,7 @@
 
     <footer>
         <div class="container">
-            <p>&copy; {% if now %}{{ now.year }}{% else %}2025{% endif %} Product Tracker. All rights reserved.</p>
+            <p>&copy; {% if now %}{{ now.year }}{% else %}2025{% endif %} Tracker_. All rights reserved.</p>
         </div>
     </footer>
     
@@ -293,6 +781,14 @@
             // Check initially and then every 30 seconds
             checkCartUpdates();
             setInterval(checkCartUpdates, 30000);
+
+            document.addEventListener('click', function(event) {
+                document.querySelectorAll('.nav-dropdown[open]').forEach(function(dropdown) {
+                    if (!dropdown.contains(event.target)) {
+                        dropdown.removeAttribute('open');
+                    }
+                });
+            });
             
             // Flash message auto-dismiss
             const flashMessages = document.querySelectorAll('.flash-message');
@@ -309,6 +805,72 @@
         });
     </script>
     
+    <script>
+        // Theme switcher. The stored value is one of "light", "dark" or
+        // absent (= system). Pages that draw their own colours listen for
+        // the "themechange" event rather than reading localStorage again.
+        (function () {
+            function stored() {
+                try {
+                    var value = localStorage.getItem("theme");
+                    return (value === "light" || value === "dark") ? value : "system";
+                } catch (e) {
+                    return "system";
+                }
+            }
+
+            function apply(choice) {
+                if (choice === "system") {
+                    document.documentElement.removeAttribute("data-theme");
+                } else {
+                    document.documentElement.setAttribute("data-theme", choice);
+                }
+
+                document.querySelectorAll("[data-theme-choice]").forEach(function (button) {
+                    button.setAttribute("aria-pressed",
+                        button.dataset.themeChoice === choice ? "true" : "false");
+                });
+
+                document.dispatchEvent(new CustomEvent("themechange", { detail: { theme: choice } }));
+            }
+
+            document.addEventListener("DOMContentLoaded", function () {
+                apply(stored());
+
+                document.querySelectorAll("[data-theme-choice]").forEach(function (button) {
+                    button.addEventListener("click", function () {
+                        var choice = button.dataset.themeChoice;
+                        try {
+                            if (choice === "system") {
+                                localStorage.removeItem("theme");
+                            } else {
+                                localStorage.setItem("theme", choice);
+                            }
+                        } catch (e) {
+                            // Not persisted, but still applied for this page.
+                        }
+                        apply(choice);
+                    });
+                });
+            });
+
+            // On "system", an OS-level switch should repaint canvases too.
+            if (window.matchMedia) {
+                var query = window.matchMedia("(prefers-color-scheme: dark)");
+                var onChange = function () {
+                    if (stored() === "system") {
+                        document.dispatchEvent(new CustomEvent("themechange", { detail: { theme: "system" } }));
+                    }
+                };
+                if (query.addEventListener) {
+                    query.addEventListener("change", onChange);
+                } else if (query.addListener) {
+                    query.addListener(onChange);
+                }
+            }
+        })();
+    </script>
+
     {% block scripts %}{% endblock %}
 </body>
 </html> 

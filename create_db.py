@@ -1,5 +1,5 @@
 from app import create_app, db
-from app.models.product import Product, PriceHistory
+from app.models.product import Product, PriceHistory, StockCheck
 import os
 import pathlib
 import sqlite3
@@ -49,7 +49,8 @@ with app.app_context():
     if db_uri.startswith('sqlite:///'):
         db_path = db_uri.replace('sqlite:///', '')
         if not os.path.isabs(db_path):
-            full_path = os.path.join(os.getcwd(), db_path)
+            # Flask-SQLAlchemy 3 stores relative sqlite files in instance/
+            full_path = os.path.join(app.instance_path, db_path)
         else:
             full_path = db_path
         
@@ -81,6 +82,14 @@ with app.app_context():
                 if 'last_cart_status' not in columns:
                     print("Adding last_cart_status column...")
                     conn.execute("ALTER TABLE products ADD COLUMN last_cart_status VARCHAR(100)")
+
+                if 'notify_on_cart' not in columns:
+                    print("Adding notify_on_cart column...")
+                    conn.execute("ALTER TABLE products ADD COLUMN notify_on_cart BOOLEAN DEFAULT 1")
+
+                if 'tracking_enabled' not in columns:
+                    print("Adding tracking_enabled column...")
+                    conn.execute("ALTER TABLE products ADD COLUMN tracking_enabled BOOLEAN NOT NULL DEFAULT 1")
                 
                 conn.commit()
                 conn.close()

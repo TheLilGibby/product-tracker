@@ -12,6 +12,15 @@ TELEGRAM_API_BASE = "https://api.telegram.org"
 TELEGRAM_CAPTION_LIMIT = 1024
 
 
+def _store_from_url(url):
+    """Return the retailer key for a product URL (e.g. 'amazon'), or None."""
+    try:
+        from app.scrapers import detect_store_type
+        return detect_store_type(url)
+    except Exception:
+        return None
+
+
 def get_telegram_settings():
     """
     Return (bot_token, chat_id) for the global alert channel.
@@ -108,7 +117,8 @@ class TelegramNotifier:
     @staticmethod
     def send_notification(product_name, product_url, current_price, old_price=None,
                           is_availability_alert=False, is_auto_cart=False, cart_url=None, image_url=None,
-                          bot_token=None, chat_id=None):
+                          bot_token=None, chat_id=None, is_new_tracking=False, available=None,
+                          target_price=None, tracker_url=None):
         """
         Send a product alert to Telegram. Mirrors DiscordNotifier.send_notification.
 
@@ -122,25 +132,38 @@ class TelegramNotifier:
             cart_url: URL to the cart (for auto-cart notifications)
             image_url: URL to product image
             bot_token / chat_id: Optional overrides for the configured channel
+            is_new_tracking: Whether this announces a newly tracked product
+            available: Current stock state, shown on new-tracking announcements
+            target_price: Configured target price, shown on new-tracking announcements
+            tracker_url: Public tracker product page (Cloudflare), preferred over the retailer URL
 
         Returns:
             Boolean indicating success or failure
         """
         name = html.escape(product_name or "")
 
-        if is_auto_cart:
-            title = "🛒 <b>Auto-Cart Success!</b>"
+        if is_new_tracking:
+            title = "<b>Now Tracking</b>"
+        elif is_auto_cart:
+            title = "<b>Added to Cart</b>"
         elif is_availability_alert:
-            title = "🔔 <b>Product Available!</b>"
+            title = "<b>Product Available!</b>"
         else:
-            title = "🔔 <b>Price Drop Alert!</b>"
+            title = "<b>Price Drop Alert!</b>"
 
         lines = [title, f"<b>{name}</b>", ""]
 
-        if is_auto_cart:
+        if is_new_tracking:
             if current_price is not None:
                 lines.append(f"Current Price: ${current_price:.2f}")
-            lines.append("Status: Product has been automatically added to cart!")
+            if available is not None:
+                lines.append(f"Availability: {'In stock' if available else 'Out of stock'}")
+            if target_price is not None:
+                lines.append(f"Target Price: ${target_price:.2f}")
+        elif is_auto_cart:
+            if current_price is not None:
+                lines.append(f"Current Price: ${current_price:.2f}")
+            lines.append("Status: This product is in your cart.")
             if cart_url:
                 lines.append(f'<a href="{html.escape(cart_url, quote=True)}">View cart</a>')
         elif is_availability_alert:
@@ -156,7 +179,20 @@ class TelegramNotifier:
                 percent_savings = (savings / old_price) * 100
                 lines.append(f"You Save: ${savings:.2f} ({percent_savings:.1f}%)")
 
-        lines += ["", f'<a href="{html.escape(product_url, quote=True)}">View product</a>']
+        store = _store_from_url(product_url)
+        if store:
+            lines.append(f"Source: {html.escape(store)}")
+
+        lines.append("")
+        if tracker_url:
+            lines.append(
+                f'<a href="{html.escape(tracker_url, quote=True)}">Open in tracker</a>'
+            )
+        if product_url:
+            label = "View listing" if tracker_url else "View product"
+            lines.append(
+                f'<a href="{html.escape(product_url, quote=True)}">{label}</a>'
+            )
 
         return TelegramNotifier.send_message(
             "\n".join(lines), image_url=image_url, bot_token=bot_token, chat_id=chat_id

@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}{{ title|default('Wiki') }} - Product Tracker{% endblock %}
+{% block title %}{{ title|default('Wiki') }} - Tracker_{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -11,7 +11,7 @@
     }
     
     .wiki-content h1, .wiki-content h2 {
-        border-bottom: 1px solid #e5e7eb;
+        border-bottom: 1px solid var(--border);
         padding-bottom: 0.5rem;
         margin-top: 2rem;
     }
@@ -25,20 +25,20 @@
     }
     
     .wiki-content blockquote {
-        border-left: 4px solid #e5e7eb;
+        border-left: 4px solid var(--border);
         padding-left: 1rem;
-        color: #4b5563;
+        color: var(--text-light);
     }
     
     .wiki-content code {
-        background-color: #f3f4f6;
+        background-color: var(--accent-bg);
         padding: 0.2rem 0.4rem;
         border-radius: 3px;
         font-size: 0.875em;
     }
     
     .wiki-content pre {
-        background-color: #f3f4f6;
+        background-color: var(--accent-bg);
         padding: 1rem;
         border-radius: 5px;
         overflow-x: auto;
@@ -56,19 +56,17 @@
     }
     
     .wiki-content th, .wiki-content td {
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--border);
         padding: 0.5rem;
     }
     
     .wiki-content th {
-        background-color: #f9fafb;
+        background-color: var(--surface);
     }
 </style>
 {% endblock %}
 
 {% block content %}
-<h1>{{ title|default('Product Tracker Wiki') }}</h1>
-
 <div class="wiki-content">
     {{ html_content|safe }}
 </div>

@@ -1,3 +1,4 @@
+import os
 import re
 import logging
 import requests
@@ -15,6 +16,99 @@ from PIL import Image
 # Set up logging
 logger = logging.getLogger('app.scrapers.amazon')
 
+# Buy-box copy that means the featured offer is not currently purchasable.
+# "in stock" is matched separately with a lookbehind so "back in stock" in
+# "we don't know when this will be back in stock" is not treated as available.
+_UNAVAILABLE_MARKERS = (
+    'currently unavailable',
+    'temporarily out of stock',
+    'out of stock',
+    'no featured offers',
+    "we don't know when",
+    'not currently available',
+    'will be released',
+)
+_IN_STOCK_RE = re.compile(r'(?<!back )in stock', re.IGNORECASE)
+_PREORDER_RE = re.compile(r'pre[\s-]?order', re.IGNORECASE)
+
+
+def amazon_cookies_file_path():
+    """Where pasted Amazon cookies are stored so they survive restarts."""
+    if os.path.isdir('/app/data'):
+        return os.path.join('/app/data', 'amazon_cookies.txt')
+    return os.path.join(os.path.expanduser('~'), '.chrome_profiles', 'amazon_cookies.txt')
+
+
+def load_amazon_cookies():
+    """Cookie header string for the logged-in Amazon session, or ''."""
+    env_value = (os.environ.get('AMAZON_COOKIES') or '').strip()
+    if env_value:
+        return env_value
+    path = amazon_cookies_file_path()
+    try:
+        if os.path.isfile(path):
+            with open(path, 'r', encoding='utf-8') as handle:
+                return handle.read().strip()
+    except OSError as exc:
+        logger.warning(f"Could not read Amazon cookies file: {exc}")
+    return ''
+
+
+def save_amazon_cookies(cookie_header):
+    """Persist Amazon cookies to the process env and the data file."""
+    cookie_header = (cookie_header or '').strip()
+    os.environ['AMAZON_COOKIES'] = cookie_header
+    path = amazon_cookies_file_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as handle:
+        handle.write(cookie_header)
+    return path
+
+
+# Names shown in Chrome Application → Cookies → https://www.amazon.com
+AMAZON_COOKIE_FIELDS = (
+    ('at-main', 'amazon_at_main'),
+    ('sess-at-main', 'amazon_sess_at_main'),
+    ('session-id', 'amazon_session_id'),
+    ('session-token', 'amazon_session_token'),
+    ('ubid-main', 'amazon_ubid_main'),
+)
+
+
+def _clean_cookie_value(cookie_name, value):
+    """Strip table copy/paste extras: wrapping quotes and a leading name=."""
+    value = (value or '').strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        value = value[1:-1].strip()
+    prefix = cookie_name + '='
+    if value.lower().startswith(prefix.lower()):
+        value = value[len(prefix):].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1].strip()
+    return value
+
+
+def cookie_header_from_form(form):
+    """
+    Build a Cookie header from the settings form.
+
+    Named fields (Application → Cookies table) are the main path. A pasted
+    full header in amazon_cookies still works if the user has one.
+    """
+    if form.get('clear_amazon_cookies'):
+        return ''
+
+    full = (form.get('amazon_cookies') or '').strip()
+    if full:
+        return full
+
+    parts = []
+    for cookie_name, field_name in AMAZON_COOKIE_FIELDS:
+        value = _clean_cookie_value(cookie_name, form.get(field_name))
+        if value:
+            parts.append(f'{cookie_name}={value}')
+    return '; '.join(parts)
+
 class AmazonScraper:
     """Scraper specifically for Amazon products"""
     
@@ -24,6 +118,70 @@ class AmazonScraper:
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
+        self.profile_dir = os.path.join(os.path.expanduser("~"), ".chrome_profiles", "amazon_profile")
+        os.makedirs(self.profile_dir, exist_ok=True)
+
+    def _get_chrome_options(self):
+        """Fresh ChromeOptions with the persistent Amazon profile (do not reuse)."""
+        options = uc.ChromeOptions()
+        options.add_argument(f'--user-data-dir={self.profile_dir}')
+        options.add_argument('--profile-directory=Default')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        if os.environ.get('AMAZON_HEADLESS', '1') != '0':
+            options.add_argument('--headless=new')
+        return options
+
+    def _parse_cookie_header(self, cookie_header):
+        cookies = []
+        for pair in (cookie_header or '').split(';'):
+            pair = pair.strip()
+            if not pair or '=' not in pair:
+                continue
+            name, value = pair.split('=', 1)
+            name, value = name.strip(), _clean_cookie_value(name.strip(), value)
+            if name:
+                cookies.append((name, value))
+        return cookies
+
+    def _apply_amazon_cookies(self, driver):
+        """Inject the user's Amazon session cookies into this browser."""
+        cookie_header = load_amazon_cookies()
+        if not cookie_header:
+            logger.warning("No Amazon cookies configured; cart will be a guest session")
+            return 0
+
+        applied = 0
+        for name, value in self._parse_cookie_header(cookie_header):
+            added = False
+            for domain in ('.amazon.com', 'www.amazon.com', 'amazon.com'):
+                try:
+                    driver.add_cookie({
+                        'name': name,
+                        'value': value,
+                        'domain': domain,
+                        'path': '/',
+                    })
+                    applied += 1
+                    added = True
+                    break
+                except Exception:
+                    continue
+            if not added:
+                logger.debug(f"Could not add Amazon cookie {name}")
+        logger.info(f"Applied {applied} Amazon cookie(s) for a logged-in cart")
+        return applied
+
+    def _amazon_looks_signed_in(self, driver):
+        """Best-effort check of the Amazon nav account line."""
+        try:
+            el = driver.find_element(By.ID, 'nav-link-accountList-nav-line-1')
+            text = (el.text or '').strip().lower()
+            return bool(text) and 'sign in' not in text
+        except Exception:
+            return False
     
     def scrape_product(self, url):
         """
@@ -64,23 +222,27 @@ class AmazonScraper:
         logger.info(f"Adding Amazon product to cart: {url}, quantity: {quantity}")
         
         try:
-            # Create a new undetected-chromedriver instance
             logger.debug("Starting undetected-chromedriver for Amazon add to cart")
-            options = uc.ChromeOptions()
-            options.add_argument("--headless")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            
-            # Proxy setup if needed
-            # options.add_argument('--proxy-server=your-proxy-server')
-            
+            options = self._get_chrome_options()
             driver = uc.Chrome(options=options)
             
             try:
-                # Set window size
                 driver.set_window_size(1366, 768)
-                
-                # Navigate to the product page
+
+                logger.debug("Opening Amazon so session cookies can be applied")
+                driver.get('https://www.amazon.com/')
+                WebDriverWait(driver, 15).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+                self._apply_amazon_cookies(driver)
+                driver.refresh()
+                time.sleep(1)
+                if not self._amazon_looks_signed_in(driver):
+                    logger.warning(
+                        "Amazon nav still looks signed out. Paste a fresh Cookie header from "
+                        "your logged-in browser into Settings → Amazon Auto-Cart."
+                    )
+
                 logger.debug(f"Navigating to {url}")
                 driver.get(url)
                 
@@ -284,23 +446,49 @@ class AmazonScraper:
             logger.error(f"Error extracting price: {str(e)}")
             return None
     
+    def _buy_button_enabled(self, soup, button_id):
+        """True when the named buy-box input exists and is not disabled."""
+        button = soup.find(id=button_id)
+        if not button:
+            return False
+        if button.has_attr('disabled') or str(button.get('aria-disabled', '')).lower() == 'true':
+            return False
+        if button.find_parent(class_=re.compile(r'a-button-disabled')):
+            return False
+        return True
+
     def extract_availability(self, soup):
         """Extract product availability from Amazon page"""
         logger.debug("AmazonScraper: Extracting availability")
         try:
-            availability = soup.find(id='availability')
-            if availability:
-                text = availability.get_text().strip().lower()
-                available = 'in stock' in text
-                logger.debug(f"Found availability from availability element: {available}")
-                return available
-                
-            # Check add to cart button existence
-            add_to_cart = soup.find(id='add-to-cart-button')
-            if add_to_cart:
-                logger.debug("Found 'Add to Cart' button, product is available")
+            # Read buy-box copy first. A leftover Buy Now / Pre-order button is
+            # not the same as a current in-stock offer — Amazon also serves
+            # "Currently unavailable" / future-release text in #availability.
+            for node in (
+                soup.find(id='availability'),
+                soup.find(id='outOfStock'),
+                soup.select_one('#availabilityInsideBuyBox_feature_div'),
+            ):
+                if not node:
+                    continue
+                text = node.get_text(' ', strip=True)
+                if not text:
+                    continue
+                lowered = text.lower()
+                if any(marker in lowered for marker in _UNAVAILABLE_MARKERS):
+                    logger.debug(f"Availability text is unavailable: {text[:160]}")
+                    return False
+                if _PREORDER_RE.search(text):
+                    logger.debug(f"Availability text is pre-order, not treating as in stock: {text[:160]}")
+                    return False
+                if _IN_STOCK_RE.search(text):
+                    logger.debug("Availability text says in stock")
+                    return True
+
+            if self._buy_button_enabled(soup, 'add-to-cart-button'):
+                logger.debug("Found enabled #add-to-cart-button, product is available")
                 return True
-            
+
             logger.warning("Could not determine product availability")
             return False
         except Exception as e:

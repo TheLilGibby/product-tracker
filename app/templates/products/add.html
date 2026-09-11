@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}Add New Product - Product Tracker{% endblock %}
+{% block title %}Add New Product - Tracker_{% endblock %}
 
 {% block content %}
 <header class="mb-4">
@@ -12,7 +12,7 @@
     <div class="mb-4">
         <label for="url">Product URL <span style="color: red;">*</span></label>
         <input type="url" id="url" name="url" placeholder="https://www.amazon.com/product-page" required>
-        <small>Currently supported sites: Amazon, Walmart, Newegg, Microcenter, Best Buy, and B&H Photo Video</small>
+        <small>Currently supported sites: Amazon, Walmart, Target, GameStop, Nintendo, Newegg, Microcenter, Best Buy, B&H Photo Video, and Adorama</small>
     </div>
     
     <div class="mb-4">
@@ -21,10 +21,14 @@
             <option value="">-- Select Store --</option>
             <option value="amazon">Amazon</option>
             <option value="walmart">Walmart</option>
+            <option value="target">Target</option>
+            <option value="gamestop">GameStop</option>
+            <option value="nintendo">Nintendo</option>
             <option value="newegg">Newegg</option>
             <option value="microcenter">Microcenter</option>
             <option value="bestbuy">Best Buy</option>
             <option value="bh">B&H Photo Video</option>
+            <option value="adorama">Adorama</option>
         </select>
         <small>Select the store or website that your product link is from</small>
     </div>
@@ -43,16 +47,27 @@
     
     <fieldset>
         <legend>Notification Preferences</legend>
-        
-        <label>
-            <input type="checkbox" id="notify_price" name="notify_price" checked>
-            Notify me when price drops
-        </label>
-        
-        <label>
-            <input type="checkbox" id="notify_availability" name="notify_availability" checked>
-            Notify me when product becomes available
-        </label>
+        <ul class="checkbox-list">
+            <li>
+                <label for="notify_price">
+                    <input type="checkbox" id="notify_price" name="notify_price" checked>
+                    Notify me when price drops
+                </label>
+            </li>
+            <li>
+                <label for="notify_availability">
+                    <input type="checkbox" id="notify_availability" name="notify_availability" checked>
+                    Notify me when product becomes available
+                </label>
+            </li>
+            <li>
+                <label for="notify_cart">
+                    <input type="checkbox" id="notify_cart" name="notify_cart" checked>
+                    Notify me when this product is added to cart
+                </label>
+            </li>
+        </ul>
+        <small>Telegram (and Discord, if set) can ping you when the listing exists / is in stock, and separately when it actually lands in your cart.</small>
     </fieldset>
     
     <fieldset style="margin-top: 1rem;">
@@ -73,7 +88,7 @@
     
     <div style="margin-top: 2rem;">
         <button type="submit">Add Product</button>
-        <a href="{{ url_for('main.index') }}" role="button" class="secondary">Cancel</a>
+        <a href="{{ url_for('main.index') }}" class="button secondary">Cancel</a>
     </div>
 </form>
 {% endblock %} 

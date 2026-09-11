@@ -1,18 +1,12 @@
 {% extends 'base.html' %}
 
-{% block title %}Product Tracker - Dashboard{% endblock %}
+{% block title %}Tracker_ - Dashboard{% endblock %}
 
 {% block content %}
-<header class="mb-4">
-    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-        <div>
-            <h2>Your Tracked Products</h2>
-            <p>Track product prices and availability, get notified via Discord or Telegram when prices drop.</p>
-        </div>
-        <div>
-            <a href="{{ url_for('main.add_product') }}" role="button">Add New Product</a>
-            <a href="{{ url_for('main.update_all_products') }}" role="button" class="secondary">Update All Products</a>
-        </div>
+<header class="page-heading">
+    <h2>Tracked Products</h2>
+    <div class="page-heading-actions">
+        <a href="{{ url_for('main.add_product') }}" class="button">Add New Product</a>
     </div>
 </header>
 
@@ -23,6 +17,7 @@
                 <tr>
                     <th style="width: 60px;">Image</th>
                     <th>Product Name</th>
+                    <th>Store</th>
                     <th>Current Price</th>
                     <th>Target Price</th>
                     <th>Status</th>
@@ -32,17 +27,25 @@
             </thead>
             <tbody>
                 {% for product in products %}
-                    <tr>
+                    <tr data-product-id="{{ product.id }}"{% if not product.tracking_enabled %} class="is-paused"{% endif %}>
                         <td style="text-align: center; padding: 0.5rem;">
-                            {% if product.image_url %}
-                                <img src="{{ product.image_url }}" alt="{{ product.name }}" style="max-height: 50px; max-width: 50px; object-fit: contain;">
+                            {% set image_url = product_image_url(product) %}
+                            {% if image_url %}
+                                <img src="{{ image_url }}" alt="{{ product.name }}" referrerpolicy="no-referrer" style="max-height: 50px; max-width: 50px; object-fit: contain;">
                             {% else %}
-                                <svg class="icon" style="width: 2rem; height: 2rem; color: #9ca3af;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg class="icon" style="width: 2rem; height: 2rem; color: var(--text-light);" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                                 </svg>
                             {% endif %}
                         </td>
                         <td>{{ product.name|truncate(50) }}</td>
+                        <td>
+                            {% if product.store_label != 'Unknown' %}
+                                <span class="badge badge-info">{{ product.store_label }}</span>
+                            {% else %}
+                                <span style="color: var(--text-light);">Unknown</span>
+                            {% endif %}
+                        </td>
                         <td>
                             {% if product.current_price %}
                                 <span class="current-price">${{ "%.2f"|format(product.current_price) }}</span>
@@ -57,7 +60,7 @@
                             {% if product.target_price %}
                                 ${{ "%.2f"|format(product.target_price) }}
                             {% else %}
-                                <span style="color: var(--text-light);">Not set</span>
+                                <span style="color: var(--text-light);">—</span>
                             {% endif %}
                         </td>
                         <td>
@@ -68,13 +71,21 @@
                             {% endif %}
                         </td>
                         <td>
-                            <span style="font-size: 0.875rem;">
-                                {{ format_datetime(product.last_checked, current_timezone) }}
+                            <span style="font-size: 0.875rem; white-space: nowrap;" title="{{ format_datetime(product.last_checked, current_timezone) }}">
+                                {{ time_ago(product.last_checked) }}
                             </span>
                         </td>
                         <td>
-                            <a href="{{ url_for('main.product_detail', product_id=product.id) }}" role="button" style="padding: 0.25rem 0.5rem; margin: 0 0.25rem 0 0;">Details</a>
-                            <a href="{{ url_for('main.update_product', product_id=product.id) }}" role="button" class="secondary" style="padding: 0.25rem 0.5rem; margin: 0;">
+                            <label class="switch" title="Pause or resume scheduled checks and auto-cart">
+                                <input type="checkbox" class="tracking-toggle"
+                                       data-url="{{ url_for('main.toggle_tracking', product_id=product.id) }}"
+                                       {% if product.tracking_enabled %}checked{% endif %}>
+                                <span class="switch-track"></span>
+                                <span class="switch-label">{{ 'On' if product.tracking_enabled else 'Off' }}</span>
+                            </label>
+                            <br>
+                            <a href="{{ url_for('main.product_detail', product_id=product.id) }}" class="button" style="padding: 0.25rem 0.5rem; margin: 0.4rem 0.25rem 0 0;">Details</a>
+                            <a href="{{ url_for('main.update_product', product_id=product.id) }}" class="button secondary" style="padding: 0.25rem 0.5rem; margin: 0.4rem 0 0;">
                                 <svg class="icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
                                     <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
                                     <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
@@ -88,7 +99,7 @@
         </table>
     </div>
 {% else %}
-    <div style="padding: 1.5rem; background-color: #dbeafe; color: #1e40af; border-radius: 5px;">
+    <div style="padding: 1.5rem; background-color: var(--info-bg); color: var(--info-text); border-radius: 5px;">
         <p style="margin: 0;">No products are being tracked yet. <a href="{{ url_for('main.add_product') }}">Add your first product</a> to get started!</p>
     </div>
 {% endif %}
@@ -96,6 +107,89 @@
 
 {% block scripts %}
 <script>
+    // Mirror of Jinja's |truncate(50), so JS-rebuilt rows match the ones
+    // the server rendered.
+    function truncate(text, length) {
+        const end = '...';
+        const leeway = 5;
+        if (!text || text.length <= length + leeway) { return text || ''; }
+        const cut = text.slice(0, length - end.length);
+        const space = cut.lastIndexOf(' ');
+        return (space > 0 ? cut.slice(0, space) : cut) + end;
+    }
+
+    // Mirror of the server-side time_ago() helper, for rows this script rebuilds
+    function timeAgo(iso) {
+        if (!iso) { return "Never"; }
+        const seconds = (Date.now() - new Date(iso).getTime()) / 1000;
+        if (seconds < 45) { return "just now"; }
+        const minutes = seconds / 60;
+        if (minutes < 60) { return Math.floor(minutes) + "m ago"; }
+        const hours = minutes / 60;
+        if (hours < 24) { return Math.floor(hours) + "h ago"; }
+        const days = hours / 24;
+        if (days < 30) { return Math.floor(days) + "d ago"; }
+        return new Date(iso).toISOString().slice(0, 10);
+    }
+
+    // Build the tracking switch for a row the refresh loop rebuilds. Kept in
+    // sync with the Jinja markup above by hand; the behaviour itself lives
+    // only in the delegated handler below.
+    function trackingSwitch(product) {
+        const label = document.createElement('label');
+        label.className = 'switch';
+        label.title = 'Pause or resume scheduled checks and auto-cart';
+
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.className = 'tracking-toggle';
+        input.dataset.url = `/product/${product.id}/toggle-tracking`;
+        input.checked = product.tracking_enabled !== false;
+
+        const track = document.createElement('span');
+        track.className = 'switch-track';
+
+        const text = document.createElement('span');
+        text.className = 'switch-label';
+        text.textContent = input.checked ? 'On' : 'Off';
+
+        label.append(input, track, text);
+        return label;
+    }
+
+    // Delegated so it keeps working after the refresh loop replaces the rows.
+    document.addEventListener('change', function(event) {
+        const input = event.target.closest('.tracking-toggle');
+        if (!input) { return; }
+
+        const enabled = input.checked;
+        const row = input.closest('tr');
+        const text = input.parentElement.querySelector('.switch-label');
+
+        input.disabled = true;
+        fetch(input.dataset.url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: JSON.stringify({ enabled: enabled })
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (!data.success) { throw new Error(data.error || 'refused'); }
+                input.checked = data.tracking_enabled;
+                if (text) { text.textContent = data.tracking_enabled ? 'On' : 'Off'; }
+                if (row) { row.classList.toggle('is-paused', !data.tracking_enabled); }
+            })
+            .catch(error => {
+                // Put the switch back so it never shows a state the server rejected
+                console.error('Error toggling tracking:', error);
+                input.checked = !enabled;
+                if (text) { text.textContent = input.checked ? 'On' : 'Off'; }
+            })
+            .finally(() => { input.disabled = false; });
+    });
     document.addEventListener('DOMContentLoaded', function() {
         // Table sorting functionality
         const table = document.querySelector('table');
@@ -119,7 +213,11 @@
                     // Clear sort indicators on all headers
                     headers.forEach(h => {
                         h.setAttribute('data-sort', '');
-                        h.querySelector('.sort-icon')?.textContent = '⇵';
+                        // Optional chaining is not allowed on the left of an
+                        // assignment; that syntax error used to kill this
+                        // whole script block.
+                        const icon = h.querySelector('.sort-icon');
+                        if (icon) { icon.textContent = '⇵'; }
                     });
                     
                     // Set the new sort order
@@ -145,9 +243,9 @@
                             }
                         }
                         
-                        // Handle "Not available" and "Not set" cases
-                        if (aValue === 'Not available' || aValue === 'Not set') return newSortOrder === 'asc' ? 1 : -1;
-                        if (bValue === 'Not available' || bValue === 'Not set') return newSortOrder === 'asc' ? -1 : 1;
+                        // Handle "Not available" and empty target price (em dash)
+                        if (aValue === 'Not available' || aValue === '—' || aValue === 'Not set') return newSortOrder === 'asc' ? 1 : -1;
+                        if (bValue === 'Not available' || bValue === '—' || bValue === 'Not set') return newSortOrder === 'asc' ? -1 : 1;
                         
                         // Handle availability status
                         if (aValue.includes('In Stock') && !bValue.includes('In Stock')) return newSortOrder === 'asc' ? -1 : 1;
@@ -210,6 +308,10 @@
             // Create new rows from products data
             const newRows = products.map(product => {
                 const row = document.createElement('tr');
+                row.dataset.productId = product.id;
+                if (product.tracking_enabled === false) {
+                    row.classList.add('is-paused');
+                }
                 
                 // Image cell
                 const imageCell = document.createElement('td');
@@ -220,13 +322,14 @@
                     const img = document.createElement('img');
                     img.src = product.image_url;
                     img.alt = product.name;
+                    img.referrerPolicy = 'no-referrer';
                     img.style.maxHeight = '50px';
                     img.style.maxWidth = '50px';
                     img.style.objectFit = 'contain';
                     imageCell.appendChild(img);
                 } else {
                     imageCell.innerHTML = `
-                        <svg class="icon" style="width: 2rem; height: 2rem; color: #9ca3af;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <svg class="icon" style="width: 2rem; height: 2rem; color: var(--text-light);" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                         </svg>
                     `;
@@ -235,8 +338,24 @@
                 
                 // Name cell
                 const nameCell = document.createElement('td');
-                nameCell.textContent = product.name;
+                nameCell.textContent = truncate(product.name, 50);
                 row.appendChild(nameCell);
+
+                // Store cell
+                const storeCell = document.createElement('td');
+                const storeLabel = product.store_label || product.store;
+                if (storeLabel && storeLabel !== 'Unknown') {
+                    const storeBadge = document.createElement('span');
+                    storeBadge.className = 'badge badge-info';
+                    storeBadge.textContent = storeLabel;
+                    storeCell.appendChild(storeBadge);
+                } else {
+                    const unknownStore = document.createElement('span');
+                    unknownStore.style.color = 'var(--text-light)';
+                    unknownStore.textContent = 'Unknown';
+                    storeCell.appendChild(unknownStore);
+                }
+                row.appendChild(storeCell);
                 
                 // Current price cell
                 const priceCell = document.createElement('td');
@@ -268,7 +387,7 @@
                 } else {
                     const noTarget = document.createElement('span');
                     noTarget.style.color = 'var(--text-light)';
-                    noTarget.textContent = 'Not set';
+                    noTarget.textContent = '—';
                     targetCell.appendChild(noTarget);
                 }
                 row.appendChild(targetCell);
@@ -285,29 +404,34 @@
                 const timeCell = document.createElement('td');
                 const timeSpan = document.createElement('span');
                 timeSpan.style.fontSize = '0.875rem';
-                timeSpan.textContent = product.last_checked;
+                timeSpan.style.whiteSpace = "nowrap";
+                timeSpan.title = product.last_checked;
+                timeSpan.textContent = timeAgo(product.last_checked_utc);
                 timeCell.appendChild(timeSpan);
                 row.appendChild(timeCell);
                 
                 // Action cell
                 const actionCell = document.createElement('td');
                 
+                // Tracking switch
+                actionCell.appendChild(trackingSwitch(product));
+                actionCell.appendChild(document.createElement('br'));
+
                 // Details button
                 const detailsLink = document.createElement('a');
                 detailsLink.href = `/product/${product.id}`;
-                detailsLink.setAttribute('role', 'button');
+                detailsLink.className = 'button';
                 detailsLink.style.padding = '0.25rem 0.5rem';
-                detailsLink.style.margin = '0 0.25rem 0 0';
+                detailsLink.style.margin = '0.4rem 0.25rem 0 0';
                 detailsLink.textContent = 'Details';
                 actionCell.appendChild(detailsLink);
                 
                 // Update button
                 const updateLink = document.createElement('a');
                 updateLink.href = `/product/${product.id}/update`;
-                updateLink.setAttribute('role', 'button');
-                updateLink.className = 'secondary';
+                updateLink.className = 'button secondary';
                 updateLink.style.padding = '0.25rem 0.5rem';
-                updateLink.style.margin = '0';
+                updateLink.style.margin = '0.4rem 0 0';
                 updateLink.innerHTML = `
                     <svg class="icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
                         <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
@@ -351,9 +475,9 @@
                         }
                     }
                     
-                    // Handle "Not available" and "Not set" cases
-                    if (aValue === 'Not available' || aValue === 'Not set') return sortOrder === 'asc' ? 1 : -1;
-                    if (bValue === 'Not available' || bValue === 'Not set') return sortOrder === 'asc' ? -1 : 1;
+                    // Handle "Not available" and empty target price (em dash)
+                    if (aValue === 'Not available' || aValue === '—' || aValue === 'Not set') return sortOrder === 'asc' ? 1 : -1;
+                    if (bValue === 'Not available' || bValue === '—' || bValue === 'Not set') return sortOrder === 'asc' ? -1 : 1;
                     
                     // Handle availability status
                     if (aValue.includes('In Stock') && !bValue.includes('In Stock')) return sortOrder === 'asc' ? -1 : 1;
@@ -378,10 +502,9 @@
         }
         
         // Add auto-refresh controls to the page
-        const headerDiv = document.querySelector('header > div');
+        const headerDiv = document.querySelector('.page-heading-actions');
         if (headerDiv) {
             const refreshControls = document.createElement('div');
-            refreshControls.style.marginTop = '1rem';
             refreshControls.style.display = 'flex';
             refreshControls.style.alignItems = 'center';
             refreshControls.style.gap = '0.5rem';
@@ -399,7 +522,7 @@
             refreshControls.appendChild(refreshStatus);
             refreshControls.appendChild(toggleRefreshBtn);
             
-            headerDiv.appendChild(refreshControls);
+            headerDiv.insertBefore(refreshControls, headerDiv.firstElementChild);
             
             // Toggle auto-refresh when the button is clicked
             toggleRefreshBtn.addEventListener('click', () => {

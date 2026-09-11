@@ -1,6 +1,6 @@
 # Product Tracker
 
-A web application that tracks product prices and availability from various e-commerce sites including Amazon, Walmart, Newegg, Best Buy, Microcenter, and B&H Photo.
+A web application that tracks product prices and availability from various e-commerce sites including Amazon, Walmart, Target, GameStop, Newegg, Best Buy, Microcenter, B&H Photo, and Adorama.
 
 ## Features
 
@@ -19,6 +19,21 @@ A web application that tracks product prices and availability from various e-com
   check status and send a test alert, or run `python test_telegram.py`. Other tools can push messages via
   `POST /api/telegram/send` with `{"message": "..."}`. Full walkthrough: [docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md).
 
+## MCP / API access
+
+Products can be added programmatically as well as through the web form:
+
+- **MCP** — `mcp_server.py` exposes `add_product`, `list_products`, `get_product`,
+  `check_product`, `remove_product`, `send_channel_message`, and
+  `list_supported_stores` over stdio, so Claude Code/Desktop or a bot bridged to your
+  Telegram channel can drive the tracker. A project-scoped `.mcp.json` is included.
+- **HTTP** — `POST /api/products` with `{"url": "...", "target_price": 1899.99}` does the
+  same thing for webhooks and non-MCP bots.
+
+Either path scrapes the product immediately and posts a "Now Tracking" announcement to
+the configured channels. Set `API_TOKEN` to require an `X-API-Token` header on mutating
+endpoints. Full walkthrough: [docs/MCP_SETUP.md](docs/MCP_SETUP.md).
+
 ## Dockerized Setup
 
 The application is containerized using Docker for easy deployment and management.
@@ -35,11 +50,14 @@ You can customize the application by setting the following environment variables
 - `SECRET_KEY`: Secret key for the Flask application (default: `your-secret-key-here`)
 - `DEBUG`: Set to `1` to enable debug mode (default: `0`)
 - `TWOCAPTCHA_API_KEY`: API key for 2captcha service (required for solving CAPTCHAs on Newegg)
-- `CHECK_INTERVAL_MINUTES`: How often to check products in minutes (default: `15`)
-- `CHECK_INTERVAL_SECONDS`: Additional seconds for check interval (default: `0`)
+- `CHECK_INTERVAL_MINUTES`: How often to check products in minutes (default: `0`)
+- `CHECK_INTERVAL_SECONDS`: Additional seconds for check interval (default: `10`)
 - `DEFAULT_TIMEZONE`: Default timezone for displaying times (default: `UTC`)
 - `TELEGRAM_BOT_TOKEN`: Bot token from @BotFather (optional; enables Telegram alerts)
 - `TELEGRAM_CHAT_ID`: Telegram channel to post alerts to, e.g. `-1001234567890` or `@channelname` (optional)
+- `API_TOKEN`: Shared secret required by the JSON API / MCP server (optional; open when blank)
+- `AUTH_USER` / `AUTH_PASSWORD`: Optional; required on the public URL for add-to-cart, delete, and cookie paste (viewing and preference saves are open)
+- `PRODUCT_TRACKER_PUBLIC_URL`: The `https://….trycloudflare.com` hostname, shown on Settings
 
 ### Building and Running
 
@@ -118,6 +136,26 @@ To update the application:
    ```
    python run.py
    ```
+
+## Public access (Cloudflare)
+
+A Cloudflare quick tunnel publishes the local app at a random `trycloudflare.com`
+URL so Telegram “Open in tracker” links work on your phone. Viewing the dashboard
+and product pages through the tunnel does not require a login. Set `API_TOKEN`
+before exposing the JSON API.
+
+1. Start the app (`python run.py`).
+2. In another terminal:
+
+   ```
+   %USERPROFILE%\.local\bin\cloudflared.exe tunnel --url http://127.0.0.1:5000
+   ```
+
+3. Copy the printed `https://….trycloudflare.com` URL into `PRODUCT_TRACKER_PUBLIC_URL`
+   in `.env`. The hostname changes every time `cloudflared` restarts.
+
+Keep `PRODUCT_TRACKER_URL=http://localhost:5000` for the MCP server — it should
+talk to Flask on loopback, not bounce through the tunnel.
 
 ## License
 
