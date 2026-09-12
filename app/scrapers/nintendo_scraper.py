@@ -114,6 +114,18 @@ SKU_ANCHOR_SELECTOR = '[data-ps-sku]'
 #   closed pre-order  "Sold out"      disabled   (sku 121642, the Zelda console)
 BUY_BUTTON_TEXTS = ('add to cart', 'pre-purchase', 'pre-order', 'preorder')
 
+# What the CTA says while it is still hydrating. The rest of the buy box renders
+# first and the button arrives blank or reading "Loading", so anything else -
+# "Sold out" very much included - is a button that has settled on its answer.
+CTA_PENDING_TEXTS = ('loading', 'please wait')
+
+# How long to let it settle. This replaced a flat 2s sleep that lost the race on
+# 2026-09-11: an attempt on sku 127074 read the buy box while it still said
+# '', '' and 'Loading', and reported no buy button on a page that had one.
+# Waiting on the label rather than the clock also returns as soon as the answer
+# is there, so a sold-out buy box is decided faster than the sleep decided it.
+CTA_TIMEOUT = 15
+
 # Never clicked, wherever they turn up. "Buy now" and "Find retailers" are the
 # third-party price-spider widget sitting in the same buy box - they send the
 # shopper to another retailer - and the rest are checkout. This scraper carts and
@@ -451,7 +463,7 @@ class NintendoScraper:
                     EC.presence_of_element_located((By.CSS_SELECTOR, SKU_ANCHOR_SELECTOR + ', h1')))
             except TimeoutException:
                 logger.warning("Timed out waiting for the Nintendo buy box; reading whatever rendered")
-            time.sleep(2)   # the CTA hydrates a moment after the rest of the buy box
+            self._wait_for_cta(driver, sku)
 
             obstacle = self._page_obstacle(driver)
             if obstacle:
@@ -618,6 +630,35 @@ class NintendoScraper:
             return False
 
     # ---------------------------------------------------------------- buy box
+    def _wait_for_cta(self, driver, sku):
+        """
+        Wait until the buy box's button has settled on a label.
+
+        Returns True when one has, False on timeout. A timeout is not fatal and
+        is deliberately not turned into a refusal: the caller goes on to read
+        whatever did render, and _find_buy_button says what it found there. All
+        this changes is that the answer is no longer read mid-hydrate.
+        """
+        def settled(_):
+            buttons = (self._elements(driver, BUY_BUTTON_SELECTOR)
+                       or self._elements(driver, BUY_BOX_SECTION_SELECTOR % sku))
+            return any(self._cta_settled(self._text(button)) for button in buttons)
+
+        try:
+            WebDriverWait(driver, CTA_TIMEOUT, poll_frequency=0.25).until(settled)
+            return True
+        except TimeoutException:
+            logger.warning(f"The Nintendo buy box for {sku} still had no button label after "
+                           f"{CTA_TIMEOUT}s; reading it as it stands")
+            return False
+
+    @staticmethod
+    def _cta_settled(label):
+        """True when a buy-box button's text is its own rather than a placeholder"""
+        lowered = (label or '').strip().lower()
+        return bool(lowered) and not any(lowered.startswith(pending)
+                                         for pending in CTA_PENDING_TEXTS)
+
     def _find_buy_button(self, driver, sku):
         """
         The add-to-cart / pre-purchase control for THIS sku.

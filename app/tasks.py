@@ -5,6 +5,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from flask import current_app
 from app import db
 from app.models.product import Product, PriceHistory
+from app.cart_screenshots import save_cart_screenshot
 from app.scrapers import detect_store_type, get_scraper, is_by_design_refusal
 from app.notifications import send_product_alert, notify_cart_success
 import urllib.parse
@@ -579,6 +580,12 @@ def check_auto_cart_opportunities():
                 # turn, and retrying it a minute later would only decline again.
                 product.last_cart_attempt = datetime.utcnow()
                 product.last_cart_status = message
+                # Assigned even when there is no image, so the picture on the
+                # product page is never one attempt out of step with the status
+                # beside it. The HTTP-only refusals never open a browser and so
+                # never have one.
+                product.last_cart_screenshot = save_cart_screenshot(
+                    product.id, result.get('screenshot'))
                 db.session.commit()
 
                 if result.get('success'):
@@ -602,6 +609,7 @@ def check_auto_cart_opportunities():
                 logger.error(f"Error adding product {product.id} to cart: {str(e)}", exc_info=True)
                 product.last_cart_attempt = datetime.utcnow()
                 product.last_cart_status = f"Error: {str(e)}"
+                product.last_cart_screenshot = None
                 db.session.commit()
         except Exception as e:
             logger.error(f"Error processing auto-cart for product {product.id}: {str(e)}", exc_info=True)

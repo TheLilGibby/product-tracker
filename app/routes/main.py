@@ -1,6 +1,7 @@
-from flask import Blueprint, render_template, redirect, url_for, flash, request, jsonify, current_app, session, abort
+from flask import Blueprint, render_template, redirect, url_for, flash, request, jsonify, current_app, session, abort, send_file
 from app import db
 from app.models.product import Product, PriceHistory
+from app.cart_screenshots import save_cart_screenshot, screenshot_path
 from app.groups import grouped_view
 from app.scrapers import add_to_cart, detect_store_type, get_scraper, store_choices
 from app.tasks import check_all_products, get_store_backoff_state
@@ -845,9 +846,14 @@ def add_product_to_cart(product_id):
         # Add to cart using the appropriate scraper
         result = add_to_cart(store_type, product.url, quantity)
         
-        # Update product with cart attempt results
+        # Update product with cart attempt results. The screenshot below is the
+        # same image the redirect renders inline; keeping it as a file is what
+        # lets it still be there on the next page load, and at all for an
+        # attempt the scheduler made with nobody watching.
         product.last_cart_attempt = datetime.utcnow()
         product.last_cart_status = result.get('message', 'Unknown status')
+        product.last_cart_screenshot = save_cart_screenshot(
+            product.id, result.get('screenshot'))
         db.session.commit()
         
         if result.get('success'):
@@ -874,6 +880,21 @@ def add_product_to_cart(product_id):
         logger.error(f"Error adding product to cart: {str(e)}", exc_info=True)
         flash(f'Error adding product to cart: {str(e)}', 'danger')
         return redirect(url_for('main.product_detail', product_id=product.id))
+
+@main_bp.route('/product/<int:product_id>/cart-screenshot')
+def product_cart_screenshot(product_id):
+    """
+    What the store looked like on this product's last cart attempt.
+
+    The files sit in instance/, outside the static route, so this is the only
+    way to them. screenshot_path() refuses any name that is not one the app
+    itself wrote.
+    """
+    product = Product.query.get_or_404(product_id)
+    path = screenshot_path(product.last_cart_screenshot)
+    if not path:
+        abort(404)
+    return send_file(path, mimetype='image/png')
 
 @main_bp.route('/product/<int:product_id>/update-auto-cart', methods=['POST'])
 def update_auto_cart_settings(product_id):

@@ -35,6 +35,11 @@ class Product(db.Model):
     auto_cart_quantity = db.Column(db.Integer, default=1)
     last_cart_attempt = db.Column(db.DateTime, nullable=True)
     last_cart_status = db.Column(db.String(100), nullable=True)
+    # Filename, not a path, of what the store looked like on that attempt. The
+    # file itself lives in instance/cart_screenshots; see app/cart_screenshots.py.
+    # Written on every attempt that reaches a browser, so the picture and the
+    # status above always come from the same try.
+    last_cart_screenshot = db.Column(db.String(120), nullable=True)
     
     # Relationship with price history
     price_histories = db.relationship('PriceHistory', backref='product', lazy=True, cascade='all, delete-orphan')

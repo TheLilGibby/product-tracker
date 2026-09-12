@@ -84,6 +84,10 @@ with app.app_context():
                     print("Adding last_cart_status column...")
                     conn.execute("ALTER TABLE products ADD COLUMN last_cart_status VARCHAR(100)")
 
+                if 'last_cart_screenshot' not in columns:
+                    print("Adding last_cart_screenshot column...")
+                    conn.execute("ALTER TABLE products ADD COLUMN last_cart_screenshot VARCHAR(120)")
+
                 if 'notify_on_cart' not in columns:
                     print("Adding notify_on_cart column...")
                     conn.execute("ALTER TABLE products ADD COLUMN notify_on_cart BOOLEAN DEFAULT 1")
