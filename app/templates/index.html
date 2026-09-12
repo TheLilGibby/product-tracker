@@ -111,19 +111,59 @@
         }
     }
 
-    /* Grouped / All sites switch above the table */
+    /* The three header controls - Grouped / All sites, Auto-refresh, Add New
+       Product - are a toggle, a button and a link styled as a button, so
+       nothing lines them up on its own. Simple.css gives buttons a
+       margin-bottom of 0.5rem, which in a flex row reads as the row sitting
+       high rather than as a gap; drop it and let the header's own gap do the
+       spacing. align-items: stretch then gives all three the height of the
+       tallest, whatever each one's padding works out to. */
+    .page-heading-actions {
+        align-items: stretch;
+        flex-wrap: wrap;
+        /* Row gap only bites on a phone, where the three controls stack; the
+           inherited 1rem between them there reads as three separate blocks. */
+        gap: 0.5rem 1rem;
+    }
+
+    .page-heading-actions > .button,
+    .page-heading-actions button {
+        margin-bottom: 0;
+        display: inline-flex;
+        align-items: center;
+    }
+
+    .auto-refresh {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    /* Grouped / All sites switch. It sits inside <header> now, which puts it
+       in reach of simple.css's site-navigation rules - `header nav` adds a
+       1rem top padding and a line-height of 2, `header nav a` a 1rem bottom
+       margin and a border of its own. Left alone those make this control twice
+       the height of the two beside it, so each one is reset here. */
     .view-toggle {
         display: inline-flex;
-        margin-bottom: 1rem;
+        padding: 0;
+        margin: 0;
+        line-height: normal;
         border: 1px solid #d1d5db;
-        border-radius: 6px;
+        border-radius: var(--standard-border-radius);
         overflow: hidden;
     }
 
     .view-toggle a {
-        padding: 0.3rem 0.9rem;
+        display: inline-flex;
+        align-items: center;
+        margin: 0;
+        padding: 0.5em 0.9em;
+        border: 0;
+        border-radius: 0;
         color: inherit;
         font-size: 0.9rem;
+        line-height: normal;
         text-decoration: none;
     }
 
@@ -143,6 +183,16 @@
 <header class="page-heading">
     <h2>Tracked Products</h2>
     <div class="page-heading-actions">
+        {# Grouped: one row per product group, a chip per retailer listing
+           (products/_grouped.html). All sites: every listing, the table below. #}
+        <nav class="view-toggle" aria-label="Dashboard view">
+            <a href="{{ url_for('main.index', view='grouped') }}"{% if view == 'grouped' %} aria-current="page"{% endif %}>Grouped</a>
+            <a href="{{ url_for('main.index', view='all') }}"{% if view != 'grouped' %} aria-current="page"{% endif %}>All sites</a>
+        </nav>
+        {# Filled in by the auto-refresh script below. An empty slot rather than
+           an insertBefore so the three controls keep this order, and so the
+           header does not reflow once the script runs. #}
+        <div class="auto-refresh" id="auto-refresh-control"></div>
         <a href="{{ url_for('main.add_product') }}" class="button">Add New Product</a>
     </div>
 </header>
@@ -175,13 +225,6 @@
         <span style="font-size: 0.9rem; color: var(--text-light);">every store is answering</span>
     {% endif %}
 </section>
-
-{# Grouped: one row per product group, a chip per retailer listing
-   (products/_grouped.html). All sites: every listing, the table below. #}
-<nav class="view-toggle" aria-label="Dashboard view">
-    <a href="{{ url_for('main.index', view='grouped') }}"{% if view == 'grouped' %} aria-current="page"{% endif %}>Grouped</a>
-    <a href="{{ url_for('main.index', view='all') }}"{% if view != 'grouped' %} aria-current="page"{% endif %}>All sites</a>
-</nav>
 
 {% if view == 'grouped' %}
     {% include 'products/_grouped.html' %}
@@ -752,29 +795,22 @@
             }
         }
         
-        // Add auto-refresh controls to the page
-        const headerDiv = document.querySelector('.page-heading-actions');
-        if (headerDiv) {
-            const refreshControls = document.createElement('div');
-            refreshControls.style.display = 'flex';
-            refreshControls.style.alignItems = 'center';
-            refreshControls.style.gap = '0.5rem';
-            
+        // Fill in the auto-refresh slot the header markup leaves for it. The
+        // button is left at the stylesheet's own size: overriding its padding
+        // here is what used to make it shorter than Add New Product beside it.
+        const refreshControls = document.getElementById('auto-refresh-control');
+        if (refreshControls) {
             const refreshStatus = document.createElement('span');
-            refreshStatus.textContent = 'Auto-refresh: ';
-            refreshStatus.style.fontSize = '0.875rem';
-            
+            refreshStatus.textContent = 'Auto-refresh:';
+            refreshStatus.style.fontSize = '0.9rem';
+
             const toggleRefreshBtn = document.createElement('button');
             toggleRefreshBtn.textContent = 'Enabled';
             toggleRefreshBtn.className = 'success';
-            toggleRefreshBtn.style.padding = '0.25rem 0.5rem';
-            toggleRefreshBtn.style.margin = '0';
-            
+
             refreshControls.appendChild(refreshStatus);
             refreshControls.appendChild(toggleRefreshBtn);
-            
-            headerDiv.insertBefore(refreshControls, headerDiv.firstElementChild);
-            
+
             // Toggle auto-refresh when the button is clicked
             toggleRefreshBtn.addEventListener('click', () => {
                 autoRefreshEnabled = !autoRefreshEnabled;
