@@ -83,7 +83,9 @@ from app.scrapers.common import (DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_
                                  detect_chrome_major, profile_lock, ProfileBusyError,
                                  apply_cookie_header, cookie_header_is_rejected,
                                  cookie_header_jar, cookie_header_names, cookie_setting,
-                                 note_cookie_header_rejected)
+                                 note_cookie_header_rejected, forget_cookie_header_rejection,
+                                 note_session_probe, session_probe_get,
+                                 session_probe_wait_seconds)
 
 logger = logging.getLogger('app.scrapers.gamestop')
 
@@ -133,6 +135,94 @@ def load_gamestop_user_agent(configured_only=False):
     if configured or configured_only:
         return configured
     return DEFAULT_HEADERS['User-Agent']
+
+
+# What the settings page asks for when no GameStop product is tracked yet. A
+# product page rather than the homepage on purpose: the edge is stricter about
+# the pages worth scraping, so a homepage 200 would prove less than it looks.
+SESSION_PROBE_URL = ('https://www.gamestop.com/consoles-hardware/nintendo-switch-2/products/'
+                     'nintendo-switch-2-the-legend-of-zelda-40th-anniversary-edition/'
+                     '20037854.html')
+
+
+def test_gamestop_session(url=None):
+    """
+    Fetch one page with the saved session and report what the edge did.
+
+    The settings page's Test button. One request, status line and block-page
+    classification only; the body is measured and discarded, never rendered.
+
+    Returns {'ok', 'level', 'message', 'status'}, where ``level`` is the flash
+    category. Cloudflare has three answers worth telling apart and they are
+    easily confused: a 403, a 200 that is really the challenge page, and a 200
+    that is really the product.
+
+    A success forgets an earlier refusal so a renewed session resumes at once. A
+    failure records none - see test_target_session for why.
+    """
+    header = load_gamestop_cookies()
+    if not header:
+        return {'ok': False, 'level': 'warning', 'status': None,
+                'message': 'No GameStop session is saved, so there is nothing to test.'}
+
+    waiting = session_probe_wait_seconds('gamestop')
+    if waiting:
+        return {'ok': False, 'level': 'warning', 'status': None,
+                'message': f'Just tested. GameStop can be tested again in {waiting} seconds.'}
+
+    jar = cookie_header_jar(header, 'gamestop.com')
+    if jar is None:
+        return {'ok': False, 'level': 'error', 'status': None,
+                'message': 'That header holds no usable cookie. Copy the whole '
+                           'cookie: line from the Network tab, not one cell.'}
+
+    url = url or SESSION_PROBE_URL
+    headers = dict(DEFAULT_HEADERS)
+    headers['User-Agent'] = load_gamestop_user_agent()
+    ua_pasted = bool(cookie_setting('GAMESTOP_USER_AGENT'))
+
+    note_session_probe('gamestop')
+    response, error = session_probe_get(url, headers=headers, cookies=jar)
+    if error:
+        logger.info(f"GameStop session test could not be made ({len(jar)} cookies sent): {error}")
+        return {'ok': False, 'level': 'error', 'status': None,
+                'message': f'GameStop could not be reached. {error}'}
+
+    status = response.status_code
+    blocked = detect_block_page(response.text) if status == 200 else None
+    # Logged without the session: the names say everything a reader needs, and a
+    # cookie in a log file is a cookie in a log file.
+    logger.info(f"GameStop session test: HTTP {status}"
+                f"{' (block page: ' + blocked + ')' if blocked else ''} "
+                f"({', '.join(cookie_header_names(header))})")
+
+    if status == 200 and not blocked:
+        forget_cookie_header_rejection(header)
+        return {'ok': True, 'level': 'success', 'status': status,
+                'message': f'GameStop answered 200 with your session ({len(response.text):,} '
+                           'bytes of product page). Checks will use plain HTTP and open '
+                           'no browser window.'}
+
+    # Both remaining failures have the same two causes, and the User-Agent one
+    # is the one people do not think of - so it is named first when it is
+    # missing, and mentioned second when it is not.
+    if ua_pasted:
+        why = ("That usually means the clearance has expired, or this machine's "
+               'IP address has changed since it was issued - Cloudflare ties it to '
+               'both. Load a gamestop.com product page again and copy a fresh '
+               'cookie header.')
+    else:
+        why = ('No User-Agent is saved, which is the most likely cause: Cloudflare '
+               'issues a clearance to one browser and refuses it to every other. '
+               'Copy the user-agent: line from the same request and save it above.')
+
+    if status == 200 and blocked:
+        return {'ok': False, 'level': 'error', 'status': status,
+                'message': f'GameStop answered 200 but served its challenge page '
+                           f'({blocked}), which is a refusal wearing a success. {why}'}
+    return {'ok': False, 'level': 'error', 'status': status,
+            'message': f'GameStop refused it ({status}). {why}'}
+
 
 
 class GameStopScraper:

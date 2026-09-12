@@ -90,7 +90,9 @@ from app.scrapers.common import (DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_
                                  load_cookie_jar, mark_cookie_jar_stale,
                                  apply_cookie_header, cookie_header_is_rejected,
                                  cookie_header_jar, cookie_header_names, cookie_setting,
-                                 note_cookie_header_rejected)
+                                 note_cookie_header_rejected, forget_cookie_header_rejection,
+                                 note_session_probe, session_probe_get,
+                                 session_probe_wait_seconds)
 
 # Set up logging
 logger = logging.getLogger('app.scrapers.target')
@@ -145,6 +147,104 @@ TARGET_SESSION_COOKIES = ('_px3', '_pxvid', 'pxcts', 'visitorId')
 def load_target_cookies():
     """The pasted Target session as a Cookie header, or ''."""
     return cookie_setting('TARGET_COOKIES')
+
+
+# What the settings page asks Redsky about when the user has no Target product
+# tracked yet. Any real TCIN does - the answer being read is the status line,
+# not the product - and this is the console the tracker exists for.
+SESSION_PROBE_TCIN = '1013322047'
+
+
+def test_target_session(tcin=None):
+    """
+    Ask Redsky one question with the saved session and report what came back.
+
+    This is the settings page's Test button. It makes exactly one request, reads
+    the status line, and throws the body away: it is a question about the
+    session, not about the product, and rendering a retailer's response into our
+    own page is not something a diagnostic needs to do.
+
+    Returns {'ok', 'level', 'message', 'status'}. ``level`` is the flash
+    category, so the page can say the three outcomes apart - it worked, it was
+    refused, or Target never answered - which is the entire point of the button:
+    a refusal and a network failure look identical in the logs a week later.
+
+    A success forgets an earlier refusal, so a session that was set aside and
+    has since been renewed goes straight back into service. A failure does NOT
+    record one: the memo exists to stop the scheduler spending a doomed request
+    every cycle, and somebody standing at the settings page pressing Test is the
+    opposite situation - one bad minute should not sideline a good paste.
+    """
+    header = load_target_cookies()
+    if not header:
+        return {'ok': False, 'level': 'warning', 'status': None,
+                'message': 'No Target session is saved, so there is nothing to test.'}
+
+    waiting = session_probe_wait_seconds('target')
+    if waiting:
+        return {'ok': False, 'level': 'warning', 'status': None,
+                'message': f'Just tested. Target can be tested again in {waiting} seconds.'}
+
+    tcin = tcin or SESSION_PROBE_TCIN
+    jar = cookie_header_jar(header, 'target.com')
+    if jar is None:
+        return {'ok': False, 'level': 'error', 'status': None,
+                'message': 'That header holds no usable cookie. Copy the whole '
+                           'cookie: line from the Network tab, not one cell.'}
+
+    headers = dict(DEFAULT_HEADERS)
+    headers.update({
+        'Accept': 'application/json',
+        'Origin': 'https://www.target.com',
+        'Referer': f'https://www.target.com/p/A-{tcin}',
+    })
+    headers.update(REDSKY_BROWSER_HEADERS)
+    params = {
+        'key': REDSKY_API_KEY,
+        'tcin': tcin,
+        'pricing_store_id': REDSKY_STORE_ID,
+        'has_pricing_store_id': 'true',
+        'channel': 'WEB',
+        'page': f'/p/A-{tcin}',
+    }
+
+    note_session_probe('target')
+    response, error = session_probe_get(REDSKY_PDP_URL, headers=headers,
+                                        cookies=jar, params=params)
+    if error:
+        # Logged without the session, here and below: this is the one place a
+        # manual request leaves the live process for a retailer, so it is worth
+        # a line in the log - but a cookie in a log file is a cookie in a log
+        # file, and the names alone say everything a reader needs.
+        logger.info(f"Target session test could not be made ({len(jar)} cookies sent): {error}")
+        return {'ok': False, 'level': 'error', 'status': None,
+                'message': f'Target could not be reached. {error}'}
+
+    status = response.status_code
+    logger.info(f"Target session test: Redsky answered HTTP {status} "
+                f"({', '.join(cookie_header_names(header))})")
+
+    if status == 200:
+        forget_cookie_header_rejection(header)
+        return {'ok': True, 'level': 'success', 'status': status,
+                'message': 'Target answered 200 with your session. Price and stock '
+                           'checks will use it instead of opening a browser.'}
+    if status in REDSKY_STALE_SESSION_STATUSES:
+        return {'ok': False, 'level': 'error', 'status': status,
+                'message': f'Target refused it ({status}). That clearance has expired '
+                           'or was never issued - pass the press-and-hold on '
+                           'target.com again and copy a fresh cookie header.'}
+    if status == 206:
+        # A partial answer is Redsky disliking the question, not the caller.
+        forget_cookie_header_rejection(header)
+        return {'ok': True, 'level': 'success', 'status': status,
+                'message': f'Target answered {status}, which means your session was '
+                           'accepted - that status is about the product query, not '
+                           'about you.'}
+    return {'ok': False, 'level': 'warning', 'status': status,
+            'message': f'Target answered {status}. That is not a refusal of your '
+                       'session; it usually means Redsky is briefly unwell. Try again.'}
+
 
 # Redsky is an XHR from the product page. With a cookie jar attached the request
 # has to look like that XHR and not like a bare script, so it carries the client

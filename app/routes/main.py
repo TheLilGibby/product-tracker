@@ -1101,6 +1101,40 @@ def update_gamestop_cookies():
     return redirect(url_for('main.settings'))
 
 
+@main_bp.route('/test-target-session', methods=['POST'])
+def test_target_session_route():
+    """
+    Ask Redsky one question with the saved Target session and flash the answer.
+
+    A POST rather than a GET because it spends a request at a retailer, which
+    keeps it inside auth.py's deny-by-default list and behind the same-origin
+    guard along with every other button that does something.
+    """
+    from app.scrapers.target_scraper import test_target_session
+
+    try:
+        result = test_target_session()
+        flash(result['message'], result['level'])
+    except Exception as e:
+        flash(f'Error testing the Target session: {str(e)}', 'error')
+
+    return redirect(url_for('main.settings'))
+
+
+@main_bp.route('/test-gamestop-session', methods=['POST'])
+def test_gamestop_session_route():
+    """Fetch one GameStop page with the saved session and flash what the edge did."""
+    from app.scrapers.gamestop_scraper import test_gamestop_session
+
+    try:
+        result = test_gamestop_session()
+        flash(result['message'], result['level'])
+    except Exception as e:
+        flash(f'Error testing the GameStop session: {str(e)}', 'error')
+
+    return redirect(url_for('main.settings'))
+
+
 @main_bp.route('/auto-cart-testing')
 def auto_cart_testing():
     """Display auto-cart testing documentation page"""

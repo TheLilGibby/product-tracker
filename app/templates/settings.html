@@ -331,6 +331,11 @@ Content-Type: application/json
                 <button type="submit" name="clear_target_cookies" value="1" class="secondary">Clear saved session</button>
             </div>
         </form>
+
+        <form method="post" action="{{ url_for('main.test_target_session_route') }}" style="margin-top: 0.75rem;">
+            <button type="submit" class="secondary">Test this session</button>
+            <small style="margin-left: 0.5rem; color: var(--text-light);">One request to Target&#8217;s API with the saved session, reporting the status line and nothing else &mdash; no product is scraped and nothing is carted. One test a minute.</small>
+        </form>
         <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-light);">
             Saved in plain text in this app&#8217;s <code>.env</code> file, the same as the Amazon and Newegg values above. It is a browser session, not your password, and it expires on its own &mdash; paste a fresh one if Target starts failing again.
         </p>
@@ -370,6 +375,11 @@ Content-Type: application/json
                 <button type="submit">Save GameStop session</button>
                 <button type="submit" name="clear_gamestop_cookies" value="1" class="secondary">Clear saved session</button>
             </div>
+        </form>
+
+        <form method="post" action="{{ url_for('main.test_gamestop_session_route') }}" style="margin-top: 0.75rem;">
+            <button type="submit" class="secondary">Test this session</button>
+            <small style="margin-left: 0.5rem; color: var(--text-light);">Loads one GameStop product page with the saved session and reports whether Cloudflare let it through. Nothing is carted. One test a minute.</small>
         </form>
         <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-light);">
             Saved in plain text in this app&#8217;s <code>.env</code> file, the same as the values above. Cloudflare clearances are short-lived; paste a fresh one when GameStop checks start opening a window again.
