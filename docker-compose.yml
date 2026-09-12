@@ -15,11 +15,6 @@ services:
       - chrome_profiles:/home/appuser/.chrome_profiles
     # Chrome crashes with the default 64MB /dev/shm; give it a real shared-memory segment.
     shm_size: 1g
-    # start.sh runs create_db.py immediately; without this it races Postgres's
-    # first-boot initdb and the app dies before the server accepts connections.
-    depends_on:
-      db:
-        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -35,10 +30,13 @@ services:
     environment:
       - FLASK_ENV=production
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-here}
-      # Postgres, so the data outlives the container. No default password:
-      # compose refuses to start rather than bring up a database anyone can
-      # guess into. Set POSTGRES_PASSWORD in .env.
-      - DATABASE_URI=postgresql+psycopg://${POSTGRES_USER:-tracker}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-product_tracker}
+      # SQLite by default, so `docker compose up -d` works with no .env at all.
+      # To use the `db` service below, set both of these in .env and bring the
+      # stack up with `docker compose --profile postgres up -d --build`:
+      #   POSTGRES_PASSWORD=choose-a-password
+      #   DATABASE_URI=postgresql+psycopg://tracker:choose-a-password@db:5432/product_tracker
+      # See docs/POSTGRES.md.
+      - DATABASE_URI=${DATABASE_URI:-sqlite:///data/product_tracker.db}
       - DEBUG=${DEBUG:-0}
       - CHECK_INTERVAL_MINUTES=${CHECK_INTERVAL_MINUTES:-15}
       - CHECK_INTERVAL_SECONDS=${CHECK_INTERVAL_SECONDS:-0}
@@ -61,19 +59,25 @@ services:
   # restart app-tracker so the snapshot caption links to it. For a stable hostname use a named
   # tunnel with a Cloudflare account and replace the command with `tunnel run --token <token>`.
   db:
+    # Opt-in: `docker compose --profile postgres up -d`. Without the profile this
+    # service is not created, so the default SQLite stack is unchanged.
+    profiles: ["postgres"]
     # Pinned to 17 to match the server most of us already run locally; Postgres
     # refuses to start on a data directory written by a different major version.
     image: postgres:17-alpine
     container_name: app-tracker-db
     restart: unless-stopped
-    # Same pattern as app-tracker: real values come from .env, and no secret
-    # gets a default here.
-    env_file:
-      - path: .env
-        required: false
+    # No env_file here on purpose: .env holds the app's Telegram token, 2captcha
+    # key and dashboard password, none of which the database needs. POSTGRES_*
+    # still comes from .env -- compose interpolates ${...} from it -- but only
+    # these three variables reach the container.
+    #
+    # No `:?` default either: an empty POSTGRES_PASSWORD makes initdb fail with a
+    # clear message in this container's log, whereas `:?` aborts every compose
+    # command, including the SQLite-only ones that never touch this service.
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-tracker}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
       - POSTGRES_DB=${POSTGRES_DB:-product_tracker}
     volumes:
       - pg_data:/var/lib/postgresql/data

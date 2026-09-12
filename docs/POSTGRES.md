@@ -97,25 +97,39 @@ python run.py
 
 ## Option B — Docker
 
-`docker-compose.yml` now brings up a `postgres:17-alpine` service alongside the
-app, with the data in a named `pg_data` volume. Set the password in `.env`:
+`docker-compose.yml` carries an optional `postgres:17-alpine` service on a named
+`pg_data` volume. It is behind a compose **profile**, so the default stack is
+unchanged: `docker compose up -d --build` still runs the app alone on SQLite,
+with no `.env` required.
+
+To switch that stack to Postgres, set three things in `.env`:
 
 ```
 POSTGRES_USER=tracker
 POSTGRES_PASSWORD=choose-a-password
 POSTGRES_DB=product_tracker
+DATABASE_URI=postgresql+psycopg://tracker:choose-a-password@db:5432/product_tracker
 ```
 
-`POSTGRES_PASSWORD` has no default. Compose refuses to start without it rather
-than standing up a database anyone could guess into.
+`DATABASE_URI` is what actually moves the app; the `POSTGRES_*` variables only
+configure the container the URL points at, so the password has to match in both
+places. The host is `db` — the compose service name — not `localhost`.
+
+Then bring the stack up with the profile:
 
 ```bash
-docker-compose up -d --build
+docker compose --profile postgres up -d --build
 ```
 
-The app waits on the database's `pg_isready` healthcheck before starting,
-because `start.sh` runs `create_db.py` immediately and would otherwise race
-Postgres's first-boot initdb.
+Both halves of that matter. Without `--profile postgres` the `db` service is
+never created and the app fails to resolve the `db` hostname; without
+`DATABASE_URI` in `.env` the database comes up and the app keeps writing to
+SQLite beside it.
+
+There is no `depends_on` gate on the database, because a `depends_on` pointing
+at a service outside the default profile breaks the SQLite path. `create_db.py`
+instead retries the connection for up to 60 seconds (`DB_WAIT_SECONDS`) on
+startup, which covers Postgres's first-boot initdb.
 
 The database port is deliberately not published. To reach it with `psql` from
 the host, uncomment the `ports:` block in the `db:` service — it maps to
@@ -134,6 +148,11 @@ the host, uncomment the `ports:` block in the `db:` service — it maps to
   any missing columns, so a new column on a model needs no second edit there.
   `db.create_all()` adds missing *tables* but never missing *columns* — that is
   the gap both paths exist to close.
+
+  The Postgres path replays the model's own column DDL, so a column declared
+  `nullable=False` with no `server_default` will fail on a table that already
+  holds rows: Postgres has nothing to put in the existing ones. Give such a
+  column a `server_default`, or add it by hand and backfill before re-running.
 - **Pooling.** Postgres connections get `pool_pre_ping` and a 280-second
   `pool_recycle`, which sits under the common five-minute idle timeout on
   proxies and poolers. This matters here because the scheduler keeps the process
