@@ -445,6 +445,16 @@ def init_scheduler(app):
     Returns:
         The started BackgroundScheduler, or None when SCHEDULER_ENABLED is off.
     """
+    # The settings page calls this with `current_app`, which is a LocalProxy.
+    # Every job registered below is a closure over `app`, and those fire on a
+    # scheduler thread with no request and no application context -- where the
+    # proxy is unbound and raises "Working outside of application context"
+    # instead of running the check. Resolve it to the real Flask object once,
+    # here, so the closures capture something that stays valid. If it is ever
+    # unresolvable this raises at the call site rather than every interval.
+    if hasattr(app, '_get_current_object'):
+        app = app._get_current_object()
+
     # Guarded here rather than only at the create_app call site because the
     # settings page calls init_scheduler() again to apply a new check interval,
     # and that would otherwise start the scheduler this instance is meant not to
