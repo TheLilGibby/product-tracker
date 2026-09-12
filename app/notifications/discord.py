@@ -48,7 +48,7 @@ class DiscordNotifier:
         if tracker_url:
             fields.append({
                 "name": "Open in tracker",
-                "value": f"[View in Tracker_]({tracker_url})",
+                "value": f"[View in TRACKER_]({tracker_url})",
                 "inline": False
             })
         if product_url:
@@ -66,7 +66,7 @@ class DiscordNotifier:
             "url": tracker_url or product_url,
             "fields": fields,
             "footer": {
-                "text": "Tracker_"
+                "text": "TRACKER_"
             }
         }
         

@@ -1282,7 +1282,7 @@ def telegram_test():
     else:
         from app.public_urls import tracker_home_url
         success = TelegramNotifier.send_notification(
-            product_name='Test Product (Product Tracker)',
+            product_name='Test Product (TRACKER_)',
             product_url='https://example.com/product',
             tracker_url=tracker_home_url() or url_for('main.index', _external=True),
             current_price=79.99,

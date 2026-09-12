@@ -1,6 +1,6 @@
 # Testing Auto-Cart Functionality
 
-The Product Tracker application includes a special testing mode for the auto-cart feature, which allows you to simulate various scenarios without having to interact with real retailer websites.
+The TRACKER_ application includes a special testing mode for the auto-cart feature, which allows you to simulate various scenarios without having to interact with real retailer websites.
 
 ## Test Page Overview
 

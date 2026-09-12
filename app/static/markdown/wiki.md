@@ -1,8 +1,8 @@
-# Product Tracker Wiki
+# TRACKER_ Wiki
 
 ## Overview
 
-Product Tracker is a web application that allows you to monitor product prices and availability across multiple online retailers. It automatically checks for price drops and stock updates, notifies you via Discord when your criteria are met, and can even automatically add products to your cart.
+TRACKER_ is a web application that allows you to monitor product prices and availability across multiple online retailers. It automatically checks for price drops and stock updates, notifies you via Discord when your criteria are met, and can even automatically add products to your cart.
 
 ## Key Features
 
@@ -27,14 +27,14 @@ Product Tracker is a web application that allows you to monitor product prices a
 
 ### Notifications
 
-Product Tracker uses Discord webhooks to send notifications when:
+TRACKER_ uses Discord webhooks to send notifications when:
 - A product's price drops
 - A product becomes available after being out of stock
 - Auto-cart features successfully add products to your cart
 
 ### Automated Cart Features
 
-One of the most powerful features of Product Tracker is the ability to automatically add products to your cart when they meet your criteria:
+One of the most powerful features of TRACKER_ is the ability to automatically add products to your cart when they meet your criteria:
 
 1. Enable auto-cart on a product's detail page
 2. Set your desired quantity
@@ -44,7 +44,7 @@ This feature is particularly useful for limited-stock items or flash sales where
 
 ### Testing Auto-Cart Functionality
 
-Product Tracker includes a dedicated test environment for auto-cart features:
+TRACKER_ includes a dedicated test environment for auto-cart features:
 
 1. Navigate to the "Test Auto-Cart" page from the main menu
 2. Use the provided test URLs or create your own with custom parameters
@@ -68,7 +68,7 @@ The test environment allows you to:
 
 ### Web Scraping
 
-Product Tracker uses web scraping techniques to extract product information directly from retailer websites. For each supported retailer, we implement specialized scrapers that:
+TRACKER_ uses web scraping techniques to extract product information directly from retailer websites. For each supported retailer, we implement specialized scrapers that:
 
 1. Extract product names, prices, and availability
 2. Capture product images
@@ -90,7 +90,7 @@ Information is stored in an SQLite database, with key tables for:
 
 ### Browser Automation
 
-For advanced features like auto-cart, Product Tracker uses browser automation with:
+For advanced features like auto-cart, TRACKER_ uses browser automation with:
 - Selenium WebDriver
 - Undetected ChromeDriver (to bypass anti-bot measures)
 

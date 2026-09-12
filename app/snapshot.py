@@ -151,7 +151,7 @@ def build_caption(when=None):
     elif when.tzinfo is None:
         when = pytz.utc.localize(when).astimezone(tz)
 
-    caption = f"📊 <b>Product Tracker dashboard</b> — {when.strftime('%Y-%m-%d %H:%M')} {when.tzname()}"
+    caption = f"📊 <b>TRACKER_ dashboard</b> — {when.strftime('%Y-%m-%d %H:%M')} {when.tzname()}"
     public_url = get_public_url()
     if public_url:
         caption += f'\n<a href="{html.escape(public_url, quote=True)}">Open the live dashboard</a>'

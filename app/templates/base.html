@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Tracker_{% endblock %}</title>
+    <title>{% block title %}TRACKER_{% endblock %}</title>
     <script>
         // Applied before first paint so an explicitly chosen theme does not
         // flash the system one. "system" stores nothing and leaves the
@@ -338,6 +338,20 @@
         .site-brand a:focus {
             color: var(--brand-text);
             text-decoration: none;
+        }
+
+        /* The name is a wordmark, not a heading: all caps, heavy, tightly
+           tracked, and the trailing underscore is part of the mark rather
+           than punctuation. text-transform is belt and braces so a page that
+           overrides the text still renders it in caps. */
+        .site-brand a {
+            display: inline-block;
+            font-family: "Helvetica Neue", "Segoe UI", Arial, sans-serif;
+            font-size: 1.75rem;
+            font-weight: 800;
+            letter-spacing: -0.015em;
+            line-height: 1;
+            text-transform: uppercase;
         }
 
         /* Simple.css centres nav pills and colours them for a light bar;
@@ -720,7 +734,7 @@
         <div class="container">
             <h1 class="site-brand">
                 <a href="{{ url_for('main.index') }}">
-                    Tracker_
+                    TRACKER_
                 </a>
             </h1>
             <nav>
@@ -768,7 +782,7 @@
 
     <footer>
         <div class="container">
-            <p>&copy; {% if now %}{{ now.year }}{% else %}2025{% endif %} Tracker_. All rights reserved.</p>
+            <p>&copy; {% if now %}{{ now.year }}{% else %}2025{% endif %} TRACKER_. All rights reserved.</p>
         </div>
     </footer>
     
