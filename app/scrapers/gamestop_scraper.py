@@ -9,11 +9,34 @@ on 2026-09-10:
     undetected-chromedriver, --headless=new   200,     4,801 bytes, "Attention Required!"
     undetected-chromedriver, visible window   200,   558,727 bytes, the real product page
 
-So there is no HTTP fallback path here, and headless is not merely slower or
-flakier - it is reliably blocked. GAMESTOP_HEADLESS therefore defaults to OFF,
-which means a scheduled check opens a real Chrome window on the user's desktop.
-That is a deliberate, documented trade: a headless run returns None on every
-poll, which is worse than a visible one.
+So headless is not merely slower or flakier - it is reliably blocked.
+GAMESTOP_HEADLESS therefore defaults to OFF, which means a scheduled check opens
+a real Chrome window on the user's desktop. That is a deliberate, documented
+trade: a headless run returns None on every poll, which is worse than a visible
+one.
+
+The pasted session (GAMESTOP_COOKIES)
+-------------------------------------
+There is one way to make a plain request work, and it is the row above that
+says the edge decides on more than the User-Agent: carry a clearance the user
+already holds. Settings -> GameStop cookies takes the Cookie header from their
+own browser, and while cf_clearance in it is good, a check is one HTTP request
+and no window opens at all. That is the whole prize here - not speed, but a
+scheduled poll that does not put a Chrome window on someone's desktop every few
+minutes.
+
+Two things make a paste fail in a way that looks like having none:
+
+  * cf_clearance is issued to ONE User-Agent and refused to every other, so the
+    browser's UA has to be sent with it. That is what GAMESTOP_USER_AGENT is,
+    and the settings page asks for it beside the cookies.
+  * It is issued to one IP as well, so a session pasted from another machine or
+    behind a different exit will not work here.
+
+A refusal is remembered for the run (app.scrapers.common) rather than retried
+every cycle, and the browser path stays exactly as it was underneath - the HTTP
+path only ever returns None or a real page. Nothing here solves a challenge:
+the user passes it in their own browser, and this carries the result.
 
 Reading the buy box
 -------------------
@@ -50,13 +73,17 @@ import re
 import time
 from contextlib import ExitStack
 
+import requests
 import undetected_chromedriver as uc
 from bs4 import BeautifulSoup
 from selenium.common.exceptions import WebDriverException
 from urllib.parse import urlparse
 
-from app.scrapers.common import (DEFAULT_HEADERS, detect_block_page, detect_chrome_major,
-                                 profile_lock, ProfileBusyError)
+from app.scrapers.common import (DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page,
+                                 detect_chrome_major, profile_lock, ProfileBusyError,
+                                 apply_cookie_header, cookie_header_is_rejected,
+                                 cookie_header_jar, cookie_header_names, cookie_setting,
+                                 note_cookie_header_rejected)
 
 logger = logging.getLogger('app.scrapers.gamestop')
 
@@ -72,6 +99,40 @@ ORDERABLE_BUTTON_TEXTS = ('add to cart', 'pre-order', 'preorder')
 # Seconds to let the SFCC page settle after load. The buy box is server-rendered,
 # but Cloudflare's challenge script runs first on a cold profile.
 PAGE_SETTLE_SECONDS = 8
+
+# The cookies that decide whether the Cloudflare edge answers. Named for the help
+# text only - a paste is sent whole, because a session is more than the parts we
+# can name here.
+#
+#   cf_clearance  the clearance token, issued once the edge is satisfied. This is
+#                 the one that turns a 403 into a page.
+#   __cf_bm       the bot-management cookie minted alongside it; short-lived.
+#   _abck, bm_sz  Akamai's, set on the same pages. Carried, not required.
+GAMESTOP_SESSION_COOKIES = ('cf_clearance', '__cf_bm')
+
+
+def load_gamestop_cookies():
+    """The pasted GameStop session as a Cookie header, or ''."""
+    return cookie_setting('GAMESTOP_COOKIES')
+
+
+def load_gamestop_user_agent(configured_only=False):
+    """
+    The User-Agent to send with the pasted session.
+
+    cf_clearance is issued to one User-Agent and is refused to any other, so a
+    paste from the user's own browser has to be sent with that browser's UA or
+    it is dead on arrival - and it fails as a 403, which looks exactly like
+    having no session at all. The settings page asks for it next to the cookies
+    for that reason. Falling back to our default UA is the honest default: it
+    is what the request would have sent anyway. ``configured_only`` drops that
+    fallback, for the settings page, which should show the box empty rather
+    than show our UA as though the user had typed it.
+    """
+    configured = cookie_setting('GAMESTOP_USER_AGENT')
+    if configured or configured_only:
+        return configured
+    return DEFAULT_HEADERS['User-Agent']
 
 
 class GameStopScraper:
@@ -122,11 +183,71 @@ class GameStopScraper:
             logger.error(f"No product id in GameStop URL, cannot identify the product: {url}")
             return None
 
-        html = self._fetch_rendered_html(url, product_id)
+        # With a session the user pasted, the edge answers a plain request and a
+        # check costs no Chrome window at all. Without one this is skipped
+        # entirely rather than spending a guaranteed 403 on every poll: the
+        # measurements in the module docstring are what a bare request gets.
+        html = self._fetch_via_requests(url, product_id)
+        if html is None:
+            html = self._fetch_rendered_html(url, product_id)
         if html is None:
             return None
 
         return self.extract_from_html(BeautifulSoup(html, 'html.parser'), product_id)
+
+    def _fetch_via_requests(self, url, product_id):
+        """
+        Fetch the product page over plain HTTP, carrying the pasted session.
+
+        Returns the HTML, or None for every other outcome - no session, a wall,
+        a transport error - which always means "ask the browser", never that the
+        product is unavailable.
+        """
+        header = load_gamestop_cookies()
+        if not header:
+            return None
+        if cookie_header_is_rejected(header):
+            logger.debug("Skipping the GameStop HTTP path: this session was already refused")
+            return None
+        jar = cookie_header_jar(header, 'gamestop.com')
+        if jar is None:
+            logger.warning("The pasted GameStop session holds no usable cookie; using the browser")
+            return None
+
+        headers = dict(self.headers)
+        headers['User-Agent'] = load_gamestop_user_agent()
+        logger.info(f"Fetching GameStop product {product_id} over HTTP with the pasted session "
+                    f"({', '.join(cookie_header_names(header))})")
+        try:
+            response = requests.get(url, headers=headers, cookies=jar,
+                                    timeout=REQUEST_TIMEOUT)
+        except requests.RequestException as e:
+            logger.warning(f"GameStop HTTP request failed: {str(e)}; using the browser")
+            return None
+
+        if response.status_code != 200:
+            logger.warning(f"GameStop answered HTTP {response.status_code} to the pasted "
+                           "session; using the browser")
+            # 403 is the edge refusing this client. The usual causes are an
+            # expired clearance and a User-Agent that is not the one the
+            # clearance was issued to, and neither gets better by retrying every
+            # cycle, so the paste is set aside until a fresh one is saved.
+            if response.status_code in (401, 403):
+                note_cookie_header_rejected(header, 'GameStop')
+            return None
+
+        block_reason = detect_block_page(response.text)
+        if block_reason:
+            # A 200 carrying "Attention Required!" is the wall too - the edge
+            # serves its challenge page with a 200 once JS is expected to run.
+            logger.warning(f"GameStop served a block page to the pasted session "
+                           f"({block_reason}); using the browser")
+            note_cookie_header_rejected(header, 'GameStop')
+            return None
+
+        logger.info(f"GameStop answered the pasted session, {len(response.text)} bytes, "
+                    "no browser needed")
+        return response.text
 
     def _fetch_rendered_html(self, url, product_id):
         """
@@ -150,6 +271,7 @@ class GameStopScraper:
                 stack.callback(self._quit_quietly, driver)
                 driver.set_page_load_timeout(60)
                 driver.get(url)
+                self._apply_gamestop_cookies(driver, url)
                 time.sleep(PAGE_SETTLE_SECONDS)
                 html = driver.page_source
             except ProfileBusyError as e:
@@ -169,6 +291,28 @@ class GameStopScraper:
 
             logger.debug(f"GameStop page rendered, {len(html)} bytes")
             return html
+
+    def _apply_gamestop_cookies(self, driver, url):
+        """
+        Carry the pasted session into the browser, and reload onto it.
+
+        Worth doing even though this path has its own persistent profile: the
+        profile's own clearance is what a headless run never gets and a flagged
+        profile stops being given, and the user's is a real one. The reload is
+        not optional - cookies added after a page has loaded do not apply to it,
+        so without it the page in hand is still the one the edge served before
+        they arrived, challenge and all.
+
+        Does nothing when no session is configured, which is the default.
+        """
+        header = load_gamestop_cookies()
+        if not header or cookie_header_is_rejected(header):
+            return 0
+        applied = apply_cookie_header(
+            driver, header, ('.gamestop.com', 'www.gamestop.com', 'gamestop.com'), 'GameStop')
+        if applied:
+            driver.get(url)
+        return applied
 
     def _start_driver(self):
         """

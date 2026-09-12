@@ -955,12 +955,18 @@ def settings():
     import pytz
     timezones = pytz.all_timezones
     from app.scrapers.amazon_scraper import load_amazon_cookies
+    from app.scrapers.gamestop_scraper import (load_gamestop_cookies,
+                                               load_gamestop_user_agent)
+    from app.scrapers.target_scraper import load_target_cookies
     public_url = (current_app.config.get('PRODUCT_TRACKER_PUBLIC_URL') or '').rstrip('/')
     return render_template(
         'settings.html',
         timezones=timezones,
         os=os,
         amazon_cookies_configured=bool(load_amazon_cookies()),
+        target_cookies_configured=bool(load_target_cookies()),
+        gamestop_cookies_configured=bool(load_gamestop_cookies()),
+        gamestop_user_agent=load_gamestop_user_agent(configured_only=True),
         public_url=public_url,
         auth_user=current_app.config.get('AUTH_USER') or 'admin',
         auth_enabled=bool(current_app.config.get('AUTH_PASSWORD')),
@@ -1015,6 +1021,85 @@ def update_amazon_cookies():
         flash(f'Error updating Amazon cookies: {str(e)}', 'error')
 
     return redirect(url_for('main.settings'))
+
+def _save_pasted_session(values, label):
+    """
+    Write a pasted retailer session to .env and to this process.
+
+    ``values`` is {ENV_NAME: value}. Everything is validated before anything is
+    written, so a header .env would refuse never ends up live in os.environ for
+    one run; and a save forgets any earlier rejection, because a fresh paste is
+    the user telling us the old one is no longer the truth.
+    """
+    from app.env_file import set_env_value, validate_env_value
+    from app.scrapers.common import clear_rejected_cookie_headers
+
+    cleaned = {name: validate_env_value(value, label) for name, value in values.items()}
+    for name, value in cleaned.items():
+        os.environ[name] = value
+        set_env_value(name, value, label=label)
+    clear_rejected_cookie_headers()
+    return cleaned
+
+
+@main_bp.route('/update-target-cookies', methods=['POST'])
+def update_target_cookies():
+    """Save a Target session so the Redsky API answers something other than 403."""
+    try:
+        cookies = (request.form.get('target_cookies') or '').strip()
+        if request.form.get('clear_target_cookies'):
+            cookies = ''
+        _save_pasted_session({'TARGET_COOKIES': cookies}, 'Target cookies')
+
+        if not cookies:
+            flash('Target cookies cleared. Target checks fall back to a Chrome window.', 'success')
+        elif '_px3=' not in cookies:
+            # Without the clearance token the paste is the same as no paste, and
+            # the failure it produces is a 403 that looks like every other one.
+            flash('Saved, but _px3 was not in that header - that is the token Redsky '
+                  'checks. Pass the press-and-hold on target.com, then copy the Cookie '
+                  'header again.', 'warning')
+        else:
+            flash('Target cookies updated. Redsky calls will use that session.', 'success')
+    except Exception as e:
+        flash(f'Error updating Target cookies: {str(e)}', 'error')
+
+    return redirect(url_for('main.settings'))
+
+
+@main_bp.route('/update-gamestop-cookies', methods=['POST'])
+def update_gamestop_cookies():
+    """Save a GameStop session so a check can be plain HTTP instead of Chrome."""
+    try:
+        cookies = (request.form.get('gamestop_cookies') or '').strip()
+        user_agent = (request.form.get('gamestop_user_agent') or '').strip()
+        if request.form.get('clear_gamestop_cookies'):
+            cookies = user_agent = ''
+        _save_pasted_session({'GAMESTOP_COOKIES': cookies,
+                              'GAMESTOP_USER_AGENT': user_agent},
+                             'GameStop cookies')
+
+        if not cookies:
+            flash('GameStop cookies cleared. GameStop checks go back to a Chrome window.',
+                  'success')
+        elif 'cf_clearance=' not in cookies:
+            flash('Saved, but cf_clearance was not in that header - that is the one '
+                  'Cloudflare checks. Load a gamestop.com product page, wait for the '
+                  'check to finish, then copy the Cookie header.', 'warning')
+        elif not user_agent:
+            # Cloudflare issues a clearance to one User-Agent. Sending it with a
+            # different one is a 403 indistinguishable from having no session at
+            # all, so this is worth saying out loud rather than debugging later.
+            flash('Saved, but without a User-Agent. Cloudflare ties cf_clearance to the '
+                  "browser it was issued to, so paste that browser's User-Agent too or "
+                  'the session will be refused.', 'warning')
+        else:
+            flash('GameStop cookies updated. Checks will try plain HTTP first.', 'success')
+    except Exception as e:
+        flash(f'Error updating GameStop cookies: {str(e)}', 'error')
+
+    return redirect(url_for('main.settings'))
+
 
 @main_bp.route('/auto-cart-testing')
 def auto_cart_testing():

@@ -24,7 +24,8 @@ import requests
 from bs4 import BeautifulSoup
 from contextlib import contextmanager
 from app.scrapers.common import (DEFAULT_HEADERS, PROFILE_LOCK_TIMEOUT, REQUEST_TIMEOUT, ProfileBusyError,
-                                 detect_block_page, detect_chrome_major, is_preorder_text, profile_lock)
+                                 clean_cookie_value, detect_block_page, detect_chrome_major,
+                                 is_preorder_text, parse_cookie_header, profile_lock)
 import time
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -186,17 +187,11 @@ AMAZON_COOKIE_FIELDS = (
 )
 
 
-def _clean_cookie_value(cookie_name, value):
-    """Strip table copy/paste extras: wrapping quotes and a leading name=."""
-    value = (value or '').strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-        value = value[1:-1].strip()
-    prefix = cookie_name + '='
-    if value.lower().startswith(prefix.lower()):
-        value = value[len(prefix):].strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-            value = value[1:-1].strip()
-    return value
+# Target and GameStop paste cookie headers through the same settings page, so
+# the stripping and the splitting live in app.scrapers.common and every retailer
+# reads a paste the same way. Kept under these names because the Amazon form and
+# cart call them.
+_clean_cookie_value = clean_cookie_value
 
 
 def cookie_header_from_form(form):
@@ -342,16 +337,7 @@ class AmazonScraper:
                 pass
     
     def _parse_cookie_header(self, cookie_header):
-        cookies = []
-        for pair in (cookie_header or '').split(';'):
-            pair = pair.strip()
-            if not pair or '=' not in pair:
-                continue
-            name, value = pair.split('=', 1)
-            name, value = name.strip(), _clean_cookie_value(name.strip(), value)
-            if name:
-                cookies.append((name, value))
-        return cookies
+        return parse_cookie_header(cookie_header)
 
     def _apply_amazon_cookies(self, driver, cookie_header=None):
         """
