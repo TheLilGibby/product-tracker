@@ -4,7 +4,9 @@ from app.models.product import Product, PriceHistory
 from app.cart_screenshots import save_cart_screenshot, screenshot_path
 from app.groups import grouped_view
 from app.scrapers import add_to_cart, detect_store_type, get_scraper, store_choices
-from app.tasks import check_all_products, get_store_backoff_state
+from app.tasks import (blocked_scrape_message, check_all_products,
+                       get_store_backoff_state, note_scrape_result,
+                       usable_scraped_name)
 from app.notifications import send_product_alert, notify_cart_success
 from app.notifications.telegram import TelegramNotifier, get_telegram_settings
 from datetime import datetime, timedelta
@@ -145,13 +147,17 @@ def utility_functions():
         url = getattr(product, 'url', '') or ''
         lowered = url.lower()
         if 'bestbuy.com' in lowered:
-            getter = getattr(BestBuyScraper, 'image_url_from_url', None)
-            if getter:
-                return getter(url)
-        if 'gamestop.com' in lowered:
+            scraper = BestBuyScraper
+        elif 'gamestop.com' in lowered:
             from app.scrapers.gamestop_scraper import GameStopScraper
-            return GameStopScraper.image_url_from_url(url)
-        return None
+            scraper = GameStopScraper
+        else:
+            return None
+        # Not every scraper can work an image out of the URL alone - GameStop
+        # cannot, and calling the method it does not have was a 500 on the
+        # detail page of any GameStop listing whose image had not been scraped.
+        getter = getattr(scraper, 'image_url_from_url', None)
+        return getter(url) if getter else None
         
     return {'format_datetime': format_datetime, 'product_image_url': product_image_url,
             'time_ago': time_ago}
@@ -599,23 +605,28 @@ def update_product(product_id):
     # Scrape product data with error handling
     try:
         product_data = scraper.scrape_product(product.url)
-        if not product_data:
-            flash('Failed to retrieve product information', 'danger')
-            return redirect(url_for('main.product_detail', product_id=product.id))
     except Exception as e:
         logger.error(f"Error scraping product from {product.url}: {str(e)}")
         logger.error(traceback.format_exc())
+        note_scrape_result(store_type, None, error=f"scrape raised {type(e).__name__}")
         flash(f'Error scraping product: {str(e)}', 'danger')
         return redirect(url_for('main.product_detail', product_id=product.id))
-        
+
+    # This button is a scrape like any other, so it counts towards the store's
+    # health: a store whose manual checks all come back blocked used to leave
+    # the dashboard's store status untouched, still saying it was answering.
+    if not note_scrape_result(store_type, product_data):
+        flash(blocked_scrape_message(store_type, product_data), 'danger')
+        return redirect(url_for('main.product_detail', product_id=product.id))
+
     # Update product with new data
     old_price = product.current_price
     old_availability = product.available
     
     # Update product details. Only accept a real name; scrapers return
-    # "Unknown Product" when extraction fails
-    scraped_name = product_data.get('name')
-    if scraped_name and scraped_name != "Unknown Product":
+    # "Unknown Product" or a bot-wall title when extraction fails.
+    scraped_name = usable_scraped_name(product_data.get('name'))
+    if scraped_name:
         product.name = scraped_name
     product.current_price = product_data.get('price') or product.current_price
     product.available = product_data.get('available', False)

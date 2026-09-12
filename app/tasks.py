@@ -6,7 +6,8 @@ from flask import current_app
 from app import db
 from app.models.product import Product, PriceHistory
 from app.cart_screenshots import save_cart_screenshot
-from app.scrapers import detect_store_type, get_scraper, is_by_design_refusal
+from app.scrapers import (detect_store_type, get_scraper, is_by_design_refusal,
+                          store_display_name)
 from app.notifications import send_product_alert, notify_cart_success
 import urllib.parse
 import threading
@@ -158,18 +159,6 @@ def store_check_is_due(store_type, last_checked, now=None):
     return elapsed >= (interval * 60.0) - grace
 
 
-# Names for the dashboard. A store missing from here falls back to its key.
-STORE_LABELS = {
-    'amazon': 'Amazon',
-    'walmart': 'Walmart',
-    'newegg': 'Newegg',
-    'microcenter': 'Micro Center',
-    'bestbuy': 'Best Buy',
-    'bh': 'B&H',
-    'test': 'Test store',
-}
-
-
 def _minutes_until(moment, now):
     """Whole minutes from now until moment, rounded up."""
     return int(-(-(moment - now).total_seconds() // 60))
@@ -199,7 +188,7 @@ def get_store_backoff_state(now=None):
         backed_off = retry_at is not None and now < retry_at
         rows.append({
             'store_type': store_type,
-            'label': STORE_LABELS.get(store_type, store_type.title()),
+            'label': store_display_name(store_type),
             'backed_off': backed_off,
             'failures': failures.get(store_type, 0),
             'retry_at': retry_at if backed_off else None,
@@ -231,6 +220,72 @@ def usable_scraped_name(name):
     if any(token in lower for token in ('captcha', 'verify you', 'are you a robot', 'you have been blocked')):
         return None
     return cleaned
+
+
+def scrape_answered(product_data):
+    """
+    True when a scrape came back with something that is actually a product page.
+
+    The browser-based scrapers return None when they recognise a wall, but the
+    requests-based ones hand back a dict carrying the wall's own title and no
+    price - which is what _BAD_SCRAPE_NAMES exists for. Reading a page needs to
+    have produced at least one of the two things a listing has: a name that is
+    not a placeholder, or a price.
+    """
+    if not product_data:
+        return False
+    return (usable_scraped_name(product_data.get('name')) is not None
+            or product_data.get('price') is not None)
+
+
+def blocked_scrape_message(store_type, product_data):
+    """
+    What to tell the person who asked for a check that did not come back.
+
+    "Failed to retrieve product information" reads like the listing is gone
+    when what actually happened is that the retailer served a bot wall, which
+    is a different thing to do something about.
+    """
+    label = store_display_name(store_type)
+    if product_data:
+        return (f"{label} served a block page instead of the listing. "
+                "The stored price and availability were left as they were.")
+    return (f"{label} did not return the listing - it is blocking, or the page "
+            "has no buy box. The stored price and availability were left as "
+            "they were.")
+
+
+def note_scrape_result(store_type, product_data, error=None):
+    """
+    Record one scrape against the store's health, and say whether it answered.
+
+    Every path that scrapes - the scheduler, the JSON API and the dashboard's
+    Update button - goes through here, so the store status on the dashboard
+    means the same thing whichever of them ran last. Skipping it is what let a
+    store that was serving nothing but block pages keep reporting that it was
+    answering: only the scheduler recorded health at all, and it recorded a
+    success as soon as a dict came back, before the name in it was looked at.
+
+    Args:
+        store_type: the key from detect_store_type
+        product_data: what the scraper returned, or None
+        error: a short reason when the scrape raised instead of returning
+
+    Returns:
+        True when the store answered and product_data is worth writing.
+    """
+    if error is not None:
+        record_store_failure(store_type, error)
+        return False
+    if not product_data:
+        record_store_failure(store_type, 'scrape returned no data')
+        return False
+    if not scrape_answered(product_data):
+        record_store_failure(store_type, 'scrape returned a block page')
+        return False
+    record_store_success(store_type)
+    return True
+
 
 def check_all_products():
     """
@@ -305,17 +360,19 @@ def check_all_products():
                             product_data = scraper.get_product_info(url=product.url)
                         else:
                             product_data = scraper.scrape_product(product.url)
-                            
-                        if not product_data:
-                            logger.error(f"Failed to retrieve data for product {product.id}")
-                            record_store_failure(store_type, 'scrape returned no data')
-                            continue
                     except Exception as e:
                         logger.error(f"Error scraping product {product.id}: {str(e)}")
-                        record_store_failure(store_type, f"scrape raised {type(e).__name__}")
+                        note_scrape_result(store_type, None,
+                                           error=f"scrape raised {type(e).__name__}")
                         continue
-                    
-                    record_store_success(store_type)
+
+                    # A wall leaves the stored price and availability alone, the
+                    # same as a scraper that returned None: writing available=False
+                    # from a block page is how a blocked store came to look like an
+                    # out-of-stock one.
+                    if not note_scrape_result(store_type, product_data):
+                        logger.error(f"Failed to retrieve data for product {product.id}")
+                        continue
 
                     # Update product with new data
                     old_price = product.current_price
@@ -657,6 +714,7 @@ def refresh_product(product):
             product_data = scraper.scrape_product(product.url)
     except Exception as e:
         logger.error(f"Error scraping product {product.id}: {str(e)}", exc_info=True)
+        note_scrape_result(store_type, None, error=f"scrape raised {type(e).__name__}")
         return {
             'success': False,
             'message': f"Error scraping product: {str(e)}",
@@ -666,7 +724,10 @@ def refresh_product(product):
             'new_price': product.current_price,
         }
 
-    if not product_data:
+    # A one-off check counts towards the store's health exactly like a scheduled
+    # one, so the dashboard does not go on saying a store is answering while
+    # every manual check of it comes back blocked.
+    if not note_scrape_result(store_type, product_data):
         if not product.image_url and detect_store_type(product.url) == 'bestbuy':
             from app.scrapers.bestbuy_scraper import BestBuyScraper
             fallback = BestBuyScraper.image_url_from_url(product.url)
@@ -675,7 +736,7 @@ def refresh_product(product):
                 db.session.commit()
         return {
             'success': False,
-            'message': 'Failed to retrieve product information',
+            'message': blocked_scrape_message(store_type, product_data),
             'price_changed': False,
             'became_available': False,
             'old_price': product.current_price,

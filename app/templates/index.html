@@ -197,9 +197,12 @@
     </div>
 </header>
 
-{# Store status. Only the stores the scheduler is having trouble with show up
-   here - if a retailer is walling us off, that is worth seeing before you read
-   its stale prices as current. #}
+{# Store status. Only the stores a check has had trouble with show up here -
+   if a retailer is walling us off, that is worth seeing before you read its
+   stale prices as current. Scheduled checks, the JSON API and the Update
+   button all report into this. The counts live in the running process, so a
+   restart clears them; that is why the empty state says what it says rather
+   than claiming every store is fine. #}
 <section style="margin-bottom: 1.5rem; padding: 0.6rem 0.9rem; border: 1px solid #e5e7eb; border-radius: 6px;">
     <strong style="font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-light);">Store status</strong>
     {% if store_backoff %}
@@ -222,7 +225,7 @@
         </div>
     {% else %}
         <span class="badge badge-success" style="margin-left: 0.5rem;">ok</span>
-        <span style="font-size: 0.9rem; color: var(--text-light);">every store is answering</span>
+        <span style="font-size: 0.9rem; color: var(--text-light);">no store has failed a check since this server started</span>
     {% endif %}
 </section>
 
