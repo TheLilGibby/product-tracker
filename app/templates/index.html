@@ -254,7 +254,10 @@
 
    Dismissable, and the dismissal is remembered against which stores are in
    trouble rather than against the banner itself, so waving it away does not also
-   hide the next store to fall over. #}
+   hide the next store to fall over.
+
+   Scheduled checks, the JSON API and the Update button all report into this.
+   The counts live in the running process, so a restart clears them. #}
 {% if store_backoff %}
     {%- set status_key -%}
         {%- for store in store_backoff -%}{{ store.label }}:{{ 1 if store.backed_off else 0 }};{% endfor -%}

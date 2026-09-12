@@ -12,6 +12,12 @@ Buy's Akamai started serving block pages it kept being hit every check interval,
 which is exactly how a short rate limit turns into hours of blocking. A store
 that fails repeatedly is now skipped for a while.
 
+The second half of the file is about what the dashboard then says. A blocked
+store used to keep reporting that it was answering, two ways at once: only the
+scheduler recorded store health at all - the Update button and the JSON API
+recorded nothing - and the scheduler recorded a success the moment a dict came
+back, before the bot-wall title inside it was looked at.
+
 Exit code is non-zero if any check fails.
 """
 import argparse
@@ -37,6 +43,17 @@ BESTBUY_URLS = [
     'https://www.bestbuy.com/site/test-product-two/2.p?skuId=2',
 ]
 AMAZON_URL = 'https://www.amazon.com/dp/TESTASIN01'
+GAMESTOP_URL = ('https://www.gamestop.com/video-games/nintendo-switch-2/consoles/'
+                'products/test-console/123456.html')
+
+# What a requests-based scraper hands back when Cloudflare answered instead of
+# the retailer: a dict, so truthy, carrying the wall's own title and no price.
+BLOCK_PAGE = {
+    'name': 'Sorry, you have been blocked',
+    'price': None,
+    'available': False,
+    'image_url': None,
+}
 
 
 class FakeScraper:
@@ -54,6 +71,8 @@ class FakeScraper:
             return None                      # what a block page looks like from here
         if mode == 'raise':
             raise RuntimeError('connection reset by peer')
+        if mode == 'wall':
+            return dict(BLOCK_PAGE)          # truthy, and not a product page
         return {
             'name': f"{self.store_type} product",
             'price': 99.99,
@@ -472,6 +491,199 @@ def check_backoff_beats_interval():
     tasks.reset_store_backoff()
     return failures
 
+# --------------------------------------------------------------------------
+# What the dashboard's store status ends up saying.
+
+def seed_gamestop():
+    """One GameStop listing, previously checked and in stock."""
+    Product.query.delete()
+    stamp = datetime(2026, 1, 1, 12, 0, 0)
+    product = Product(name='Zelda console', url=GAMESTOP_URL, current_price=499.99,
+                      available=True, last_checked=stamp)
+    db.session.add(product)
+    db.session.commit()
+    return product, stamp
+
+
+@contextmanager
+def fake_scraper_on(module, behaviour):
+    """Point one module's get_scraper at the scripted scraper for the block."""
+    calls = []
+    original = module.get_scraper
+    module.get_scraper = lambda store_type: FakeScraper(store_type, calls, behaviour)
+    try:
+        yield calls
+    finally:
+        module.get_scraper = original
+
+
+def check_block_page_counts_as_failure():
+    """A truthy dict carrying a bot-wall title is a failure, not a success."""
+    print("A block page is not an answer")
+    failures = 0
+    tasks.reset_store_backoff()
+    stamp = seed_products()
+
+    run_cycle({'bestbuy': 'wall'})
+
+    failures += report(tasks._store_failures.get('bestbuy') == 2,
+                       'both walled scrapes are counted as failures',
+                       str(tasks._store_failures))
+    failures += report('bestbuy' in tasks._store_retry_at,
+                       'the walled store backs off like any other failing one')
+    failures += report('amazon' not in tasks._store_failures,
+                       'the store that answered is left alone')
+
+    # The wall said available=False. Writing that would turn a blocked store
+    # into an out-of-stock listing, and fire an alert when it "came back".
+    for product in Product.query.filter(Product.url.in_(BESTBUY_URLS)).all():
+        failures += report(product.available and product.current_price == 10.0
+                           and product.last_checked == stamp,
+                           f"walled product {product.id} keeps its stored data",
+                           f"available={product.available} price={product.current_price}")
+    tasks.reset_store_backoff()
+    return failures
+
+
+def check_a_real_page_is_still_an_answer():
+    """Refusing block pages must not make good scrapes stop counting."""
+    print("A real page is still an answer")
+    failures = 0
+    tasks.reset_store_backoff()
+    seed_products()
+    run_cycle({'bestbuy': 'wall'})
+    tasks._store_retry_at['bestbuy'] = datetime.utcnow() - timedelta(seconds=1)
+
+    run_cycle({})
+
+    failures += report('bestbuy' not in tasks._store_failures,
+                       'a readable page clears the failure count',
+                       str(tasks._store_failures))
+    # A page with a price but no usable name is still an answer: the name may
+    # simply not have been extracted, while a wall has neither.
+    failures += report(tasks.scrape_answered({'name': 'Unknown Product', 'price': 499.99}),
+                       'a price with no usable name counts as an answer')
+    failures += report(tasks.scrape_answered({'name': 'Zelda console', 'price': None}),
+                       'a name with no price counts as one too')
+    failures += report(not tasks.scrape_answered(dict(BLOCK_PAGE)),
+                       'a block page does not')
+    failures += report(not tasks.scrape_answered(None), 'and neither does nothing at all')
+    return failures
+
+
+def check_manual_update_records_health():
+    """The dashboard's Update button reports into the same store status."""
+    print("The Update button counts towards store health")
+    failures = 0
+    tasks.reset_store_backoff()
+    product, stamp = seed_gamestop()
+    client = current_app.test_client()
+
+    from app.routes import main as main_routes
+    with fake_scraper_on(main_routes, {'gamestop': 'wall'}) as calls:
+        response = client.get(f"/product/{product.id}/update", follow_redirects=True)
+    body = response.get_data(as_text=True)
+
+    failures += report(calls == ['gamestop'], 'the scrape was attempted', f"calls={calls}")
+    failures += report(tasks._store_failures.get('gamestop') == 1,
+                       'the blocked manual check is counted',
+                       str(tasks._store_failures))
+    failures += report('block page' in body,
+                       'the page says it was blocked, not that the product is gone')
+    failures += report('updated successfully' not in body,
+                       'and does not claim the update worked')
+
+    refreshed = Product.query.get(product.id)
+    failures += report(refreshed.available and refreshed.last_checked == stamp,
+                       'the listing keeps its stored data',
+                       f"available={refreshed.available} last_checked={refreshed.last_checked}")
+
+    rows = tasks.get_store_backoff_state()
+    failures += report(len(rows) == 1 and rows[0]['store_type'] == 'gamestop',
+                       'the dashboard now has a row for the store', str(rows))
+    failures += report(bool(rows) and rows[0]['label'] == 'GameStop',
+                       "the row is labelled from the scrapers registry, not 'Gamestop'",
+                       rows[0]['label'] if rows else 'no row')
+
+    # And a manual check that works clears it again.
+    with fake_scraper_on(main_routes, {}):
+        client.get(f"/product/{product.id}/update", follow_redirects=True)
+    failures += report(not tasks.get_store_backoff_state(),
+                       'a manual check that works clears the row',
+                       str(tasks.get_store_backoff_state()))
+    return failures
+
+
+def check_refresh_product_records_health():
+    """The JSON API path, and so the MCP server, reports into it too."""
+    print("refresh_product counts towards store health")
+    failures = 0
+    tasks.reset_store_backoff()
+    product, stamp = seed_gamestop()
+
+    with fake_scraper_on(tasks, {'gamestop': 'wall'}):
+        walled = tasks.refresh_product(product)
+    failures += report(not walled['success'], 'a walled refresh is not a success')
+    failures += report('block page' in walled['message'],
+                       'and says the store served a block page', walled['message'])
+    failures += report(tasks._store_failures.get('gamestop') == 1,
+                       'the failure is counted', str(tasks._store_failures))
+
+    with fake_scraper_on(tasks, {'gamestop': 'none'}):
+        empty = tasks.refresh_product(product)
+    failures += report(not empty['success'], 'a refresh that returned nothing is not one either')
+    failures += report(tasks._store_failures.get('gamestop') == 2,
+                       'that failure is counted as well', str(tasks._store_failures))
+    failures += report('gamestop' in tasks._store_retry_at,
+                       'two failed manual checks back the store off')
+
+    with fake_scraper_on(tasks, {'gamestop': 'raise'}):
+        raised = tasks.refresh_product(product)
+    failures += report(not raised['success'] and tasks._store_failures.get('gamestop') == 3,
+                       'a refresh that raised is counted too', str(tasks._store_failures))
+
+    refreshed = Product.query.get(product.id)
+    failures += report(refreshed.available and refreshed.last_checked == stamp,
+                       'none of the three touched the stored data',
+                       f"available={refreshed.available} last_checked={refreshed.last_checked}")
+
+    with fake_scraper_on(tasks, {}):
+        good = tasks.refresh_product(product)
+    failures += report(good['success'], 'a refresh that worked is a success')
+    failures += report(not tasks.get_store_backoff_state(),
+                       'and clears the store status', str(tasks.get_store_backoff_state()))
+    tasks.reset_store_backoff()
+    return failures
+
+
+def check_store_rows_are_labelled():
+    """Every store the app supports has a name for the status panel."""
+    print("Store status rows are labelled")
+    failures = 0
+    tasks.reset_store_backoff()
+    from app.scrapers import STORE_LABELS, supported_stores
+
+    for store_type in supported_stores():
+        tasks.record_store_failure(store_type, 'unit check')
+    rows = {row['store_type']: row['label'] for row in tasks.get_store_backoff_state()}
+
+    failures += report(set(rows) == set(supported_stores()),
+                       'one row per supported store', str(sorted(rows)))
+    failures += report(rows.get('gamestop') == 'GameStop',
+                       'GameStop is spelled the way the retailer spells it',
+                       rows.get('gamestop', 'missing'))
+    failures += report(rows.get('nintendo') == 'My Nintendo Store',
+                       'the Nintendo store is named', rows.get('nintendo', 'missing'))
+    failures += report(rows.get('bh') == 'B&H Photo Video',
+                       'and B&H is not read as a two-letter key', rows.get('bh', 'missing'))
+
+    # The panel used to read its own copy of this table, which had gone stale.
+    missing = sorted(set(supported_stores()) - set(STORE_LABELS))
+    failures += report(not missing, 'no store falls back to its bare key', str(missing))
+    tasks.reset_store_backoff()
+    return failures
+
+
 CHECKS = [
     check_healthy_cycle,
     check_backoff_after_failures,
@@ -486,6 +698,11 @@ CHECKS = [
     check_interval_due_boundaries,
     check_store_waits_for_its_interval,
     check_backoff_beats_interval,
+    check_block_page_counts_as_failure,
+    check_a_real_page_is_still_an_answer,
+    check_manual_update_records_health,
+    check_refresh_product_records_health,
+    check_store_rows_are_labelled,
 ]
 
 
