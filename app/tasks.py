@@ -9,6 +9,7 @@ from app.cart_screenshots import save_cart_screenshot
 from app.scrapers import (detect_store_type, get_scraper, is_by_design_refusal,
                           store_display_name)
 from app.notifications import send_product_alert, notify_cart_success
+from app.notifications.telegram import TelegramNotifier
 import urllib.parse
 import threading
 import atexit
@@ -41,6 +42,183 @@ STORE_BACKOFF_MAX_MINUTES = 60
 # again. Only touched from check_all_products, which check_lock serializes.
 _store_failures = {}
 _store_retry_at = {}
+
+# --------------------------------------------------------------------------
+# Scheduler liveness
+#
+# A dead scheduler is invisible from outside the process: the dashboard still
+# answers 200, the jobs still show as registered, and the only trace is a
+# traceback in a log nobody is reading. That is how the live tracker sat dead
+# for 83 minutes on 2026-09-12 while looking perfectly healthy, and it is why
+# "has a check actually completed recently" has to be a first-class question
+# rather than something inferred from an HTTP status.
+#
+# All times here are naive UTC, matching the rest of the app.
+_health_lock = threading.Lock()
+_process_started_at = datetime.utcnow()
+_last_pass_started = None
+_last_pass_completed = None
+# None until a scheduler has been configured in this process.
+_interval_seconds = None
+_scheduler_enabled = False
+
+# How many intervals may elapse with nothing completing before it is a stall.
+OVERDUE_INTERVAL_MULTIPLE = 3
+# ...but never alarm sooner than this. At a 19-second interval three intervals
+# is under a minute, and one slow retailer scrape would trip it.
+MIN_OVERDUE_SECONDS = 90
+WATCHDOG_POLL_SECONDS = 30
+
+
+def _iso_z(moment):
+    """A naive-UTC datetime as ISO 8601 with an explicit Z, or None."""
+    if moment is None:
+        return None
+    return moment.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _record_pass_started(now=None):
+    global _last_pass_started
+    with _health_lock:
+        _last_pass_started = now or datetime.utcnow()
+
+
+def _record_pass_completed(now=None):
+    global _last_pass_completed
+    with _health_lock:
+        _last_pass_completed = now or datetime.utcnow()
+
+
+def overdue_threshold_seconds(interval_seconds=None):
+    """Seconds without a completed pass that count as stalled."""
+    interval = _interval_seconds if interval_seconds is None else interval_seconds
+    if not interval:
+        return MIN_OVERDUE_SECONDS
+    return max(int(interval) * OVERDUE_INTERVAL_MULTIPLE, MIN_OVERDUE_SECONDS)
+
+
+def scheduler_health(now=None):
+    """
+    Whether this process is actually checking products, as a plain dict.
+
+    The shape is the `scheduler` object of GET /api/health; the route wraps the
+    instance label around it.
+
+    `overdue` is the only field worth alerting on. It is False whenever the
+    scheduler is switched off, because a UI-only instance is not supposed to be
+    checking anything. A process that has never completed a pass gets one
+    threshold of grace from boot, so a fresh start is not born stalled.
+    """
+    now = now or datetime.utcnow()
+    with _health_lock:
+        started = _last_pass_started
+        completed = _last_pass_completed
+        interval = _interval_seconds
+        enabled = _scheduler_enabled
+        booted = _process_started_at
+
+    threshold = overdue_threshold_seconds(interval)
+    if not enabled:
+        overdue = False
+    elif completed is None:
+        overdue = (now - booted).total_seconds() > threshold
+    else:
+        overdue = (now - completed).total_seconds() > threshold
+
+    return {
+        'enabled': enabled,
+        'interval_seconds': int(interval or 0),
+        'last_pass_started': _iso_z(started),
+        'last_pass_completed': _iso_z(completed),
+        'overdue': overdue,
+    }
+
+
+# The watchdog deliberately does NOT run as an APScheduler job: a dead
+# scheduler cannot report its own death, which is the whole failure being
+# guarded against. It is a plain daemon thread, so it also cannot hold the
+# process open at exit.
+_watchdog_thread = None
+_watchdog_stop = None
+
+
+def _watchdog_tick(app, was_overdue, now=None):
+    """
+    One watchdog evaluation. Returns the overdue state to carry forward.
+
+    Posts only on a transition, so a stall produces exactly one "stalled"
+    message and one "recovered" message however long it lasts. Split out from
+    the loop so it is testable without waiting on a real poll interval.
+    """
+    health = scheduler_health(now=now)
+    overdue = health['overdue']
+    if overdue == was_overdue:
+        return overdue
+
+    since = health['last_pass_completed'] or ('process start ' + _iso_z(_process_started_at))
+    if overdue:
+        logger.error(
+            "Tracker stalled: no completed product check since %s (interval %ss, "
+            "overdue after %ss)", since, health['interval_seconds'],
+            overdue_threshold_seconds(health['interval_seconds'] or None))
+        message = 'tracker stalled: no completed check since %s' % since
+    else:
+        logger.info("Tracker recovered: completed a product check at %s",
+                    health['last_pass_completed'])
+        message = 'tracker recovered: completed a check at %s' % health['last_pass_completed']
+
+    # Under an app context so TELEGRAM_ALERTS_ENABLED and INSTANCE_LABEL are
+    # read from config exactly as they are for a scheduled alert. send_message
+    # already gates on the former and applies the latter, so an instance that
+    # is not the designated sender stays silent here too. There is no user
+    # content in the text, so nothing to escape.
+    try:
+        with app.app_context():
+            TelegramNotifier.send_message(message)
+    except Exception:
+        logger.error("Could not post scheduler watchdog message", exc_info=True)
+
+    return overdue
+
+
+def _watchdog_loop(app, stop_event, poll_seconds=WATCHDOG_POLL_SECONDS):
+    was_overdue = False
+    # wait() first, so a freshly started process is never alarmed on instantly.
+    while not stop_event.wait(poll_seconds):
+        try:
+            was_overdue = _watchdog_tick(app, was_overdue)
+        except Exception:
+            logger.error("Scheduler watchdog tick failed", exc_info=True)
+
+
+def start_scheduler_watchdog(app, poll_seconds=WATCHDOG_POLL_SECONDS):
+    """Start (or restart) the liveness watchdog thread. Returns the thread."""
+    global _watchdog_thread, _watchdog_stop
+    if _watchdog_stop is not None:
+        _watchdog_stop.set()
+    if _watchdog_thread is not None and _watchdog_thread.is_alive():
+        _watchdog_thread.join(timeout=2)
+    _watchdog_stop = threading.Event()
+    _watchdog_thread = threading.Thread(
+        target=_watchdog_loop,
+        args=(app, _watchdog_stop, poll_seconds),
+        name='scheduler-watchdog',
+        daemon=True,
+    )
+    _watchdog_thread.start()
+    logger.info("Scheduler watchdog started (polling every %ss)", poll_seconds)
+    return _watchdog_thread
+
+
+def stop_scheduler_watchdog():
+    """Stop the watchdog thread if one is running. Used by tests and at exit."""
+    global _watchdog_thread, _watchdog_stop
+    if _watchdog_stop is not None:
+        _watchdog_stop.set()
+    if _watchdog_thread is not None and _watchdog_thread.is_alive():
+        _watchdog_thread.join(timeout=2)
+    _watchdog_thread = None
+    _watchdog_stop = None
 
 
 def _backoff_settings():
@@ -298,6 +476,8 @@ def check_all_products():
         return
         
     try:
+        # Only after the lock is held: a skipped run is not a pass.
+        _record_pass_started()
         logger.info(f"Starting scheduled check of all products at {datetime.utcnow()}")
         
         from flask import current_app
@@ -422,6 +602,12 @@ def check_all_products():
                 except Exception as e:
                     logger.error(f"Error updating product {product.id}: {str(e)}", exc_info=True)
                     db.session.rollback()
+
+            # Reached only when the whole product loop got through. A pass
+            # that raised out of the query or the loop has not completed,
+            # and must not refresh the liveness timestamp -- that would
+            # make a permanently failing tracker look healthy.
+            _record_pass_completed()
         except Exception as e:
             logger.error(f"Error in check_all_products: {str(e)}", exc_info=True)
             db.session.rollback()
@@ -459,8 +645,14 @@ def init_scheduler(app):
     # settings page calls init_scheduler() again to apply a new check interval,
     # and that would otherwise start the scheduler this instance is meant not to
     # have. Returning None leaves app.scheduler unset for the caller to see.
+    global _scheduler_enabled, _interval_seconds
+
     if not app.config.get('SCHEDULER_ENABLED', True):
         logger.info("SCHEDULER_ENABLED is off - not starting a scheduler")
+        # Say so in the health contract too, so a UI-only instance reports
+        # enabled=false rather than looking like a stalled tracker.
+        _scheduler_enabled = False
+        _interval_seconds = None
         return None
 
     logger.info("Initializing scheduler")
@@ -479,6 +671,8 @@ def init_scheduler(app):
             interval_seconds = 10
             
         logger.info(f"Scheduler will run every {interval_seconds} seconds")
+        _scheduler_enabled = True
+        _interval_seconds = interval_seconds
         
         if hasattr(app, 'scheduler'):
             logger.info("Removing existing scheduler jobs")
@@ -524,6 +718,9 @@ def init_scheduler(app):
         # Start the scheduler
         app.scheduler.start()
         logger.info("Scheduler started")
+
+        # Outside APScheduler on purpose - see start_scheduler_watchdog.
+        start_scheduler_watchdog(app)
         
         # Register a function to shut down the scheduler when the app exits
         atexit.register(lambda: app.scheduler.shutdown() if hasattr(app, 'scheduler') else None)
