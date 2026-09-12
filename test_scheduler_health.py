@@ -25,6 +25,17 @@ What it asserts:
     once the last completed pass ages past 3x the interval.
   * The 90-second floor holds, so a 19-second interval does not alarm on one
     slow scrape.
+  * A pass that is merely slow is NOT overdue, however far past the idle
+    threshold it runs. The live instance runs a 19-second interval with
+    ~55-second passes, so without this any slow Chrome posts a false stall to
+    the channel - and a false alert is how the next real one gets ignored.
+  * ...but a pass past the hung-pass cap IS overdue, because check_all_products
+    holds check_lock for its whole run, so one wedged pass blocks all later
+    ones. The cap is sized off real pass durations, not the interval.
+  * "In flight" comes from a flag cleared in the outer finally, never inferred
+    from "started is newer than completed" - a pass that RAISED leaves exactly
+    that state, and inferring it would have made the original outage (jobs
+    crashing on every fire) permanently invisible.
   * A pass that raises does NOT refresh last_pass_completed - a permanently
     failing tracker must not look healthy.
   * A skipped run (lock already held) is not recorded as a pass.
@@ -83,11 +94,15 @@ def main():
     posted = []
     TelegramNotifier.send_message = staticmethod(lambda text, **kw: posted.append(text) or True)
 
-    def reset(interval=None, enabled=True, completed=None, started=None, booted=None):
+    def reset(interval=None, enabled=True, completed=None, started=None, booted=None,
+              durations=(), in_flight=False):
         tasks._interval_seconds = interval
         tasks._scheduler_enabled = enabled
         tasks._last_pass_completed = completed
         tasks._last_pass_started = started
+        tasks._pass_in_flight = in_flight
+        tasks._pass_durations.clear()
+        tasks._pass_durations.extend(durations)
         if booted is not None:
             tasks._process_started_at = booted
         posted[:] = []
@@ -111,10 +126,23 @@ def main():
     check('instance_label is the configured label',
           body.get('instance_label') == 'testinstance', repr(body.get('instance_label')))
     sched = body.get('scheduler', {})
+    # The first five are the contract the dashboard indicator was built
+    # against and must not change shape; the last three were added with the
+    # hung-pass cap. Adding keys is safe for a consumer reading by name, which
+    # is why this is an equality check - a *removed* key must fail loudly.
     check('scheduler keys match the contract',
           set(sched) == {'enabled', 'interval_seconds', 'last_pass_started',
-                         'last_pass_completed', 'overdue'},
+                         'last_pass_completed', 'overdue',
+                         'in_flight', 'current_pass_seconds', 'in_flight_cap_seconds'},
           sorted(sched))
+    check('in_flight is a real boolean',
+          isinstance(sched.get('in_flight'), bool), repr(sched.get('in_flight')))
+    check('in_flight_cap_seconds is an int',
+          isinstance(sched.get('in_flight_cap_seconds'), int),
+          repr(sched.get('in_flight_cap_seconds')))
+    check('current_pass_seconds is null when no pass is running',
+          sched.get('current_pass_seconds') is None,
+          repr(sched.get('current_pass_seconds')))
     check('enabled and overdue are real booleans',
           isinstance(sched.get('enabled'), bool) and isinstance(sched.get('overdue'), bool),
           '%r / %r' % (sched.get('enabled'), sched.get('overdue')))
@@ -158,6 +186,92 @@ def main():
           tasks.scheduler_health(now=now + timedelta(minutes=40))['overdue'] is False)
     check('...overdue at 50 minutes',
           tasks.scheduler_health(now=now + timedelta(minutes=50))['overdue'] is True)
+
+    # ------------------------------------------------------------------
+    print('\na slow pass is not a stall (the false positive this prevents)')
+    # ------------------------------------------------------------------
+    # The live shape on 2026-09-12: 19-second interval, ~55-second passes. The
+    # idle threshold is the 90s floor, so without the in-flight exemption any
+    # pass slower than 90s posts "tracker stalled" while the tracker works.
+    reset(interval=19, started=now, completed=now - timedelta(seconds=1),
+          booted=now - timedelta(hours=1), durations=(55.0, 12.0, 12.0),
+          in_flight=True)
+    check('a pass running 80s is not overdue',
+          tasks.scheduler_health(now=now + timedelta(seconds=80))['overdue'] is False)
+    check('...nor at 200s, still under the cap',
+          tasks.scheduler_health(now=now + timedelta(seconds=200))['overdue'] is False,
+          'the idle clock must not run while a pass is in flight')
+    health = tasks.scheduler_health(now=now + timedelta(seconds=80))
+    check('...and it reports itself as in flight',
+          health['in_flight'] is True and health['current_pass_seconds'] == 80,
+          '%r / %r' % (health['in_flight'], health['current_pass_seconds']))
+
+    # NEGATIVE CONTROL: the exemption above must not swallow a genuinely hung
+    # pass. check_all_products holds check_lock for its whole run, so a Chrome
+    # that never returns blocks every later pass - the one failure the cap
+    # exists to catch. If this check ever stops failing-over-to-true, the
+    # in-flight exemption has become a blindfold.
+    check('a pass past the cap IS overdue',
+          tasks.scheduler_health(now=now + timedelta(seconds=301))['overdue'] is True,
+          'floor is %ss' % tasks.HUNG_PASS_FLOOR_SECONDS)
+
+    reset(interval=19, started=now, completed=now - timedelta(seconds=1),
+          booted=now - timedelta(hours=1), durations=(400.0,), in_flight=True)
+    check('the cap tracks real pass durations, not the interval',
+          tasks.in_flight_cap_seconds() == 800, tasks.in_flight_cap_seconds())
+    check('...so a slow instance is not overdue at 700s',
+          tasks.scheduler_health(now=now + timedelta(seconds=700))['overdue'] is False)
+    check('...and is overdue at 801s',
+          tasks.scheduler_health(now=now + timedelta(seconds=801))['overdue'] is True)
+
+    reset(interval=19, started=now, completed=None, booted=now, in_flight=True)
+    check('a first-ever pass that hangs still trips, on the floor',
+          tasks.in_flight_cap_seconds() == tasks.HUNG_PASS_FLOOR_SECONDS
+          and tasks.scheduler_health(now=now + timedelta(seconds=301))['overdue'] is True)
+
+    # REGRESSION GUARD. Inferring "in flight" from "started is newer than
+    # completed" looks equivalent and is not: a pass that raises leaves exactly
+    # that state and never clears it. With jobs crashing on every fire - the
+    # 83-minute outage, precisely - the start time refreshes every interval, so
+    # an inferred flag would read as a young in-flight pass forever and the
+    # watchdog would never fire. The flag must come from the finally block.
+    reset(interval=19, started=now, completed=None,
+          booted=now - timedelta(hours=1), in_flight=False)
+    check('a pass that raised is NOT treated as in flight',
+          tasks.scheduler_health(now=now + timedelta(seconds=5))['in_flight'] is False)
+    check('...so repeated crashing passes still go overdue on the idle clock',
+          tasks.scheduler_health(now=now + timedelta(seconds=95))['overdue'] is True,
+          'this is the outage the watchdog exists for')
+
+    # The outage itself: jobs crashing on fire means no pass ever starts, so
+    # nothing is in flight and the idle clock is the one that must catch it.
+    reset(interval=19, started=now - timedelta(seconds=5),
+          completed=now - timedelta(seconds=4), booted=now - timedelta(hours=1))
+    check('a finished pass leaves nothing in flight',
+          tasks.scheduler_health(now=now)['in_flight'] is False)
+    check('...and the idle clock still catches a dead scheduler',
+          tasks.scheduler_health(now=now + timedelta(seconds=95))['overdue'] is True)
+
+    # ------------------------------------------------------------------
+    print('\npass durations feed the cap')
+    # ------------------------------------------------------------------
+    reset(interval=19, booted=now)
+    tasks._record_pass_started(now=now)
+    tasks._record_pass_completed(now=now + timedelta(seconds=30))
+    check('a completed pass records its duration',
+          list(tasks._pass_durations) == [30.0], list(tasks._pass_durations))
+    check('...and the cap follows it, still floored',
+          tasks.in_flight_cap_seconds() == tasks.HUNG_PASS_FLOOR_SECONDS)
+    for extra in (10, 20, 30, 40, 50, 60):
+        tasks._record_pass_started(now=now)
+        tasks._record_pass_completed(now=now + timedelta(seconds=extra))
+    check('only the last %d durations are kept' % tasks.PASS_DURATION_SAMPLES,
+          len(tasks._pass_durations) == tasks.PASS_DURATION_SAMPLES,
+          list(tasks._pass_durations))
+    check('the cap uses the slowest of those, not the newest',
+          tasks.in_flight_cap_seconds() == max(
+              int(max(tasks._pass_durations) * tasks.HUNG_PASS_DURATION_MULTIPLE),
+              tasks.HUNG_PASS_FLOOR_SECONDS))
 
     reset(interval=None, enabled=False, booted=now - timedelta(days=1))
     health = tasks.scheduler_health(now=now)
@@ -254,6 +368,16 @@ def main():
           len(posted) == 2 and state is False, '%d posts' % len(posted))
     check('the recovery message says recovered',
           'recovered' in posted[-1], repr(posted[-1]))
+
+    # A hung pass is a different failure and must read as one. "No completed
+    # check since X" would send someone hunting a dead scheduler while the
+    # scheduler is fine and one Chrome is wedged holding check_lock.
+    reset(interval=19, started=now, completed=now - timedelta(seconds=1),
+          booted=now - timedelta(hours=1), in_flight=True)
+    tasks._watchdog_tick(flask_app, False, now=now + timedelta(seconds=400))
+    check('a hung pass posts a message naming the stuck pass, not a dead scheduler',
+          len(posted) == 1 and 'still running' in posted[0] and 'blocking' in posted[0],
+          repr(posted[0] if posted else None))
 
     # Silencing.
     flask_app.config['TELEGRAM_ALERTS_ENABLED'] = '0'
