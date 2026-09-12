@@ -48,7 +48,12 @@
            duplication. */
 
         :root {
-            --page-width: 76rem;
+            /* The page column follows the window: min() picks 92% at any window
+               narrower than the cap, so resizing the browser resizes the page and
+               the dashboard table gets the room it wants. The cap is not a layout
+               choice so much as a reading one -- it stops the prose pages (wiki,
+               settings) from running to 2500px lines on an ultrawide monitor. */
+            --page-width: 150rem;
 
             /* Brand green, replacing Simple.css's default accent */
             --accent: #4d7c0f;
@@ -787,6 +792,32 @@
     </footer>
     
     <script>
+        // Fade one flash message out after five seconds. Transition first, then
+        // the value: set the other way round the browser has nothing to animate
+        // from and the message simply vanishes.
+        function dismissFlashLater(element) {
+            setTimeout(() => {
+                element.style.transition = 'opacity 0.5s ease-out';
+                element.style.opacity = '0';
+                setTimeout(() => { element.remove(); }, 500);
+            }, 5000);
+        }
+
+        // Post a flash message from script, for anything that now reports back
+        // without reloading the page -- the dashboard's row switches, mainly.
+        // Same markup and the same fade as the server-rendered ones above.
+        window.showFlash = function (message, category) {
+            const container = document.querySelector('.flash-messages');
+            if (!container) { return; }
+            const element = document.createElement('div');
+            element.className = `flash-message flash-${category || 'info'}`;
+            // textContent, never innerHTML: these carry product names, and those
+            // come from retailer pages.
+            element.textContent = message;
+            container.appendChild(element);
+            dismissFlashLater(element);
+        };
+
         document.addEventListener('DOMContentLoaded', function() {
             // Check for cart updates periodically
             function checkCartUpdates() {
@@ -830,17 +861,7 @@
             });
             
             // Flash message auto-dismiss
-            const flashMessages = document.querySelectorAll('.flash-message');
-            flashMessages.forEach(message => {
-                setTimeout(() => {
-                    message.style.opacity = '0';
-                    message.style.transition = 'opacity 0.5s ease-out';
-                    
-                    setTimeout(() => {
-                        message.remove();
-                    }, 500);
-                }, 5000);
-            });
+            document.querySelectorAll('.flash-message').forEach(dismissFlashLater);
         });
     </script>
     
