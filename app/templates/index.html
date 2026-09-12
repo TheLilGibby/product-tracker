@@ -247,13 +247,22 @@
         display: inline-flex;
         align-items: center;
         margin: 0;
-        padding: 0.5em 0.9em;
+        /* Wide enough to stay a comfortable tap target now that the label is
+           an icon rather than a word. */
+        padding: 0.5em 0.85em;
         border: 0;
         border-radius: 0;
         color: inherit;
         font-size: 0.9rem;
         line-height: normal;
         text-decoration: none;
+    }
+
+    /* base.html sizes .icon to 1em, which against this control's 0.9rem would
+       draw the glyph smaller than the word it replaced. */
+    .view-toggle .view-toggle-icon {
+        width: 1.3rem;
+        height: 1.3rem;
     }
 
     .view-toggle a + a {
@@ -273,10 +282,32 @@
     <h2>Tracked Products</h2>
     <div class="page-heading-actions">
         {# Grouped: one row per product group, a chip per retailer listing
-           (products/_grouped.html). All sites: every listing, the table below. #}
+           (products/_grouped.html). All sites: every listing, the table below.
+           Each view is drawn as an icon - rows indented under a parent, and a
+           flat list - with its name kept in a visually-hidden span, so the link's
+           accessible name and the hover tooltip still say which view it is. #}
         <nav class="view-toggle" aria-label="Dashboard view">
-            <a href="{{ url_for('main.index', view='grouped') }}"{% if view == 'grouped' %} aria-current="page"{% endif %}>Grouped</a>
-            <a href="{{ url_for('main.index', view='all') }}"{% if view != 'grouped' %} aria-current="page"{% endif %}>All sites</a>
+            <a href="{{ url_for('main.index', view='grouped') }}" title="Grouped: one row per product"{% if view == 'grouped' %} aria-current="page"{% endif %}>
+                <svg class="icon view-toggle-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                    <line x1="8" y1="5.5" x2="20" y2="5.5" />
+                    <line x1="13" y1="12" x2="20" y2="12" />
+                    <line x1="13" y1="18.5" x2="20" y2="18.5" />
+                    <path d="M4 5.5v4.5a2 2 0 0 0 2 2h3" />
+                    <path d="M4 10v6.5a2 2 0 0 0 2 2h3" />
+                </svg>
+                <span class="visually-hidden">Grouped</span>
+            </a>
+            <a href="{{ url_for('main.index', view='all') }}" title="All sites: every retailer listing"{% if view != 'grouped' %} aria-current="page"{% endif %}>
+                <svg class="icon view-toggle-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true" focusable="false">
+                    <circle cx="5" cy="7" r="1.15" fill="currentColor" stroke="none" />
+                    <circle cx="5" cy="12" r="1.15" fill="currentColor" stroke="none" />
+                    <circle cx="5" cy="17" r="1.15" fill="currentColor" stroke="none" />
+                    <line x1="9" y1="7" x2="20" y2="7" />
+                    <line x1="9" y1="12" x2="20" y2="12" />
+                    <line x1="9" y1="17" x2="20" y2="17" />
+                </svg>
+                <span class="visually-hidden">All sites</span>
+            </a>
         </nav>
         {# Filled in by the auto-refresh script below. An empty slot rather than
            an insertBefore so the three controls keep this order, and so the
