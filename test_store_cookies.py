@@ -707,6 +707,33 @@ def check_session_test_button():
     report(not cookie_header_is_rejected(GAMESTOP_HEADER),
            'a failed GameStop test does not sideline the session either')
 
+    # A 404 is about the URL, not the caller: reaching GameStop's own 404 means
+    # the edge let the request through. The first version of this button shipped
+    # with an invented SKU in SESSION_PROBE_URL and reported the resulting 404 as
+    # "GameStop refused it", which sends someone off to re-earn a clearance that
+    # never expired - the exact confusion the button exists to remove.
+    clear_session_probe_history()
+    with Intercepted(gamestop_scraper, FakeResponse(404, text='<title>Not Found</title>')):
+        result = test_gamestop_session()
+    report(not result['ok'] and result['status'] == 404,
+           'a 404 is still not a pass', result['message'])
+    # The thing being guarded against is the advice, not the wording: it must
+    # not send the user off to re-earn a clearance that never expired.
+    report(result['level'] == 'warning',
+           'but it is a warning, not an error against the session', result['level'])
+    report('expired' not in result['message'] and 'IP address' not in result['message'],
+           'and it does not blame the clearance', result['message'])
+    report('gone' in result['message'] or 'moved' in result['message'],
+           'it says the page is gone instead', result['message'])
+
+    # And the probe URL itself has to be a page that exists, which is what went
+    # wrong the first time. 451609 is the tracked Pro Controller listing.
+    report(gamestop_scraper.SESSION_PROBE_URL.startswith('https://www.gamestop.com/'),
+           'the probe URL points at gamestop.com', gamestop_scraper.SESSION_PROBE_URL)
+    report(gamestop_scraper.SESSION_PROBE_URL.endswith('/451609.html'),
+           'and at a listing this tracker actually reads every pass',
+           gamestop_scraper.SESSION_PROBE_URL)
+
     # A retailer that never answers is its own outcome. Telling that apart from
     # a refusal is most of the reason the button exists.
     clear_session_probe_history()
