@@ -202,6 +202,9 @@
         const DEFAULT_RANGE = {{ chart_default|tojson|replace('<', '\\u003c')|safe }};
         const STORAGE_KEY = 'availabilityChartRange';
 
+        // Edge of a retailer tile, in CSS pixels.
+        const TILE = 18;
+
         const canvas = document.getElementById('groupStockChart');
         const note = document.getElementById('groupStockChartNote');
         const buttons = Array.prototype.slice.call(
@@ -214,6 +217,25 @@
                              '#0e7490', '#be123c', '#15803d', '#a16207'];
         const LINES_DARK = ['#a3e635', '#93c5fd', '#fbbf24', '#d8b4fe',
                             '#67e8f9', '#fda4af', '#4ade80', '#fcd34d'];
+
+        // The tiles are painted onto the canvas rather than laid out by CSS, so
+        // they have to be decoded before they can be drawn. Anything that
+        // arrives after the chart did redraws it once, which is why this hands
+        // back null rather than an unloaded image.
+        const tiles = {};
+        function tile(src) {
+            if (!src) { return null; }
+            if (!tiles[src]) {
+                const image = new Image(TILE, TILE);
+                image.addEventListener('load', function() {
+                    if (chart) { chart.update('none'); }
+                });
+                image.src = src;
+                tiles[src] = image;
+            }
+            const image = tiles[src];
+            return image.complete && image.naturalWidth ? image : null;
+        }
 
         function byKey(key) {
             for (let i = 0; i < RANGES.length; i++) {
@@ -311,6 +333,25 @@
             }
         };
 
+        // Each retailer's tile beside its lane, in the gap ticks.padding opens
+        // up between the lane's name and the axis.
+        const laneIcons = {
+            id: 'laneIcons',
+            afterDraw: function(instance, args, options) {
+                const axis = instance.scales.y;
+                const ctx = instance.ctx;
+                const x = instance.chartArea.left - TILE - 5;
+                ctx.save();
+                (options.lanes || []).forEach(function(lane) {
+                    const image = tile(lane.icon);
+                    if (!image) { return; }
+                    ctx.drawImage(image, x, axis.getPixelForValue(lane.mid) - TILE / 2,
+                                  TILE, TILE);
+                });
+                ctx.restore();
+            }
+        };
+
         function draw(key) {
             if (!canvas || typeof Chart === 'undefined') { return; }
 
@@ -332,6 +373,7 @@
                 const color = colors.lines[index % colors.lines.length];
                 return {
                     label: series.store,
+                    icon: series.icon,
                     data: series.points.map(function(point) {
                         return { x: point.t, y: point.y, full: point.full,
                                  available: point.available };
@@ -359,7 +401,7 @@
             chart = new Chart(canvas, {
                 type: 'line',
                 data: { datasets: datasets },
-                plugins: [laneBands],
+                plugins: [laneBands, laneIcons],
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
@@ -367,12 +409,26 @@
                     interaction: { mode: 'nearest', intersect: false },
                     plugins: {
                         laneBands: { lanes: range.lanes, band: colors.band },
+                        laneIcons: { lanes: range.lanes },
                         legend: { display: false },
                         tooltip: {
+                            // The swatch is the retailer's tile instead of
+                            // a square of the line's colour, so a tooltip
+                            // says which store it belongs to on sight.
+                            usePointStyle: true,
+                            boxWidth: TILE,
+                            boxHeight: TILE,
+                            boxPadding: 4,
                             callbacks: {
                                 title: function(items) {
                                     const point = items[0] && items[0].raw;
                                     return point ? point.full : '';
+                                },
+                                labelPointStyle: function(context) {
+                                    return {
+                                        pointStyle: tile(context.dataset.icon) || 'circle',
+                                        rotation: 0
+                                    };
                                 },
                                 label: function(context) {
                                     const point = context.raw;
@@ -418,6 +474,9 @@
                             ticks: {
                                 color: colors.tick,
                                 autoSkip: false,
+                                // Room between the name and the axis for
+                                // the tile laneIcons draws there.
+                                padding: TILE + 10,
                                 callback: function(value) {
                                     return laneLabels[value] || '';
                                 }

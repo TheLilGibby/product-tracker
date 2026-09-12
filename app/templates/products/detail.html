@@ -427,6 +427,27 @@
             document.querySelectorAll('.chart-range-toggle button'));
         let chart = null;
 
+        // Edge of the retailer tile in the tooltip, in CSS pixels.
+        const TILE = 18;
+        // The tiles are painted onto the canvas rather than laid out by CSS, so
+        // they have to be decoded before they can be drawn. Anything that
+        // arrives after the chart did redraws it once, which is why this hands
+        // back null rather than an unloaded image.
+        const tiles = {};
+        function tile(src) {
+            if (!src) { return null; }
+            if (!tiles[src]) {
+                const image = new Image(TILE, TILE);
+                image.addEventListener('load', function() {
+                    if (chart) { chart.update('none'); }
+                });
+                image.src = src;
+                tiles[src] = image;
+            }
+            const image = tiles[src];
+            return image.complete && image.naturalWidth ? image : null;
+        }
+
         function byKey(key) {
             for (let i = 0; i < RANGES.length; i++) {
                 if (RANGES[i].key === key) return RANGES[i];
@@ -496,6 +517,9 @@
             }
             const range = byKey(key);
             const points = range.points;
+            // Start the tile decoding now rather than on the first
+            // hover, which would otherwise draw a plain dot once.
+            tile(range.icon);
             const tickLabels = {};
             range.ticks.forEach(function(tick) { tickLabels[tick.v] = tick.label; });
             const colors = palette();
@@ -548,7 +572,19 @@
                             display: false
                         },
                         tooltip: {
+                            // The swatch is this retailer's tile, the same
+                            // one its lane carries on the group chart.
+                            usePointStyle: true,
+                            boxWidth: TILE,
+                            boxHeight: TILE,
+                            boxPadding: 4,
                             callbacks: {
+                                labelPointStyle: function() {
+                                    return {
+                                        pointStyle: tile(range.icon) || 'circle',
+                                        rotation: 0
+                                    };
+                                },
                                 title: function(items) {
                                     const point = points[items[0].dataIndex];
                                     return point ? point.full : '';

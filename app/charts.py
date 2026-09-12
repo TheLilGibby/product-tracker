@@ -19,9 +19,10 @@ five flat lines, not as one line drawn five times over.
 from datetime import datetime, timedelta
 
 import pytz
-from flask import current_app, session
+from flask import current_app, session, url_for
 
 from app.models.product import Product
+from app.scrapers import detect_store_type, store_icon_path
 
 # How far apart the x-axis ticks sit in each window. They fall on round local
 # times: every 10 minutes, every 3 hours, each midnight.
@@ -35,6 +36,11 @@ _TICK_STEPS = {
 # and below keeps a line off its lane's edge, so neighbouring lanes stay apart.
 _LANE_OUT = 0.18
 _LANE_IN = 0.82
+
+
+def store_icon(url):
+    """The retailer tile for a listing URL, as a URL the page can load."""
+    return url_for('static', filename=store_icon_path(detect_store_type(url)))
 
 
 def epoch_ms(moment):
@@ -117,6 +123,7 @@ def availability_chart_ranges(product):
     """
     labels = _Labels()
     last_checked = labels.full(product.last_checked) if product.last_checked else None
+    icon = store_icon(product.url)
 
     ranges = []
     for window in product.availability_windows():
@@ -142,6 +149,7 @@ def availability_chart_ranges(product):
             'changes': window['changes'],
             'checked': window['checked'],
             'last_checked': last_checked,
+            'icon': icon,
             'points': points,
         })
     if not any(r['points'] for r in ranges):
@@ -182,6 +190,7 @@ def group_chart_ranges(listings):
         base = total - 1 - index
         lanes.append({
             'store': row['store'],
+            'icon': store_icon(product.url),
             'product_id': product.id,
             'floor': base + _LANE_OUT,
             'ceiling': base + _LANE_IN,
@@ -217,6 +226,7 @@ def group_chart_ranges(listings):
             series.append({
                 'lane': lane_index,
                 'store': lane['store'],
+                'icon': lane['icon'],
                 'product_id': lane['product_id'],
                 'floor': lane['floor'],
                 'changes': window['changes'],

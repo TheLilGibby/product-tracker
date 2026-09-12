@@ -230,7 +230,7 @@ polling interval. Neither the per-store interval nor the backoff throttles it.
 | `DASHBOARD_PASSWORD` | empty | HTTP Basic password for every page |
 | `PUBLIC_URL` | empty | Base URL used for links in Telegram messages |
 | `SNAPSHOT_INTERVAL_MINUTES` | `0` | Periodic dashboard screenshot to Telegram |
-| `DEFAULT_TIMEZONE` | `UTC` | Timezone for displayed times |
+| `DEFAULT_TIMEZONE` | `America/Denver` | Timezone for displayed times; the settings page overrides it per browser |
 
 If you expose the dashboard through the tunnel to watch it from your phone, **set
 `DASHBOARD_PASSWORD` first**. The dashboard has no accounts: anyone who reaches it

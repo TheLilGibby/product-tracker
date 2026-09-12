@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-label="Newegg">
+  <title>Newegg</title>
+  <rect width="32" height="32" rx="7" fill="#F26722"/>
+  <text x="16" y="16" fill="#FFFFFF" font-size="21" font-weight="700"
+        font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif"
+        text-anchor="middle" dominant-baseline="central">N</text>
+</svg>
