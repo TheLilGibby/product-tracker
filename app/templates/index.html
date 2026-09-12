@@ -64,6 +64,82 @@
        Scoped to button.switch deliberately: the tracking control is a
        <label class="switch"> styled in base.html, and this block loads after
        that one, so an unscoped .switch would wrap its track in a second chip. */
+    /* Chip colours as tokens. The rules below are written once and the two
+       schemes differ only in these values.
+
+       The theme rule here has to be the same one base.html uses for the page
+       palette: an explicit data-theme wins, and prefers-color-scheme is
+       consulted only when no data-theme is stamped. This block used to be a
+       bare @media (prefers-color-scheme: dark), which put the chips in
+       disagreement with the tracking switch sitting in the same row - that one
+       draws on --accent-text/--bg and so follows data-theme. On a dark OS the
+       chips went dark even with the theme switcher set to Light, and choosing
+       Dark on a light OS left them as three bright chips on a dark row, which
+       is the exact failure the old comment here was written to prevent.
+       The contrast values are unchanged, only moved behind the tokens. */
+    :root {
+        --chip-bg: #f3f4f6;
+        --chip-border: #d1d5db;
+        --chip-text: #4b5563;
+        --chip-knob: #9ca3af;
+
+        --chip-on-bg: #d1fae5;
+        --chip-on-border: #6ee7b7;
+        --chip-on-text: #065f46;
+        --chip-on-knob: #059669;
+
+        --chip-armed-bg: #fef3c7;
+        --chip-armed-text: #92400e;
+        --chip-armed-knob: #d97706;
+
+        /* Scheme-independent on purpose, so they are set once and never
+           restated below: the hover border reads the same against both chip
+           backgrounds, and amber holds the armed chip's edge in either theme.
+           Same reasoning base.html gives for pinning .switch-label to a fixed
+           slate rather than theming it. */
+        --chip-hover-border: #9ca3af;
+        --chip-armed-border: #f59e0b;
+    }
+
+    /* System dark - skipped when the user has explicitly chosen light */
+    @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+            --chip-bg: #2b2b2b;
+            --chip-border: #4b5563;
+            --chip-text: #cbd5e1;
+            --chip-knob: #6b7280;
+
+            --chip-on-bg: #064e3b;
+            --chip-on-border: #10b981;
+            --chip-on-text: #a7f3d0;
+            --chip-on-knob: #34d399;
+
+            --chip-armed-bg: #4a2f06;
+            --chip-armed-text: #fde68a;
+            --chip-armed-knob: #fbbf24;
+        }
+    }
+
+    /* Forced dark, even on a light OS. Custom properties cannot be shared
+       between selectors, so this repeats the block above - the same
+       duplication base.html carries for the page palette, for the same
+       reason. */
+    :root[data-theme="dark"] {
+        --chip-bg: #2b2b2b;
+        --chip-border: #4b5563;
+        --chip-text: #cbd5e1;
+        --chip-knob: #6b7280;
+
+        --chip-on-bg: #064e3b;
+        --chip-on-border: #10b981;
+        --chip-on-text: #a7f3d0;
+        --chip-on-knob: #34d399;
+
+        --chip-armed-bg: #4a2f06;
+        --chip-armed-text: #fde68a;
+        --chip-armed-knob: #fbbf24;
+    }
+
     button.switch {
         position: relative;
         display: inline-flex;
@@ -77,10 +153,10 @@
         min-width: 3.85rem;
         height: 1.35rem;
         padding: 0 0.4rem 0 1.3rem;
-        border: 1px solid #d1d5db;
+        border: 1px solid var(--chip-border);
         border-radius: 999px;
-        background-color: #f3f4f6;
-        color: #4b5563;
+        background-color: var(--chip-bg);
+        color: var(--chip-text);
         font-size: 0.62rem;
         font-weight: bold;
         line-height: 1.35rem;
@@ -91,7 +167,7 @@
     }
 
     button.switch:hover {
-        border-color: #9ca3af;
+        border-color: var(--chip-hover-border);
     }
 
     button.switch:focus-visible {
@@ -109,7 +185,7 @@
         height: 0.85rem;
         margin-top: -0.425rem;
         border-radius: 50%;
-        background-color: #9ca3af;
+        background-color: var(--chip-knob);
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
         transition: background-color 0.12s ease, left 0.12s ease;
     }
@@ -132,63 +208,25 @@
 
     /* Alerts on */
     button.switch-on {
-        background-color: #d1fae5;
-        border-color: #6ee7b7;
-        color: #065f46;
+        background-color: var(--chip-on-bg);
+        border-color: var(--chip-on-border);
+        color: var(--chip-on-text);
     }
 
     .switch-on .switch-knob {
-        background-color: #059669;
+        background-color: var(--chip-on-knob);
     }
 
     /* Auto-cart armed: deliberately the loudest thing in the row. This one can
        spend a real cart attempt, so it should never blend in with Alerts. */
     button.switch-armed {
-        background-color: #fef3c7;
-        border-color: #f59e0b;
-        color: #92400e;
+        background-color: var(--chip-armed-bg);
+        border-color: var(--chip-armed-border);
+        color: var(--chip-armed-text);
     }
 
     .switch-armed .switch-knob {
-        background-color: #d97706;
-    }
-
-    /* simple.css flips the whole page on prefers-color-scheme, so the switches
-       have to follow or they sit as three bright chips on a dark row. */
-    @media (prefers-color-scheme: dark) {
-        button.switch {
-            border-color: #4b5563;
-            background-color: #2b2b2b;
-            color: #cbd5e1;
-        }
-
-        button.switch:hover {
-            border-color: #9ca3af;
-        }
-
-        .switch-knob {
-            background-color: #6b7280;
-        }
-
-        button.switch-on {
-            background-color: #064e3b;
-            border-color: #10b981;
-            color: #a7f3d0;
-        }
-
-        .switch-on .switch-knob {
-            background-color: #34d399;
-        }
-
-        button.switch-armed {
-            background-color: #4a2f06;
-            border-color: #f59e0b;
-            color: #fde68a;
-        }
-
-        .switch-armed .switch-knob {
-            background-color: #fbbf24;
-        }
+        background-color: var(--chip-armed-knob);
     }
 
     @media (prefers-reduced-motion: reduce) {
