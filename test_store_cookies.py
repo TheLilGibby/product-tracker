@@ -51,9 +51,10 @@ import requests  # noqa: E402
 from dotenv import dotenv_values  # noqa: E402
 
 from app.scrapers.common import (  # noqa: E402
-    DEFAULT_HEADERS, clear_rejected_cookie_headers,
+    DEFAULT_HEADERS, clear_rejected_cookie_headers, clear_session_probe_history,
     cookie_header_is_rejected, cookie_header_jar, cookie_header_names,
-    cookie_setting, detect_block_page, parse_cookie_header,
+    cookie_setting, detect_block_page, note_cookie_header_rejected,
+    parse_cookie_header,
 )
 
 FAILED = []
@@ -173,6 +174,29 @@ class Intercepted:
     @property
     def sent_headers(self):
         return self.calls[-1]['kwargs'].get('headers') or {}
+
+
+class Timeout:
+    """A retailer that accepts the connection and then says nothing."""
+
+    def __init__(self, module):
+        self.module = module
+        self.calls = []
+        self._real = None
+
+    def __enter__(self):
+        self._real = self.module.requests.get
+
+        def fake_get(*args, **kwargs):
+            self.calls.append({'args': args, 'kwargs': kwargs})
+            raise requests.Timeout('timed out')
+
+        self.module.requests.get = fake_get
+        return self
+
+    def __exit__(self, *exc):
+        self.module.requests.get = self._real
+        return False
 
 
 def sent_cookie_header(jar, url):
@@ -572,6 +596,200 @@ def check_block_pages_still_classify():
            'the Redsky 403 body is what the scraper logs on a refusal')
 
 
+def check_session_test_button():
+    """
+    The settings page's Test button: one request, and an honest verdict.
+
+    What it is for. A pasted session either works or it does not, and today the
+    only way to find out is to wait for the next scheduled check and read the
+    logs - by which time a 403 could be a stale clearance, a wrong User-Agent, a
+    changed IP address or the retailer having a bad minute, and those are
+    indistinguishable after the fact. The button asks once, now, and says which.
+
+    What has to hold, and why each has a cost if it does not:
+
+      * The rejection memo moves one way only. A success clears it, so a session
+        that was set aside and has since been renewed resumes without a restart.
+        A failure records nothing: the memo exists to stop the scheduler
+        spending a doomed request every cycle, and a person standing at the
+        settings page pressing Test is the opposite case - one bad minute must
+        not sideline a good paste.
+      * A 200 carrying the challenge page is a refusal. Cloudflare serves its
+        interstitial with a 200, so a button that trusted the status line would
+        call the wall a success and send the user away satisfied.
+      * The cooldown refuses without spending a request. A double-click or a
+        resubmitted form would otherwise cost two requests against a clearance
+        Cloudflare is counting.
+    """
+    print("The Test button asks once and reports what came back")
+    from app.scrapers import gamestop_scraper, target_scraper
+    from app.scrapers.gamestop_scraper import test_gamestop_session
+    from app.scrapers.target_scraper import test_target_session
+
+    clear_rejected_cookie_headers()
+    clear_session_probe_history()
+    for name in ('TARGET_COOKIES', 'GAMESTOP_COOKIES', 'GAMESTOP_USER_AGENT'):
+        os.environ.pop(name, None)
+
+    # Nothing saved: say so rather than probe the retailer anonymously, which
+    # would report a 403 that says nothing about any session.
+    with Intercepted(target_scraper, FakeResponse(200)) as caught:
+        result = test_target_session()
+    report(not result['ok'] and 'nothing to test' in result['message'],
+           'with no session saved it says there is nothing to test', result['message'])
+    report(caught.calls == [], 'and makes no request at all', len(caught.calls))
+
+    os.environ['TARGET_COOKIES'] = TARGET_HEADER
+    os.environ['GAMESTOP_COOKIES'] = GAMESTOP_HEADER
+
+    # A 200 is the answer the user is hoping for, and it clears the memo.
+    note_cookie_header_rejected(TARGET_HEADER, 'Target')
+    clear_session_probe_history()
+    with Intercepted(target_scraper, FakeResponse(200, payload={'data': {}})) as caught:
+        result = test_target_session()
+    report(result['ok'] and result['level'] == 'success',
+           'Target 200 reads as a working session', result['message'])
+    report(result['status'] == 200, 'and reports the status it saw', result['status'])
+    report(not cookie_header_is_rejected(TARGET_HEADER),
+           'a success clears an earlier refusal, so a renewed session resumes')
+    report('_px3' in ' '.join(caught.sent_cookies),
+           'the clearance token was on the request', caught.sent_cookies)
+
+    # Redsky's own 403. The memo must stay untouched.
+    clear_session_probe_history()
+    with Intercepted(target_scraper, FakeResponse(403, text=REDSKY_403_BODY)):
+        result = test_target_session()
+    report(not result['ok'] and result['level'] == 'error',
+           'Target 403 reads as a refusal', result['message'])
+    report('press-and-hold' in result['message'],
+           'naming the challenge the user has to pass themselves', result['message'])
+    report(not cookie_header_is_rejected(TARGET_HEADER),
+           'and a failed test does NOT sideline the session')
+
+    # A 206 is Redsky disliking the question, not the caller: a session that
+    # gets one is a session that was accepted.
+    clear_session_probe_history()
+    with Intercepted(target_scraper, FakeResponse(206)):
+        result = test_target_session()
+    report(result['ok'], 'a 206 still counts as accepted', result['message'])
+
+    # GameStop's three answers. The middle one is the trap.
+    clear_session_probe_history()
+    with Intercepted(gamestop_scraper, FakeResponse(200, text=PRODUCT_BODY)) as caught:
+        result = test_gamestop_session()
+    report(result['ok'] and result['level'] == 'success',
+           'GameStop 200 with a product page reads as working', result['message'])
+    report('cf_clearance' in ' '.join(caught.sent_cookies),
+           'the clearance was on the request', caught.sent_cookies)
+
+    clear_session_probe_history()
+    with Intercepted(gamestop_scraper, FakeResponse(200, text=CLOUDFLARE_BODY)):
+        result = test_gamestop_session()
+    report(not result['ok'] and result['level'] == 'error',
+           'a 200 carrying the interstitial is a refusal, not a success',
+           result['message'])
+    report('User-Agent' in result['message'],
+           'and with no User-Agent saved, that is named as the likely cause',
+           result['message'])
+
+    os.environ['GAMESTOP_USER_AGENT'] = GAMESTOP_UA
+    clear_session_probe_history()
+    with Intercepted(gamestop_scraper, FakeResponse(403, text=CLOUDFLARE_BODY)) as caught:
+        result = test_gamestop_session()
+    report(not result['ok'] and result['status'] == 403,
+           'a 403 reads as a refusal', result['message'])
+    report('expired' in result['message'] or 'IP address' in result['message'],
+           'blaming expiry or a changed address once a User-Agent is saved',
+           result['message'])
+    report(caught.sent_headers.get('User-Agent') == GAMESTOP_UA,
+           'and the paste was tested with the User-Agent it was issued to',
+           caught.sent_headers.get('User-Agent'))
+    report(not cookie_header_is_rejected(GAMESTOP_HEADER),
+           'a failed GameStop test does not sideline the session either')
+
+    # A retailer that never answers is its own outcome. Telling that apart from
+    # a refusal is most of the reason the button exists.
+    clear_session_probe_history()
+    with Timeout(target_scraper):
+        result = test_target_session()
+    report(not result['ok'] and result['status'] is None,
+           'a retailer that never answers is not reported as a refusal',
+           result['message'])
+    report(not cookie_header_is_rejected(TARGET_HEADER),
+           'and does not sideline the session')
+
+    # The rate limit: one test per store per minute, counted in this process.
+    clear_session_probe_history()
+    with Intercepted(target_scraper, FakeResponse(200, payload={'data': {}})) as caught:
+        test_target_session()
+        second = test_target_session()
+    report(len(caught.calls) == 1, 'a second press inside the minute makes no request',
+           len(caught.calls))
+    report(not second['ok'] and 'seconds' in second['message'],
+           'and says when it can be tried again', second['message'])
+    report(second['level'] == 'warning',
+           'as a warning, not an error - nothing is wrong with the session',
+           second['level'])
+
+    with Intercepted(gamestop_scraper, FakeResponse(200, text=PRODUCT_BODY)) as caught:
+        other = test_gamestop_session()
+    report(other['ok'] and len(caught.calls) == 1,
+           'the limit is per store, so a Target test does not block GameStop',
+           other['message'])
+
+    clear_session_probe_history()
+    clear_rejected_cookie_headers()
+    for name in ('TARGET_COOKIES', 'GAMESTOP_COOKIES', 'GAMESTOP_USER_AGENT'):
+        os.environ.pop(name, None)
+
+
+def check_session_test_routes():
+    """
+    The buttons themselves, driven through Flask.
+
+    Two things here that the function-level checks cannot see: that the routes
+    exist and flash what the scraper decided, and that they are POSTs. The POST
+    matters - auth.py gates every non-safe method behind the dashboard password
+    and the same-origin check, so as a GET this would be a request to a retailer
+    that any page the user visits could trigger from their browser, and a
+    diagnostic is not worth an exemption.
+    """
+    print("The Test buttons are POST routes that flash the verdict")
+    from app import create_app
+    from app.scrapers import target_scraper
+
+    clear_session_probe_history()
+    clear_rejected_cookie_headers()
+    os.environ['TARGET_COOKIES'] = TARGET_HEADER
+
+    app = create_app('testing')
+    client = app.test_client()
+
+    with Intercepted(target_scraper, FakeResponse(200, payload={'data': {}})) as caught:
+        response = client.post('/test-target-session', follow_redirects=True)
+    body = response.get_data(as_text=True)
+    report(response.status_code == 200, 'the Target test posts', response.status_code)
+    report(len(caught.calls) == 1, 'and makes exactly one request', len(caught.calls))
+    report('200' in body, 'the verdict is flashed onto the settings page')
+    report(TARGET_HEADER not in body and 'px3token' not in body,
+           'and the session itself is never rendered back into the page')
+
+    response = client.get('/test-target-session')
+    report(response.status_code == 405,
+           'a GET is refused, so the button stays under the same-origin guard',
+           response.status_code)
+
+    response = client.get('/settings')
+    page = response.get_data(as_text=True)
+    report('test-target-session' in page and 'test-gamestop-session' in page,
+           'and both buttons are on the settings page')
+
+    clear_session_probe_history()
+    clear_rejected_cookie_headers()
+    for name in ('TARGET_COOKIES', 'GAMESTOP_COOKIES', 'GAMESTOP_USER_AGENT'):
+        os.environ.pop(name, None)
+
+
 def main():
     check_header_parsing()
     check_jar_scope()
@@ -582,6 +800,8 @@ def main():
     check_gamestop_requests_path()
     check_gamestop_browser_path()
     check_block_pages_still_classify()
+    check_session_test_button()
+    check_session_test_routes()
 
     print()
     if FAILED:

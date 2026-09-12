@@ -740,3 +740,76 @@ def cookie_header_is_rejected(cookie_header):
 def clear_rejected_cookie_headers():
     """Forget every refusal. For tests, and for a settings-page re-save."""
     _REJECTED_COOKIE_HEADERS.clear()
+
+
+def forget_cookie_header_rejection(cookie_header):
+    """
+    Forget one refusal, for a session that has since been shown to work.
+
+    Its use is the settings page's Test button: a paste set aside after a 403
+    that now answers 200 - the clearance was renewed, the User-Agent corrected,
+    the address changed back - should go straight back into service rather than
+    wait for a restart to be tried again.
+    """
+    return _REJECTED_COOKIE_HEADERS.pop(_cookie_header_digest(cookie_header), None)
+
+
+# How long a settings-page probe waits. Shorter than REQUEST_TIMEOUT because
+# somebody is sitting on the page watching for the answer, and a retailer that
+# has not replied in ten seconds has told us what we needed to know anyway.
+SESSION_PROBE_TIMEOUT = 10
+
+
+def session_probe_get(url, headers=None, cookies=None, params=None,
+                      timeout=SESSION_PROBE_TIMEOUT):
+    """
+    One GET, made to find out whether a pasted session is still accepted.
+
+    Returns (response, error): exactly one of the two is None. The error is a
+    sentence for the person who pressed the button, not a traceback - at this
+    point they are trying to tell an expired clearance from a typo, and the
+    distinction between those and "your network is down" is the whole answer.
+
+    Deliberately thin: it fetches and it does not judge. What a given status
+    means differs per retailer (Redsky's 206 is a healthy session answering a
+    question it did not like; a GameStop 200 can still be the wall), so the
+    caller classifies.
+    """
+    import requests
+
+    try:
+        response = requests.get(url, headers=headers, cookies=cookies,
+                                params=params, timeout=timeout)
+    except requests.Timeout:
+        return None, f'No answer within {timeout} seconds. Try again in a moment.'
+    except requests.RequestException as e:
+        return None, f'The request could not be made: {str(e)}'
+    return response, None
+
+
+# One probe per store per minute. The button is a request to a retailer that is
+# already counting them, and the two ways it gets pressed twice - an impatient
+# double-click, a browser re-POSTing on refresh - both spend a second request to
+# learn what the first one just said. Per process, like the rejection memory
+# above: this guards a retailer's patience, not a resource worth persisting.
+SESSION_PROBE_COOLDOWN_SECONDS = 60
+_LAST_SESSION_PROBE = {}
+
+
+def session_probe_wait_seconds(store, now=None):
+    """Seconds before ``store`` may be probed again; 0 when it may be now."""
+    last = _LAST_SESSION_PROBE.get(store)
+    if last is None:
+        return 0
+    elapsed = (now if now is not None else time.time()) - last
+    return max(0, int(round(SESSION_PROBE_COOLDOWN_SECONDS - elapsed)))
+
+
+def note_session_probe(store, now=None):
+    """Record that a probe for ``store`` has just gone out."""
+    _LAST_SESSION_PROBE[store] = now if now is not None else time.time()
+
+
+def clear_session_probe_history():
+    """Forget every cooldown. For tests."""
+    _LAST_SESSION_PROBE.clear()
