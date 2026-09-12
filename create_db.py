@@ -98,6 +98,73 @@ with app.app_context():
             except Exception as e:
                 print(f"Error updating schema: {e}")
     
+    if not db_uri.startswith('sqlite'):
+        import time
+
+        from sqlalchemy import text as sa_text
+        from sqlalchemy.exc import OperationalError
+
+        # Wait for the server to accept connections. In Docker, start.sh runs
+        # this immediately and the db container is no longer a depends_on
+        # healthcheck gate (it is an opt-in profile now), so on the very first
+        # `--profile postgres up` this races Postgres's initdb by a good 10-20
+        # seconds. Outside Docker it covers a server that is still starting.
+        DB_WAIT_SECONDS = int(os.environ.get('DB_WAIT_SECONDS', '60'))
+        deadline = time.monotonic() + DB_WAIT_SECONDS
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                with db.engine.connect() as conn:
+                    conn.execute(sa_text('SELECT 1'))
+                break
+            except OperationalError as e:
+                if time.monotonic() >= deadline:
+                    print(
+                        f"Database still unreachable after {DB_WAIT_SECONDS}s "
+                        f"({attempt} attempts). Giving up."
+                    )
+                    raise
+                if attempt == 1:
+                    # Print the reason once; the retries are the interesting
+                    # part after that, not the same message repeated.
+                    print(f"Database not ready yet ({e.__class__.__name__}); "
+                          f"retrying for up to {DB_WAIT_SECONDS}s...")
+                time.sleep(2)
+        if attempt > 1:
+            print(f"Database reachable after {attempt} attempts.")
+
+        # db.create_all() adds missing *tables* but never missing *columns*, and
+        # this project has no migrations/ directory -- create_db.py is the
+        # migration mechanism (see CLAUDE.md). The SQLite path above keeps a
+        # hand-written ALTER list; on Postgres we can ask the models instead, so
+        # a new column needs no second edit here.
+        #
+        # Caveat: this replays the model's full column DDL, so a new column
+        # declared nullable=False with no server_default will fail on a table
+        # that already has rows -- Postgres cannot fill the existing ones. Give
+        # such a column a server_default, or add it by hand and backfill.
+        from sqlalchemy import inspect as sa_inspect
+        from sqlalchemy.schema import CreateColumn
+
+        inspector = sa_inspect(db.engine)
+        existing_tables = set(inspector.get_table_names())
+
+        with db.engine.begin() as conn:
+            for table in db.metadata.sorted_tables:
+                if table.name not in existing_tables:
+                    continue  # create_all() below will build it whole
+                have = {c['name'] for c in inspector.get_columns(table.name)}
+                for column in table.columns:
+                    if column.name in have:
+                        continue
+                    ddl = CreateColumn(column).compile(db.engine)
+                    print(f"Adding {table.name}.{column.name} column...")
+                    conn.exec_driver_sql(
+                        f'ALTER TABLE "{table.name}" ADD COLUMN IF NOT EXISTS {ddl}'
+                    )
+        print("Schema updates completed!")
+
     # Create all tables
     try:
         db.create_all()
@@ -120,6 +187,11 @@ with app.app_context():
             print(f"Error copying stock_checks history: {e}")
     except Exception as e:
         print(f"ERROR creating database tables: {e}")
+        if not db_uri.startswith('sqlite'):
+            # The SQLite diagnostics below would only mislead here: on Postgres
+            # this is almost always the server being down or the credentials
+            # being wrong, not a directory permission.
+            raise
         # Try to diagnose the issue
         import sqlite3
         try:

@@ -1,6 +1,10 @@
 Flask==3.0.2
 Flask-SQLAlchemy==3.1.1
 Flask-Migrate==4.0.5
+# Postgres driver. Only needed when DATABASE_URI points at Postgres;
+# the default SQLite setup does not use it. [binary] ships wheels, so
+# there is no libpq build step on Windows.
+psycopg[binary]==3.2.3
 APScheduler==3.10.4
 requests==2.31.0
 beautifulsoup4==4.12.3

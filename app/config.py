@@ -46,14 +46,62 @@ def parse_store_intervals(raw):
     return intervals
 
 
+def normalize_database_uri(raw):
+    """
+    Accept the Postgres URLs people actually paste and hand SQLAlchemy one it
+    can open.
+
+    Hosted providers hand out `postgres://`, which SQLAlchemy 2.x refuses to
+    parse, and the bare `postgresql://` form picks a DBAPI that may not be the
+    one installed. Both are rewritten to the psycopg 3 driver this project
+    pins. SQLite URIs are returned untouched, so the default local setup keeps
+    working with no configuration at all.
+    """
+    uri = (raw or '').strip()
+    if not uri:
+        return 'sqlite:///product_tracker.db'
+
+    for prefix in ('postgres://', 'postgresql://'):
+        if uri.startswith(prefix):
+            return 'postgresql+psycopg://' + uri[len(prefix):]
+
+    return uri
+
+
+def engine_options_for(uri):
+    """
+    Connection-pool settings, which only matter once the database is a server.
+
+    The scheduler holds this process open for days between requests, and both
+    Postgres and anything NAT-ing in front of it will silently drop a
+    connection that has been idle that long. Without pre_ping the next scrape
+    fails on a dead socket instead of reconnecting, so a quiet overnight stretch
+    would break the morning's checks.
+
+    SQLite has no server and no sockets to lose, so it gets nothing.
+    """
+    if not uri.startswith('postgresql'):
+        return {}
+
+    return {
+        'pool_pre_ping': True,
+        # Recycle below the common 5-minute idle timeout on proxies/poolers.
+        'pool_recycle': 280,
+        'pool_size': int(os.environ.get('DB_POOL_SIZE', 5)),
+        'max_overflow': int(os.environ.get('DB_MAX_OVERFLOW', 5)),
+    }
+
+
 class Config:
     """Base configuration."""
     SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-key-please-change')
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     
     # Parse the database URI to ensure it's properly pointing to the data directory
-    db_uri = os.environ.get('DATABASE_URI', 'sqlite:///product_tracker.db')
-    
+    db_uri = normalize_database_uri(
+        os.environ.get('DATABASE_URI', 'sqlite:///product_tracker.db')
+    )
+
     # If this is Docker and it's a relative path, ensure it points to /app/data
     if db_uri.startswith('sqlite:///'):
         db_path = db_uri.replace('sqlite:///', '')
@@ -61,8 +109,9 @@ class Config:
             # We're in Docker, so use absolute path to data directory
             db_uri = f"sqlite:////app/{db_path}"
             print(f"Using SQLite database path: {db_uri}")
-            
+
     SQLALCHEMY_DATABASE_URI = db_uri
+    SQLALCHEMY_ENGINE_OPTIONS = engine_options_for(db_uri)
     
     DEBUG = os.environ.get('DEBUG', '0') == '1'
     
