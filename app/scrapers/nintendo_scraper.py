@@ -126,6 +126,29 @@ CTA_PENDING_TEXTS = ('loading', 'please wait')
 # is there, so a sold-out buy box is decided faster than the sleep decided it.
 CTA_TIMEOUT = 15
 
+# The buy box can disagree with the HTTP pre-check. On 2026-09-11 sku 127074's
+# isSalableQty flapped every 15-45 minutes, so an add that arrived during a
+# closed window read "Sold out" on a page the pre-check had called salable
+# seconds earlier. One read settles that too early. When - and only when - the
+# pre-check said orderable, the page is reloaded and the buy box read again;
+# three reads about ten seconds apart covers the ~20s a flap takes to turn over.
+#
+# This re-reads a DISAGREEMENT, not a refusal. A sold-out buy box that the
+# pre-check also called unorderable never gets here: add_to_cart returns on the
+# HTTP answer without opening a browser at all.
+SOLD_OUT_RECHECK_READS = 3
+SOLD_OUT_RECHECK_DELAY = 10
+
+# The cart page can still be assembling when it is first read - the add-to-cart
+# drawer renders asynchronously and the cart behind it lags. One re-read costs
+# three seconds on a genuine miss and saves a false "not found" on a slow render.
+#
+# This does NOT soften what counts as proof. _cart_contains is unchanged: an
+# empty cart, a cart holding something else, and a page that cannot be read are
+# all still failures. All this decides is how long to wait for the page to
+# answer, never what answer counts.
+CART_RECHECK_DELAY = 3
+
 # Never clicked, wherever they turn up. "Buy now" and "Find retailers" are the
 # third-party price-spider widget sitting in the same buy box - they send the
 # shopper to another retailer - and the rest are checkout. This scraper carts and
@@ -457,30 +480,61 @@ class NintendoScraper:
         try:
             driver = self._start_driver()
             driver.set_page_load_timeout(45)
-            driver.get(url)
-            try:
-                WebDriverWait(driver, 20).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, SKU_ANCHOR_SELECTOR + ', h1')))
-            except TimeoutException:
-                logger.warning("Timed out waiting for the Nintendo buy box; reading whatever rendered")
-            self._wait_for_cta(driver, sku)
 
-            obstacle = self._page_obstacle(driver)
-            if obstacle:
-                return self._cart_result(False, obstacle, driver=driver)
+            # Only a pre-check that said orderable earns a re-read: that is the
+            # case where a sold-out buy box contradicts something. When the
+            # pre-check could not be read at all (state is None) there is
+            # nothing to contradict, so the first answer stands.
+            reads = SOLD_OUT_RECHECK_READS if (state and state['orderable']) else 1
+            button = None
+            label = ''
+            for read in range(1, reads + 1):
+                if read > 1:
+                    time.sleep(SOLD_OUT_RECHECK_DELAY)
+                driver.get(url)
+                try:
+                    WebDriverWait(driver, 20).until(
+                        EC.presence_of_element_located(
+                            (By.CSS_SELECTOR, SKU_ANCHOR_SELECTOR + ', h1')))
+                except TimeoutException:
+                    logger.warning(
+                        "Timed out waiting for the Nintendo buy box; reading whatever rendered")
+                self._wait_for_cta(driver, sku)
 
-            button, problem = self._find_buy_button(driver, sku)
-            if problem:
-                return self._cart_result(False, problem, driver=driver)
-            if button is None:
-                reason = self._sold_out_reason(driver) or \
-                    "no add-to-cart / pre-purchase button in the buy box"
-                return self._cart_result(False, f"Cannot add to cart: {reason}", driver=driver)
+                # Neither of these is a flap, so neither is re-read. A bot wall
+                # or a sign-in wall answers the same on every reload and
+                # reloading it three times only leans on it harder; a buy box
+                # belonging to another SKU is a correct refusal that a reload
+                # cannot change. Both return on the first read, as before.
+                obstacle = self._page_obstacle(driver)
+                if obstacle:
+                    return self._cart_result(False, obstacle, driver=driver)
 
-            label = (button.text or '').strip()
-            if button.get_attribute('disabled') is not None or not button.is_enabled():
-                reason = self._sold_out_reason(driver) or f'the "{label}" button is disabled'
-                return self._cart_result(False, f"Cannot add to cart: {reason}", driver=driver)
+                button, problem = self._find_buy_button(driver, sku)
+                if problem:
+                    return self._cart_result(False, problem, driver=driver)
+
+                # The two sold-out answers, kept distinct: no button in the buy
+                # box at all, and a button that is there but disabled.
+                if button is None:
+                    refusal = self._sold_out_reason(driver) or \
+                        "no add-to-cart / pre-purchase button in the buy box"
+                else:
+                    label = (button.text or '').strip()
+                    if button.get_attribute('disabled') is not None or not button.is_enabled():
+                        refusal = self._sold_out_reason(driver) or \
+                            f'the "{label}" button is disabled'
+                    else:
+                        refusal = None
+
+                if refusal is None:
+                    break
+                if read == reads:
+                    return self._cart_result(
+                        False, f"Cannot add to cart: {refusal}", driver=driver)
+                logger.info(
+                    f"Nintendo {sku} pre-checked as salable but the buy box says {refusal}; "
+                    f"re-reading in {SOLD_OUT_RECHECK_DELAY}s (read {read} of {reads})")
 
             note = ""
             if quantity > 1:
@@ -507,10 +561,23 @@ class NintendoScraper:
             if obstacle:
                 return self._cart_result(False, obstacle, driver=driver)
 
+            # Read the cart a second time before calling it a miss: the drawer
+            # renders asynchronously and the cart page behind it can still be
+            # assembling. The item is either in the cart or it is not - this
+            # only gives the page another moment to say which, and the answer
+            # still has to be positive evidence from _cart_contains.
             if not self._cart_contains(driver, sku, product_name):
-                return self._cart_result(
-                    False, f'Item was not found in the Nintendo cart after clicking "{label}"',
-                    driver=driver)
+                logger.info(f"Nintendo SKU {sku} was not on the cart page on the first read; "
+                            f"re-reading it in {CART_RECHECK_DELAY}s")
+                time.sleep(CART_RECHECK_DELAY)
+                driver.get(NINTENDO_CART_URL)
+                obstacle = self._page_obstacle(driver, expect_product=False)
+                if obstacle:
+                    return self._cart_result(False, obstacle, driver=driver)
+                if not self._cart_contains(driver, sku, product_name):
+                    return self._cart_result(
+                        False, f'Item was not found in the Nintendo cart after clicking "{label}"',
+                        driver=driver)
 
             logger.info(f"Nintendo SKU {sku} is in the cart")
             return self._cart_result(True, f"Product added to Nintendo cart{note}",

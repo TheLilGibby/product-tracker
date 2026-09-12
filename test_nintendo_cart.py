@@ -126,6 +126,7 @@ class FakeDriver:
         self.on_click = {}
         self.clicks = []
         self.scripts = []
+        self.gets = []
         self.load(html, url)
 
     def load(self, html, url=None):
@@ -136,8 +137,17 @@ class FakeDriver:
 
     def get(self, url):
         self.current_url = url
-        if url in self.pages:
-            self.load(self.pages[url])
+        self.gets.append(url)
+        if url not in self.pages:
+            return
+        page = self.pages[url]
+        # A list is a sequence of answers for successive visits, which is how a
+        # flapping buy box and a cart page that renders late are reproduced. The
+        # last entry stays once the sequence runs out, so a fixture that never
+        # comes good keeps saying so however many times it is re-read.
+        if isinstance(page, list):
+            page = page.pop(0) if len(page) > 1 else page[0]
+        self.load(page)
 
     def find_elements(self, by, selector):
         if by == 'tag name':
@@ -387,6 +397,87 @@ def flow_checks():
           result['message'])
     check("and says the item was not found",
           'not found in the Nintendo cart' in result['message'], result['message'])
+
+    print("\nFlapping stock: the pre-check and the buy box disagree")
+    # Both waits are stood down for these. What is under test is that a second
+    # read happens and is believed - not how long the pause is. The spacing is
+    # asserted on its own at the end, where it costs nothing to check.
+    saved_sold_out_delay = ns.SOLD_OUT_RECHECK_DELAY
+    saved_cart_delay = ns.CART_RECHECK_DELAY
+    ns.SOLD_OUT_RECHECK_DELAY = 0
+    ns.CART_RECHECK_DELAY = 0
+    try:
+        scraper, driver = build(FULL_CART_PAGE)
+        driver.pages[dock_url] = [
+            product_page('123791', cta='Sold out', cta_attrs='disabled'),
+            product_page('123791'),
+        ]
+        driver.on_click['Add to cart'] = after_click
+        result = scraper.add_to_cart(quantity=1)
+        check("a sold-out buy box on arrival is re-read, not believed first time",
+              result['success'] is True, result['message'])
+        check("which meant reloading the product page", driver.gets.count(dock_url) == 2,
+              str(driver.gets))
+
+        scraper, driver = build(FULL_CART_PAGE)
+        driver.pages[dock_url] = product_page('123791', cta='Sold out', cta_attrs='disabled')
+        result = scraper.add_to_cart(quantity=1)
+        check("a buy box that stays sold out is still a refusal", result['success'] is False,
+              result['message'])
+        check("worded as it always was",
+              'Cannot add to cart' in result['message'], result['message'])
+        check("after exactly SOLD_OUT_RECHECK_READS reads",
+              driver.gets.count(dock_url) == ns.SOLD_OUT_RECHECK_READS, str(driver.gets))
+        check("and nothing was ever clicked", driver.clicks == [], str(driver.clicks))
+
+        # The two refusals that are NOT flaps. Both fixtures would be re-read if
+        # the loop retried everything - the stubbed pre-check says salable - so
+        # a single read is the evidence that they are refused on sight.
+        scraper, driver = build(FULL_CART_PAGE)
+        driver.pages[dock_url] = product_page('123791', anchor_sku='999999')
+        result = scraper.add_to_cart(quantity=1)
+        check("a buy box belonging to another SKU is refused without re-reading",
+              result['success'] is False and '999999' in result['message'], result['message'])
+        check("on the first read", driver.gets.count(dock_url) == 1, str(driver.gets))
+
+        scraper, driver = build(FULL_CART_PAGE)
+        driver.pages[dock_url] = ('<html><body><h1>Sign in</h1>'
+                                  '<form><input type="password"></form></body></html>')
+        result = scraper.add_to_cart(quantity=1)
+        check("a page-level obstacle is reported without re-reading",
+              result['success'] is False, result['message'])
+        check("on the first read too", driver.gets.count(dock_url) == 1, str(driver.gets))
+
+        print("\nA cart page that renders late")
+        scraper, driver = build([EMPTY_CART_PAGE, FULL_CART_PAGE])
+        driver.on_click['Add to cart'] = after_click
+        result = scraper.add_to_cart(quantity=1)
+        check("a cart that fills in late is re-read before reporting a miss",
+              result['success'] is True, result['message'])
+        check("which took two reads of the cart page",
+              driver.gets.count(ns.NINTENDO_CART_URL) == 2, str(driver.gets))
+
+        # The guard that matters. The re-read gives the page another chance to
+        # show the item; it never lowers what counts as showing it.
+        scraper, driver = build(EMPTY_CART_PAGE)
+        driver.on_click['Add to cart'] = after_click
+        result = scraper.add_to_cart(quantity=1)
+        check("an empty cart stays a failure however often it is read",
+              result['success'] is False, result['message'])
+        check("having genuinely been re-read before that verdict",
+              driver.gets.count(ns.NINTENDO_CART_URL) == 2, str(driver.gets))
+        check("with the message unchanged",
+              'not found in the Nintendo cart' in result['message'], result['message'])
+    finally:
+        ns.SOLD_OUT_RECHECK_DELAY = saved_sold_out_delay
+        ns.CART_RECHECK_DELAY = saved_cart_delay
+
+    check("the buy-box reads span about 20s",
+          ns.SOLD_OUT_RECHECK_READS == 3
+          and 18 <= (ns.SOLD_OUT_RECHECK_READS - 1) * ns.SOLD_OUT_RECHECK_DELAY <= 22,
+          f"{ns.SOLD_OUT_RECHECK_READS} reads {ns.SOLD_OUT_RECHECK_DELAY}s apart")
+    check("and the cart is re-read after about 3s", ns.CART_RECHECK_DELAY == 3,
+          str(ns.CART_RECHECK_DELAY))
 
     # The common case for the tracked items: the HTTP pre-check answers, and no
     # browser is launched at all.
