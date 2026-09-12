@@ -54,44 +54,84 @@
     }
 
     /* Row switches: a submit button dressed as a toggle, so the table keeps
-       working with JavaScript disabled. One form per cell, one POST per flip. */
-    .switch {
+       working with JavaScript disabled. One form per cell, one POST per flip.
+
+       The word rides inside the chip, in the half the knob is not standing in,
+       so a switch costs 3.85rem whether it reads Off or Armed. It used to set
+       the knob and the word side by side at 0.75rem, which content-sized the
+       chip out to 4.6rem; three of those is most of the width of a row.
+
+       Scoped to button.switch deliberately: the tracking control is a
+       <label class="switch"> styled in base.html, and this block loads after
+       that one, so an unscoped .switch would wrap its track in a second chip. */
+    button.switch {
+        position: relative;
         display: inline-flex;
         align-items: center;
-        gap: 0.4rem;
-        min-width: 4.6rem;
-        padding: 0.2rem 0.55rem 0.2rem 0.3rem;
+        justify-content: flex-end;
+        /* A floor, not a fixed width. "Armed" is the longest word these show
+           and it needs 3.82rem in this font stack; a platform whose sans is
+           wider has to be allowed to widen the chip, because the knob is
+           absolutely positioned and would otherwise simply sit on top of the
+           last letter rather than push it along. */
+        min-width: 3.85rem;
+        height: 1.35rem;
+        padding: 0 0.4rem 0 1.3rem;
         border: 1px solid #d1d5db;
         border-radius: 999px;
         background-color: #f3f4f6;
         color: #4b5563;
-        font-size: 0.75rem;
+        font-size: 0.62rem;
         font-weight: bold;
-        line-height: 1.4;
+        line-height: 1.35rem;
+        letter-spacing: 0.02em;
+        white-space: nowrap;
         cursor: pointer;
         transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
     }
 
-    .switch:hover {
+    button.switch:hover {
         border-color: #9ca3af;
     }
 
-    .switch:focus-visible {
+    button.switch:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 2px;
     }
 
+    /* Absolute, so the word gets the whole chip to sit in and the knob stands
+       in one end of it instead of taking a column of its own. */
     .switch-knob {
+        position: absolute;
+        top: 50%;
+        left: 0.22rem;
         width: 0.85rem;
         height: 0.85rem;
+        margin-top: -0.425rem;
         border-radius: 50%;
         background-color: #9ca3af;
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-        transition: background-color 0.12s ease, transform 0.12s ease;
+        transition: background-color 0.12s ease, left 0.12s ease;
+    }
+
+    /* On or armed, the knob crosses to the far end and the word takes the side
+       it left. Both carry the button tag: these have to match button.switch's
+       specificity to win, or the chip keeps the grey it sets above. */
+    button.switch-on,
+    button.switch-armed {
+        justify-content: flex-start;
+        padding: 0 1.3rem 0 0.4rem;
+    }
+
+    .switch-on .switch-knob,
+    .switch-armed .switch-knob {
+        /* Measured off the chip's own width rather than a fixed distance, so
+           the knob stays flush at whatever width the word above forces. */
+        left: calc(100% - 1.07rem);
     }
 
     /* Alerts on */
-    .switch-on {
+    button.switch-on {
         background-color: #d1fae5;
         border-color: #6ee7b7;
         color: #065f46;
@@ -99,12 +139,11 @@
 
     .switch-on .switch-knob {
         background-color: #059669;
-        transform: translateX(0.15rem);
     }
 
     /* Auto-cart armed: deliberately the loudest thing in the row. This one can
        spend a real cart attempt, so it should never blend in with Alerts. */
-    .switch-armed {
+    button.switch-armed {
         background-color: #fef3c7;
         border-color: #f59e0b;
         color: #92400e;
@@ -112,19 +151,18 @@
 
     .switch-armed .switch-knob {
         background-color: #d97706;
-        transform: translateX(0.15rem);
     }
 
     /* simple.css flips the whole page on prefers-color-scheme, so the switches
        have to follow or they sit as three bright chips on a dark row. */
     @media (prefers-color-scheme: dark) {
-        .switch {
+        button.switch {
             border-color: #4b5563;
             background-color: #2b2b2b;
             color: #cbd5e1;
         }
 
-        .switch:hover {
+        button.switch:hover {
             border-color: #9ca3af;
         }
 
@@ -132,7 +170,7 @@
             background-color: #6b7280;
         }
 
-        .switch-on {
+        button.switch-on {
             background-color: #064e3b;
             border-color: #10b981;
             color: #a7f3d0;
@@ -142,7 +180,7 @@
             background-color: #34d399;
         }
 
-        .switch-armed {
+        button.switch-armed {
             background-color: #4a2f06;
             border-color: #f59e0b;
             color: #fde68a;
@@ -154,8 +192,10 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-        .switch,
-        .switch-knob {
+        button.switch,
+        .switch-knob,
+        .switch-track,
+        .switch-track::after {
             transition: none;
         }
     }
@@ -399,8 +439,9 @@
                                 <input type="checkbox" class="tracking-toggle"
                                        data-url="{{ url_for('main.toggle_tracking', product_id=product.id) }}"
                                        {% if product.tracking_enabled %}checked{% endif %}>
-                                <span class="switch-track"></span>
-                                <span class="switch-label">{{ 'On' if product.tracking_enabled else 'Off' }}</span>
+                                <span class="switch-track">
+                                    <span class="switch-label">{{ 'On' if product.tracking_enabled else 'Off' }}</span>
+                                </span>
                             </label>
                             <br>
                             <a href="{{ url_for('main.product_detail', product_id=product.id) }}" class="button" style="padding: 0.25rem 0.5rem; margin: 0.4rem 0.25rem 0 0;">Details</a>
@@ -471,8 +512,12 @@
         const text = document.createElement('span');
         text.className = 'switch-label';
         text.textContent = input.checked ? 'On' : 'Off';
+        // Inside the track, matching the Jinja markup above. The change
+        // handler reaches it with querySelector from the label, so it finds
+        // it at either depth.
+        track.appendChild(text);
 
-        label.append(input, track, text);
+        label.append(input, track);
         return label;
     }
 

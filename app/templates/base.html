@@ -162,11 +162,16 @@
 
         /* Tracking on/off switch. A real checkbox so it is keyboard
            reachable and announces its state; the box itself is hidden and
-           the <span> is drawn as the track. */
+           the <span> is drawn as the track.
+
+           On/Off is drawn inside the track rather than beside it: the word and
+           the knob share one pill, so the control costs the width of the track
+           and nothing more. It used to be a track plus a label holding 2.2rem
+           open next to it, which on a row carrying three switches was most of
+           a column spent on two short words. */
         .switch {
             display: inline-flex;
             align-items: center;
-            gap: 0.45rem;
             margin: 0;
             font-size: 0.8rem;
             font-weight: normal;
@@ -184,7 +189,7 @@
         .switch-track {
             position: relative;
             flex-shrink: 0;
-            width: 2.15rem;
+            width: 3.1rem;
             height: 1.2rem;
             border-radius: 999px;
             background: var(--border);
@@ -201,6 +206,8 @@
             border-radius: 50%;
             background: var(--bg);
             transition: transform 0.15s ease-in-out;
+            /* The knob rides over the word as it crosses the track. */
+            z-index: 1;
         }
 
         .switch input:checked + .switch-track {
@@ -208,7 +215,7 @@
         }
 
         .switch input:checked + .switch-track::after {
-            transform: translateX(0.95rem);
+            transform: translateX(1.9rem);
         }
 
         .switch input:focus-visible + .switch-track {
@@ -221,9 +228,27 @@
             cursor: progress;
         }
 
+        /* The word sits in the half of the track the knob is not standing in,
+           and swaps ends with it. The off colour is a fixed slate rather than
+           a themed one because --border is the same #898ea4 in both schemes;
+           the on colour follows --accent, falling back to --bg for the default
+           "system" state, where no data-theme is stamped and --accent-text is
+           therefore never defined. */
         .switch-label {
-            color: var(--text-light);
-            min-width: 2.2rem;
+            position: absolute;
+            top: 0;
+            right: 0.4rem;
+            line-height: 1.2rem;
+            font-size: 0.62rem;
+            font-weight: bold;
+            letter-spacing: 0.02em;
+            color: #1f2937;
+        }
+
+        .switch input:checked + .switch-track .switch-label {
+            right: auto;
+            left: 0.42rem;
+            color: var(--accent-text, var(--bg));
         }
 
         /* A paused row should read as inactive without becoming unreadable */
