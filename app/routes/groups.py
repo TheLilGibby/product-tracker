@@ -9,6 +9,7 @@ Grouping only changes how listings are shown together.
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 
 from app import db
+from app.charts import group_chart_ranges
 from app.groups import (assign_group, clean_group_name, find_group_by_name, find_or_create_group,
                         group_history, group_listings, grouped_view, last_in_stock_times, summarize)
 from app.models.product import Product, ProductGroup
@@ -30,6 +31,8 @@ def detail(group_id):
     group = db.get_or_404(ProductGroup, group_id)
     listings = group_listings(group)
     return render_template('groups/detail.html', group=group, listings=listings,
+                           chart_ranges=group_chart_ranges(listings),
+                           chart_default='day',
                            summary=summarize([row['product'] for row in listings]),
                            last_in_stock=last_in_stock_times([row['product'].id for row in listings]),
                            history=group_history(group))

@@ -3,6 +3,7 @@
 {% block title %}{{ product.name }} - TRACKER_{% endblock %}
 
 {% block extra_css %}
+{% include '_chart_styles.html' %}
 <style>
     .product-hero {
         display: grid;
@@ -70,60 +71,6 @@
     .product-hero-chart h3:first-child {
         margin-top: 0;
         color: var(--text);
-    }
-
-    .chart-subtitle {
-        margin: 0;
-        font-size: 0.9rem;
-        opacity: 0.7;
-    }
-
-    /* Colours come from the card, not from a palette of their own, so the
-       toggle reads correctly whether the page is in light or dark mode. */
-    .chart-range-toggle {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.35rem;
-        margin: 0.75rem 0 0.25rem;
-    }
-
-    .chart-range-toggle button {
-        margin: 0;
-        padding: 0.35rem 0.7rem;
-        font-size: 0.82rem;
-        line-height: 1.2;
-        border: 1px solid currentColor;
-        border-radius: 999px;
-        background: transparent;
-        color: inherit;
-        opacity: 0.6;
-        cursor: pointer;
-    }
-
-    .chart-range-toggle button:hover,
-    .chart-range-toggle button:focus-visible {
-        opacity: 1;
-    }
-
-    .chart-range-toggle button[aria-pressed="true"] {
-        background: var(--accent, #4d7c0f);
-        border-color: var(--accent, #4d7c0f);
-        color: var(--accent-text);
-        opacity: 1;
-    }
-
-    .chart-note {
-        margin: 0.4rem 0 0;
-        font-size: 0.82rem;
-        opacity: 0.7;
-        min-height: 1.2em;
-    }
-
-    .availability-chart-wrap {
-        position: relative;
-        flex: 1;
-        min-height: 260px;
-        padding-bottom: 0.5rem;
     }
 
     .product-details {

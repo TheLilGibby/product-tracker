@@ -3,7 +3,24 @@
 {% block title %}{{ group.name }} - TRACKER_{% endblock %}
 
 {% block extra_css %}
+{% include '_chart_styles.html' %}
 <style>
+    .group-chart {
+        margin: 0 0 2rem;
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border-radius: 5px;
+        padding: 1rem 1.25rem 0.75rem;
+        color: var(--text);
+    }
+
+    .group-chart h3,
+    .group-chart h3:first-child {
+        margin-top: 0;
+        color: var(--text);
+    }
+
     .group-listings td { vertical-align: top; }
     .group-listings .badge { white-space: nowrap; }
     .group-listings .meta { margin-top: 0.2rem; font-size: 0.8rem; color: var(--text-light); }
@@ -27,6 +44,30 @@
         at {{ summary.best_store }}{% if not summary.best_is_in_stock %} (out of stock){% endif %}
     {% endif %}
 </p>
+
+<article class="group-chart">
+    <h3>Stock timeline</h3>
+    {% if chart_ranges %}
+        <p class="chart-subtitle">
+            Every logged stock change at every retailer in this group, a lane each,
+            drawn through the latest check
+        </p>
+        <div class="chart-range-toggle" role="group" aria-label="Chart time range">
+            {% for range in chart_ranges %}
+            <button type="button" data-range="{{ range.key }}"
+                    aria-pressed="{{ 'true' if range.key == chart_default else 'false' }}">{{ range.label }}</button>
+            {% endfor %}
+        </div>
+        <div class="availability-chart-wrap"
+             style="min-height: {{ [240, 58 * (chart_ranges[0].lanes|length)]|max }}px;">
+            <canvas id="groupStockChart" aria-label="Stock at each retailer over time"></canvas>
+        </div>
+        <p class="chart-note" id="groupStockChartNote"></p>
+    {% else %}
+        <p>No stock history recorded yet. It will appear here once the tracker has
+           checked these listings.</p>
+    {% endif %}
+</article>
 
 <h3>Retailer listings</h3>
 {% if listings %}
@@ -137,4 +178,277 @@
         <button type="submit" style="background-color: #b91c1c; border-color: #b91c1c;">Delete group</button>
     </form>
 </article>
+{% endblock %}
+
+{% block scripts %}
+{% if chart_ranges %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+    (function() {
+        // Every retailer in the group gets a lane of its own: its line sits low
+        // while that listing is out of stock and high while it is in stock. Five
+        // listings that are all out of stock have to read as five flat lines,
+        // not as one line drawn five times over, which is why this is lanes
+        // rather than the single out/in axis a listing's own page uses.
+        //
+        // The server put every point at the right height for its lane and
+        // labelled every tick and tooltip in the timezone chosen in settings,
+        // so switching ranges here costs no round trip.
+        // The "<" escape keeps a lane's label from ever closing this script
+        // tag, whatever a retailer ends up being called.
+        const RANGES = {{ chart_ranges|tojson|replace('<', '\\u003c')|safe }};
+        const DEFAULT_RANGE = {{ chart_default|tojson|replace('<', '\\u003c')|safe }};
+        const STORAGE_KEY = 'availabilityChartRange';
+
+        const canvas = document.getElementById('groupStockChart');
+        const note = document.getElementById('groupStockChartNote');
+        const buttons = Array.prototype.slice.call(
+            document.querySelectorAll('.chart-range-toggle button'));
+        let chart = null;
+
+        // Enough hues for every retailer in a group to have its own, cycled if
+        // a group ever grows past eight listings.
+        const LINES_LIGHT = ['#4d7c0f', '#1d4ed8', '#b45309', '#7e22ce',
+                             '#0e7490', '#be123c', '#15803d', '#a16207'];
+        const LINES_DARK = ['#a3e635', '#93c5fd', '#fbbf24', '#d8b4fe',
+                            '#67e8f9', '#fda4af', '#4ade80', '#fcd34d'];
+
+        function byKey(key) {
+            for (let i = 0; i < RANGES.length; i++) {
+                if (RANGES[i].key === key) { return RANGES[i]; }
+            }
+            return RANGES[0];
+        }
+
+        function remembered() {
+            try {
+                const saved = window.localStorage.getItem(STORAGE_KEY);
+                if (saved && byKey(saved).key === saved) { return saved; }
+            } catch (err) {
+                // Blocked storage or a private window: the default is fine.
+            }
+            return DEFAULT_RANGE;
+        }
+
+        function remember(key) {
+            try {
+                window.localStorage.setItem(STORAGE_KEY, key);
+            } catch (err) {
+                // Remembering the choice is only a convenience.
+            }
+        }
+
+        function isDark() {
+            const forced = document.documentElement.getAttribute('data-theme');
+            if (forced === 'dark') { return true; }
+            if (forced === 'light') { return false; }
+            return !!(window.matchMedia
+                && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        }
+
+        function translucent(hex, alpha) {
+            const value = parseInt(hex.slice(1), 16);
+            const r = (value >> 16) & 255, g = (value >> 8) & 255, b = value & 255;
+            return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + alpha + ')';
+        }
+
+        function palette() {
+            const dark = isDark();
+            return {
+                lines: dark ? LINES_DARK : LINES_LIGHT,
+                tick: dark ? '#9ca3af' : '#374151',
+                grid: dark ? 'rgba(229, 231, 235, 0.14)' : 'rgba(17, 24, 39, 0.08)',
+                band: dark ? 'rgba(229, 231, 235, 0.05)' : 'rgba(17, 24, 39, 0.035)'
+            };
+        }
+
+        function noteFor(range) {
+            if (!range.series.some(function(series) { return series.points.length; })) {
+                return 'No stock history in this range yet.';
+            }
+            const retailers = range.tracked
+                + (range.tracked === 1 ? ' retailer' : ' retailers');
+            let text;
+            if (range.changes === 0) {
+                text = 'No stock change at any of the ' + retailers + ' in this range.';
+            } else {
+                text = range.changes
+                    + (range.changes === 1 ? ' stock change' : ' stock changes')
+                    + ' across ' + retailers + ' in this range';
+                text += range.restocks
+                    ? ', including ' + range.restocks
+                        + (range.restocks === 1 ? ' restock.' : ' restocks.')
+                    : '.';
+            }
+            if (range.quiet) {
+                text += ' ' + range.quiet
+                    + (range.quiet === 1 ? ' listing was' : ' listings were')
+                    + ' not checked inside it, so those lanes hold their last known state.';
+            }
+            return text;
+        }
+
+        // A faint band behind alternate lanes, so it stays obvious which line
+        // belongs to which retailer even where two of them sit close together.
+        const laneBands = {
+            id: 'laneBands',
+            beforeDatasetsDraw: function(instance, args, options) {
+                const lanes = options.lanes || [];
+                const area = instance.chartArea;
+                const axis = instance.scales.y;
+                const ctx = instance.ctx;
+                ctx.save();
+                ctx.fillStyle = options.band;
+                lanes.forEach(function(lane, index) {
+                    if (index % 2 === 0) { return; }
+                    const top = axis.getPixelForValue(lane.top);
+                    const bottom = axis.getPixelForValue(lane.bottom);
+                    ctx.fillRect(area.left, top, area.right - area.left, bottom - top);
+                });
+                ctx.restore();
+            }
+        };
+
+        function draw(key) {
+            if (!canvas || typeof Chart === 'undefined') { return; }
+
+            const range = byKey(key);
+            const colors = palette();
+            const dark = isDark();
+            const tickLabels = {};
+            range.ticks.forEach(function(tick) { tickLabels[tick.v] = tick.label; });
+            const laneLabels = {};
+            range.lanes.forEach(function(lane) { laneLabels[lane.mid] = lane.store; });
+
+            buttons.forEach(function(button) {
+                button.setAttribute('aria-pressed',
+                    button.getAttribute('data-range') === range.key ? 'true' : 'false');
+            });
+            if (note) { note.textContent = noteFor(range); }
+
+            const datasets = range.series.map(function(series, index) {
+                const color = colors.lines[index % colors.lines.length];
+                return {
+                    label: series.store,
+                    data: series.points.map(function(point) {
+                        return { x: point.t, y: point.y, full: point.full,
+                                 available: point.available };
+                    }),
+                    borderColor: color,
+                    backgroundColor: translucent(color, dark ? 0.22 : 0.18),
+                    borderWidth: 2,
+                    stepped: true,
+                    tension: 0,
+                    // Shade the time a retailer was in stock, up from that
+                    // lane's out-of-stock line, so a restock reads as a block.
+                    fill: { value: series.floor },
+                    // Carried points are not observations - they only hold a
+                    // line at the range's edges - so they get no marker.
+                    pointRadius: series.points.map(function(point) {
+                        return point.carry && series.points.length > 1 ? 0 : 3.5;
+                    }),
+                    pointHoverRadius: 6,
+                    pointBackgroundColor: color,
+                    spanGaps: false
+                };
+            });
+
+            if (chart) { chart.destroy(); }
+            chart = new Chart(canvas, {
+                type: 'line',
+                data: { datasets: datasets },
+                plugins: [laneBands],
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    interaction: { mode: 'nearest', intersect: false },
+                    plugins: {
+                        laneBands: { lanes: range.lanes, band: colors.band },
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                title: function(items) {
+                                    const point = items[0] && items[0].raw;
+                                    return point ? point.full : '';
+                                },
+                                label: function(context) {
+                                    const point = context.raw;
+                                    return context.dataset.label + ' - '
+                                        + (point && point.available
+                                            ? 'In Stock' : 'Out of Stock');
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            min: range.start,
+                            max: range.end,
+                            // Ticks sit on the round local times the server chose.
+                            afterBuildTicks: function(axis) {
+                                axis.ticks = range.ticks.map(function(tick) {
+                                    return { value: tick.v };
+                                });
+                            },
+                            ticks: {
+                                maxRotation: 45,
+                                minRotation: 0,
+                                autoSkip: true,
+                                color: colors.tick,
+                                callback: function(value) {
+                                    return tickLabels[value] || '';
+                                }
+                            },
+                            grid: { color: colors.grid }
+                        },
+                        y: {
+                            min: 0,
+                            max: range.lanes.length,
+                            // One tick per lane, in the middle of it, naming the
+                            // retailer whose line lives there.
+                            afterBuildTicks: function(axis) {
+                                axis.ticks = range.lanes.map(function(lane) {
+                                    return { value: lane.mid };
+                                });
+                            },
+                            ticks: {
+                                color: colors.tick,
+                                autoSkip: false,
+                                callback: function(value) {
+                                    return laneLabels[value] || '';
+                                }
+                            },
+                            grid: { display: false }
+                        }
+                    }
+                }
+            });
+        }
+
+        function start() {
+            buttons.forEach(function(button) {
+                button.addEventListener('click', function() {
+                    const key = button.getAttribute('data-range');
+                    remember(key);
+                    draw(key);
+                });
+            });
+            // The canvas is painted, not styled, so it has to be redrawn when
+            // the theme changes under it.
+            document.addEventListener('themechange', function() {
+                draw(remembered());
+            });
+            draw(remembered());
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', start);
+        } else {
+            start();
+        }
+    })();
+</script>
+{% endif %}
 {% endblock %}

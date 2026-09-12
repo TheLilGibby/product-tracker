@@ -2,6 +2,7 @@ from flask import Blueprint, render_template, redirect, url_for, flash, request,
 from app import db
 from app.models.product import Product, PriceHistory
 from app.cart_screenshots import save_cart_screenshot, screenshot_path
+from app.charts import availability_chart_ranges as _availability_chart_ranges
 from app.groups import grouped_view
 from app.scrapers import add_to_cart, detect_store_type, get_scraper, store_choices
 from app.tasks import check_all_products, get_store_backoff_state
@@ -448,120 +449,6 @@ def add_product():
     
     flash('Product added successfully!', 'success')
     return redirect(url_for('main.product_detail', product_id=product.id))
-
-def _clock(moment, twelve_hour, seconds=False):
-    """The time of day, written the way a person would say it."""
-    if twelve_hour:
-        hour = moment.hour % 12 or 12
-        text = f"{hour}:{moment.strftime('%M')}"
-        if seconds:
-            text += f":{moment.strftime('%S')}"
-        return f"{text} {moment.strftime('%p')}"
-    return moment.strftime('%H:%M:%S' if seconds else '%H:%M')
-
-
-def _epoch_ms(moment):
-    """Naive UTC as milliseconds since the epoch, the availability chart's x unit."""
-    return int((moment - datetime(1970, 1, 1)).total_seconds() * 1000)
-
-
-# How far apart the availability chart's x-axis ticks sit in each window. They
-# fall on round local times: every 10 minutes, every 3 hours, each midnight.
-_CHART_TICK_STEPS = {
-    'hour': timedelta(minutes=10),
-    'day': timedelta(hours=3),
-    'week': timedelta(days=1),
-}
-
-
-def _availability_chart_ranges(product):
-    """
-    The availability chart's time windows, labelled for display.
-
-    The x axis is real time (epoch milliseconds). The history only logs
-    changes, so its points are uneven, and spacing them evenly would give an
-    hour-long blip the same width as a quiet day.
-
-    Labels are rendered here rather than in the browser because the times are
-    shown in the timezone the user picked in settings, which the browser has no
-    way to know. Each window gets the axis labels its span deserves: a clock
-    time is enough inside an hour, a weekday is needed across a day, and a date
-    across a week.
-
-    Returns [] when the listing has no stock history yet.
-    """
-    timezone = session.get('timezone', current_app.config.get('DEFAULT_TIMEZONE', 'UTC'))
-    twelve_hour = session.get('time_format',
-                              current_app.config.get('TIME_FORMAT', '24h')) == '12h'
-    target_tz = pytz.timezone(timezone)
-
-    def localize(moment):
-        if moment.tzinfo is None:
-            moment = pytz.utc.localize(moment)
-        return moment.astimezone(target_tz)
-
-    def axis_label(key, moment):
-        if key == 'hour':
-            return _clock(moment, twelve_hour)
-        if key == 'day':
-            return f"{moment.strftime('%a')} {_clock(moment, twelve_hour)}"
-        return f"{moment.strftime('%a')} {moment.strftime('%b')} {moment.day}"
-
-    def full_label(moment):
-        return (f"{moment.strftime('%a')}, {moment.strftime('%b')} {moment.day}, "
-                f"{moment.year} at {_clock(moment, twelve_hour, seconds=True)} "
-                f"{moment.strftime('%Z')}".strip())
-
-    def axis_ticks(key, start, end):
-        """Ticks on round local times between start and end (naive UTC)."""
-        wall = localize(start).replace(tzinfo=None)
-        if key == 'hour':
-            wall = wall.replace(minute=wall.minute - wall.minute % 10, second=0, microsecond=0)
-        elif key == 'day':
-            wall = wall.replace(hour=wall.hour - wall.hour % 3, minute=0, second=0, microsecond=0)
-        else:
-            wall = wall.replace(hour=0, minute=0, second=0, microsecond=0)
-        ticks = []
-        while True:
-            # Stepping the wall clock, not UTC, keeps ticks on the hour across DST.
-            moment = target_tz.localize(wall)
-            at = moment.astimezone(pytz.utc).replace(tzinfo=None)
-            if at > end:
-                return ticks
-            if at >= start:
-                ticks.append({'v': _epoch_ms(at), 'label': axis_label(key, moment)})
-            wall += _CHART_TICK_STEPS[key]
-
-    last_checked = full_label(localize(product.last_checked)) if product.last_checked else None
-    ranges = []
-    for window in product.availability_windows():
-        start, end = window['start'], window['end']
-        points = []
-        for point in window['points']:
-            full = full_label(localize(point['timestamp']))
-            if point['carry']:
-                full += (' (carried in from before this range)' if point['timestamp'] == start
-                         else ' (last known state)')
-            points.append({
-                't': _epoch_ms(point['timestamp']),
-                'y': 1 if point['available'] else 0,
-                'full': full,
-                'carry': point['carry'],
-            })
-        ranges.append({
-            'key': window['key'],
-            'label': window['label'],
-            'start': _epoch_ms(start),
-            'end': _epoch_ms(end),
-            'ticks': axis_ticks(window['key'], start, end),
-            'changes': window['changes'],
-            'checked': window['checked'],
-            'last_checked': last_checked,
-            'points': points,
-        })
-    if not any(r['points'] for r in ranges):
-        return []
-    return ranges
 
 
 @main_bp.route('/product/<int:product_id>')

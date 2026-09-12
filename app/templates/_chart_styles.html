@@ -1,0 +1,64 @@
+{#
+   The availability charts' furniture: the range toggle, the subtitle, the note
+   under the chart and the box the canvas is measured against. A listing's page
+   and a group's page both draw the same chart, so they include this rather than
+   keeping a copy each. The cards the charts sit in stay with their own pages,
+   because one is a panel in the product hero grid and the other is a section of
+   its own.
+
+   Colours come from the surrounding card, not from a palette of their own, so
+   the toggle reads correctly in either theme.
+#}
+<style>
+    .chart-subtitle {
+        margin: 0;
+        font-size: 0.9rem;
+        opacity: 0.7;
+    }
+
+    .chart-range-toggle {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        margin: 0.75rem 0 0.25rem;
+    }
+
+    .chart-range-toggle button {
+        margin: 0;
+        padding: 0.35rem 0.7rem;
+        font-size: 0.82rem;
+        line-height: 1.2;
+        border: 1px solid currentColor;
+        border-radius: 999px;
+        background: transparent;
+        color: inherit;
+        opacity: 0.6;
+        cursor: pointer;
+    }
+
+    .chart-range-toggle button:hover,
+    .chart-range-toggle button:focus-visible {
+        opacity: 1;
+    }
+
+    .chart-range-toggle button[aria-pressed="true"] {
+        background: var(--accent, #4d7c0f);
+        border-color: var(--accent, #4d7c0f);
+        color: var(--accent-text);
+        opacity: 1;
+    }
+
+    .chart-note {
+        margin: 0.4rem 0 0;
+        font-size: 0.82rem;
+        opacity: 0.7;
+        min-height: 1.2em;
+    }
+
+    .availability-chart-wrap {
+        position: relative;
+        flex: 1;
+        min-height: 260px;
+        padding-bottom: 0.5rem;
+    }
+</style>
