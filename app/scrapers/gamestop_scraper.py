@@ -140,9 +140,16 @@ def load_gamestop_user_agent(configured_only=False):
 # What the settings page asks for when no GameStop product is tracked yet. A
 # product page rather than the homepage on purpose: the edge is stricter about
 # the pages worth scraping, so a homepage 200 would prove less than it looks.
-SESSION_PROBE_URL = ('https://www.gamestop.com/consoles-hardware/nintendo-switch-2/products/'
-                     'nintendo-switch-2-the-legend-of-zelda-40th-anniversary-edition/'
-                     '20037854.html')
+#
+# It has to be a page that exists. This constant first shipped with an invented
+# SKU, which GameStop answers 404 to - and a 404 was reported as "GameStop
+# refused it", blaming a session that was fine. That is the exact confusion the
+# button was built to remove, so 404 now has its own answer below. This URL is
+# the tracked Pro Controller listing, which the scraper reads successfully on
+# every pass.
+SESSION_PROBE_URL = ('https://www.gamestop.com/gaming-accessories/controllers/nintendo-switch-2/'
+                     'products/nintendo-switch-2-pro-controller-the-legend-of-zelda---40th-'
+                     'anniversary-edition/451609.html')
 
 
 def test_gamestop_session(url=None):
@@ -220,6 +227,16 @@ def test_gamestop_session(url=None):
         return {'ok': False, 'level': 'error', 'status': status,
                 'message': f'GameStop answered 200 but served its challenge page '
                            f'({blocked}), which is a refusal wearing a success. {why}'}
+    if status == 404:
+        # Reaching a 404 at all means the edge let us through to GameStop's own
+        # application, so the session is very likely fine and the page has
+        # simply moved. Blaming the clearance here would send someone off to
+        # re-earn a clearance that never expired.
+        return {'ok': False, 'level': 'warning', 'status': status,
+                'message': f'GameStop answered 404, so that page is gone rather than '
+                           'your session being refused - a 404 means the edge let the '
+                           'request through. Test again with a product page you are '
+                           'tracking.'}
     return {'ok': False, 'level': 'error', 'status': status,
             'message': f'GameStop refused it ({status}). {why}'}
 
