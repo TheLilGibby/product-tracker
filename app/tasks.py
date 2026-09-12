@@ -722,8 +722,17 @@ def init_scheduler(app):
         # Outside APScheduler on purpose - see start_scheduler_watchdog.
         start_scheduler_watchdog(app)
         
-        # Register a function to shut down the scheduler when the app exits
-        atexit.register(lambda: app.scheduler.shutdown() if hasattr(app, 'scheduler') else None)
+        # Register a function to shut down the scheduler when the app exits.
+        # Guarded on .running as well as existence: a test or script that shuts
+        # its own scheduler down leaves the attribute in place, and calling
+        # shutdown() twice raises SchedulerNotRunningError from inside atexit,
+        # which prints a traceback over the output of a run that passed.
+        def _shutdown_scheduler():
+            scheduler = getattr(app, 'scheduler', None)
+            if scheduler is not None and scheduler.running:
+                scheduler.shutdown()
+
+        atexit.register(_shutdown_scheduler)
 
         return app.scheduler
 
