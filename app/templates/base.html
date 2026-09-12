@@ -506,7 +506,20 @@
         }
 
         /* Tables: Simple.css already handles borders, padding and striping.
-           Keep only the horizontal scroll wrapper and the brand header tint. */
+           Keep only the horizontal scroll wrapper and the brand header tint.
+
+           This wrapper, together with the min-width reset in the 60rem rule
+           below, is what stops a wide table dragging the whole page sideways
+           on a phone. Before changing it, know which number to measure:
+           document.documentElement.scrollWidth does NOT tell you whether the
+           page scrolls sideways. On the dashboard at 400px it reads about 740
+           against a 388px viewport, because Blink reports the table's layout
+           overflow through the root even though this box contains it -- yet
+           the page cannot be scrolled sideways at all. Compare
+           document.body.scrollWidth with documentElement.clientWidth instead,
+           or run verify_phone_layout.py, which asserts that plus every
+           wrapper's ability to reach its own right edge. Two bug reports have
+           now come from reading the root number. */
         .table-responsive {
             overflow-x: auto;
             margin-bottom: 1.5rem;
