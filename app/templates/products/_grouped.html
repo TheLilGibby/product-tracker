@@ -10,27 +10,44 @@
         .grouped-table td.group-name { min-width: 11rem; }
         .group-meta { margin-top: 0.2rem; font-size: 0.8rem; color: var(--text-light); }
         .source-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+        /* These are base.html's page tokens, deliberately NOT index.html's
+           --chip-* family. Two reasons. This fragment is served on its own at
+           /groups/partial and is only ever swapped into a page base.html
+           rendered, so base.html's tokens are the ones it can rely on wherever
+           it lands - it already leans on them for --text-light above and for
+           the .badge-success / .badge-danger pair below. And --chip-* means
+           "the row toggle's palette", which is a different component; borrowing
+           it would tie a retailer pill to the switches by accident.
+
+           In stock and out of stock are painted with the same --ok-text /
+           --bad-text that those badges use, so a chip's dot and the stock badge
+           one column to its left cannot drift apart. The resting border is
+           --border, as on index.html's .view-toggle; hover deepens it to
+           --text-light, which reads as emphasis against --border in both
+           schemes (darker in light, brighter in dark). */
         .source-chip {
             display: inline-flex;
             align-items: center;
             gap: 0.35rem;
             padding: 0.15rem 0.6rem;
-            border: 1px solid #d1d5db;
+            border: 1px solid var(--border);
             border-radius: 999px;
             color: inherit;
             font-size: 0.8rem;
             text-decoration: none;
             white-space: nowrap;
         }
-        .source-chip:hover { border-color: #9ca3af; }
-        .source-chip .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background-color: #b91c1c; }
-        .source-chip.in-stock { border-color: #059669; font-weight: bold; }
-        .source-chip.in-stock .dot { background-color: #059669; }
+        .source-chip:hover { border-color: var(--text-light); }
+        .source-chip .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background-color: var(--bad-text); }
+        .source-chip.in-stock { border-color: var(--ok-text); font-weight: bold; }
+        .source-chip.in-stock .dot { background-color: var(--ok-text); }
         .source-chip .armed { font-size: 0.7rem; opacity: 0.75; }
     </style>
 
     {% if not groups and not ungrouped %}
-        <div style="padding: 1.5rem; background-color: #dbeafe; color: #1e40af; border-radius: 5px;">
+        {# Same pair base.html gives .flash-info / .badge-info: this box was
+           holding the light-mode values of --info-bg / --info-text literally. #}
+        <div style="padding: 1.5rem; background-color: var(--info-bg); color: var(--info-text); border-radius: 5px;">
             <p style="margin: 0;">No products are being tracked yet. <a href="{{ url_for('main.add_product') }}">Add your first product</a> to get started!</p>
         </div>
     {% endif %}
