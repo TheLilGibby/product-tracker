@@ -22,10 +22,10 @@ from flask import Blueprint, current_app, jsonify, request
 from app import db
 from app.models.product import Product
 from app.notifications import send_product_alert
-from app.notifications.telegram import TelegramNotifier
+from app.notifications.telegram import TelegramNotifier, instance_label
 from app.scrapers import detect_store_type, supported_stores
 from app.scrapers.bestbuy_scraper import BestBuyScraper
-from app.tasks import refresh_product
+from app.tasks import refresh_product, scheduler_health
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +134,28 @@ def parse_bool(value, default=False):
 def list_stores():
     """List the store keys this tracker can scrape."""
     return jsonify({'stores': supported_stores()})
+
+
+@api_bp.route('/health', methods=['GET'])
+def health():
+    """
+    Is this instance actually checking products?
+
+    Deliberately unauthenticated and never redirecting: it exists so a
+    dashboard indicator, a peer session or a person with curl can tell a
+    working tracker from a stalled one, and a health check that needs a token
+    tends not to get called. It exposes no product data and no secrets --
+    only timestamps, the interval and the instance label.
+
+    `overdue` is the field to act on. HTTP 200 from the rest of the app proves
+    only that Flask is serving; it says nothing about whether the scheduler
+    thread is alive, which is exactly the gap that hid an 83-minute outage on
+    2026-09-12.
+    """
+    return jsonify({
+        'instance_label': instance_label(),
+        'scheduler': scheduler_health(),
+    })
 
 
 @api_bp.route('/products', methods=['POST'])
