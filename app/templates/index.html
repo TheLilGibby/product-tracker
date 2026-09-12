@@ -305,13 +305,21 @@
        in reach of simple.css's site-navigation rules - `header nav` adds a
        1rem top padding and a line-height of 2, `header nav a` a 1rem bottom
        margin and a border of its own. Left alone those make this control twice
-       the height of the two beside it, so each one is reset here. */
+       the height of the two beside it, so each one is reset here.
+
+       The border below is base.html's .theme-switch declaration verbatim,
+       because this is the same shape of control: an inline-flex segmented
+       group with one outer border and a divider between its items. It needs
+       no [data-theme] block of its own - simple.css defines --border exactly
+       once, so #898ea4 is the value in light, in dark, and in the unstamped
+       "system" state alike. The fixed #d1d5db it replaces was a light-mode
+       grey that stayed put when the rest of the page went dark. */
     .view-toggle {
         display: inline-flex;
         padding: 0;
         margin: 0;
         line-height: normal;
-        border: 1px solid #d1d5db;
+        border: var(--border-width) solid var(--border);
         border-radius: var(--standard-border-radius);
         overflow: hidden;
     }
@@ -339,7 +347,7 @@
     }
 
     .view-toggle a + a {
-        border-left: 1px solid #d1d5db;
+        border-left: var(--border-width) solid var(--border);
     }
 
     .view-toggle a[aria-current="page"] {
