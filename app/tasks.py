@@ -1,4 +1,5 @@
 import logging
+from collections import deque
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -58,6 +59,16 @@ _health_lock = threading.Lock()
 _process_started_at = datetime.utcnow()
 _last_pass_started = None
 _last_pass_completed = None
+# True between entering check_all_products and leaving it, however it leaves.
+#
+# This must NOT be inferred from the timestamps. "started is newer than
+# completed" is true both for a pass that is still running and for one that
+# raised and never completed - and the outage this whole module exists for was
+# the second kind, firing every interval. Inferring it would refresh the start
+# time every 19 seconds, keep the tracker permanently "in flight", and exempt
+# it from the stall check forever. The flag is cleared in check_all_products'
+# outer finally, so a crash clears it just as a clean return does.
+_pass_in_flight = False
 # None until a scheduler has been configured in this process.
 _interval_seconds = None
 _scheduler_enabled = False
@@ -69,6 +80,23 @@ OVERDUE_INTERVAL_MULTIPLE = 3
 MIN_OVERDUE_SECONDS = 90
 WATCHDOG_POLL_SECONDS = 30
 
+# Durations (seconds) of the last few completed passes, newest last. Used to
+# size the hung-pass cap below off what this instance actually does, rather
+# than off the check interval, which says nothing about how long a pass takes.
+PASS_DURATION_SAMPLES = 5
+_pass_durations = deque(maxlen=PASS_DURATION_SAMPLES)
+
+# A pass that is still running is not a stall, but it cannot be exempt forever:
+# check_all_products holds check_lock for its whole run, so one Chrome that
+# hangs blocks every later pass and no timestamp ever advances again. That is a
+# real outage the user must hear about, so an in-flight pass is only exempt up
+# to this cap. The floor is deliberately generous - five products, several of
+# them driving undetected-chromedriver through CAPTCHAs, is minutes of honest
+# work - because the cost of crying wolf on the live channel is that the next
+# real alert gets ignored.
+HUNG_PASS_FLOOR_SECONDS = 300
+HUNG_PASS_DURATION_MULTIPLE = 2
+
 
 def _iso_z(moment):
     """A naive-UTC datetime as ISO 8601 with an explicit Z, or None."""
@@ -78,15 +106,38 @@ def _iso_z(moment):
 
 
 def _record_pass_started(now=None):
-    global _last_pass_started
+    global _last_pass_started, _pass_in_flight
     with _health_lock:
         _last_pass_started = now or datetime.utcnow()
+        _pass_in_flight = True
+
+
+def _record_pass_finished():
+    """
+    The pass has left check_all_products, by any route.
+
+    Called from the outer finally, so it runs after a clean pass, a pass that
+    raised, and a pass killed by an exception in the app-context handling.
+    Completion is recorded separately and only on the success path: finishing
+    and succeeding are different facts, and conflating them is what would let a
+    permanently failing tracker report itself healthy.
+    """
+    global _pass_in_flight
+    with _health_lock:
+        _pass_in_flight = False
 
 
 def _record_pass_completed(now=None):
     global _last_pass_completed
     with _health_lock:
         _last_pass_completed = now or datetime.utcnow()
+        # Keep how long it took, so the hung-pass cap tracks reality. Guarded
+        # against a clock that went backwards and against a completion with no
+        # matching start (only reachable if the globals were set by hand).
+        if _last_pass_started is not None:
+            elapsed = (_last_pass_completed - _last_pass_started).total_seconds()
+            if elapsed >= 0:
+                _pass_durations.append(elapsed)
 
 
 def overdue_threshold_seconds(interval_seconds=None):
@@ -95,6 +146,33 @@ def overdue_threshold_seconds(interval_seconds=None):
     if not interval:
         return MIN_OVERDUE_SECONDS
     return max(int(interval) * OVERDUE_INTERVAL_MULTIPLE, MIN_OVERDUE_SECONDS)
+
+
+def in_flight_cap_seconds():
+    """
+    How long a single pass may run before it counts as hung.
+
+    Sized off the slowest of the last few completed passes rather than off the
+    check interval: the interval controls how often a pass starts, and says
+    nothing about how long one takes. On the live instance that difference is
+    the whole point - a 19-second interval with 50-second passes was one slow
+    Chrome away from reporting a stall on a tracker that was working.
+
+    Falls back to the floor until a pass has completed, so a first pass that
+    hangs is still caught.
+    """
+    with _health_lock:
+        durations = list(_pass_durations)
+    return _cap_from(durations)
+
+
+def _cap_from(durations):
+    """The cap for an already-read list of durations. _health_lock is a plain
+    Lock, not an RLock, so callers that already hold it must use this."""
+    if not durations:
+        return HUNG_PASS_FLOOR_SECONDS
+    return max(int(max(durations) * HUNG_PASS_DURATION_MULTIPLE),
+               HUNG_PASS_FLOOR_SECONDS)
 
 
 def scheduler_health(now=None):
@@ -108,6 +186,20 @@ def scheduler_health(now=None):
     scheduler is switched off, because a UI-only instance is not supposed to be
     checking anything. A process that has never completed a pass gets one
     threshold of grace from boot, so a fresh start is not born stalled.
+
+    There are two distinct failures here and they need different clocks:
+
+      * idle - nothing is running and nothing has completed recently. This is
+        the 83-minute outage: every job crashed on fire, so no pass ever
+        started. Measured as time since the last completed pass (or boot).
+      * hung - a pass started and never finished. check_all_products holds
+        check_lock for its whole run, so this also blocks every later pass.
+        Measured as time since the current pass started, against a cap sized
+        off real pass durations.
+
+    A pass that is merely slow is neither, which is the false positive this
+    guards against: the idle clock must not run while a pass is in flight, or
+    any pass longer than the threshold reports a stall on a healthy tracker.
     """
     now = now or datetime.utcnow()
     with _health_lock:
@@ -116,10 +208,21 @@ def scheduler_health(now=None):
         interval = _interval_seconds
         enabled = _scheduler_enabled
         booted = _process_started_at
+        cap = _cap_from(list(_pass_durations))
+        in_flight = _pass_in_flight
+
+    running_seconds = ((now - started).total_seconds()
+                       if in_flight and started is not None else None)
+    if running_seconds is None:
+        # A flag with no start time cannot be timed, so do not let it suppress
+        # the idle clock - unmeasurable is not the same as healthy.
+        in_flight = False
 
     threshold = overdue_threshold_seconds(interval)
     if not enabled:
         overdue = False
+    elif in_flight:
+        overdue = running_seconds > cap
     elif completed is None:
         overdue = (now - booted).total_seconds() > threshold
     else:
@@ -131,6 +234,9 @@ def scheduler_health(now=None):
         'last_pass_started': _iso_z(started),
         'last_pass_completed': _iso_z(completed),
         'overdue': overdue,
+        'in_flight': in_flight,
+        'current_pass_seconds': None if running_seconds is None else int(running_seconds),
+        'in_flight_cap_seconds': cap,
     }
 
 
@@ -156,7 +262,21 @@ def _watchdog_tick(app, was_overdue, now=None):
         return overdue
 
     since = health['last_pass_completed'] or ('process start ' + _iso_z(_process_started_at))
-    if overdue:
+    if overdue and health['in_flight']:
+        # Distinct from the idle case on purpose: "no completed check since X"
+        # would send someone hunting for a dead scheduler when the scheduler is
+        # fine and one pass is wedged, most likely on a Chrome that never
+        # returned. Naming the stuck pass points at the actual thing to kill.
+        logger.error(
+            "Tracker stalled: the pass started at %s has been running %ss, past "
+            "the %ss cap; check_lock is held, so no later pass can run",
+            health['last_pass_started'], health['current_pass_seconds'],
+            health['in_flight_cap_seconds'])
+        message = ('tracker stalled: a check started at %s is still running after '
+                   '%ss (cap %ss) and is blocking every later check'
+                   % (health['last_pass_started'], health['current_pass_seconds'],
+                      health['in_flight_cap_seconds']))
+    elif overdue:
         logger.error(
             "Tracker stalled: no completed product check since %s (interval %ss, "
             "overdue after %ss)", since, health['interval_seconds'],
@@ -619,6 +739,10 @@ def check_all_products():
     finally:
         # Always release the lock, even if an exception occurred
         check_lock.release()
+        # Paired with _record_pass_started above. Here rather than on the
+        # success path on purpose: this pass is no longer holding check_lock
+        # however it ended, so it can no longer be what is blocking later ones.
+        _record_pass_finished()
         logger.info("Finished scheduled check of all products")
 
 def init_scheduler(app):
