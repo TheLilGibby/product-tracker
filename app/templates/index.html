@@ -4,6 +4,55 @@
 
 {% block extra_css %}
 <style>
+    /* Store status: only rendered when a retailer is actually failing, so it is
+       allowed to be louder than the old always-there bar. */
+    .store-status {
+        position: relative;
+        margin-bottom: 1.5rem;
+        padding: 0.6rem 2.4rem 0.6rem 0.9rem;
+        border: 1px solid var(--warn-text);
+        border-left-width: 4px;
+        border-radius: 6px;
+        background-color: var(--warn-bg);
+        color: var(--warn-text);
+    }
+
+    .store-status[hidden] {
+        display: none;
+    }
+
+    .store-status-title {
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+    }
+
+    .store-status-items {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem 1rem;
+        margin-top: 0.4rem;
+    }
+
+    .store-status-dismiss {
+        position: absolute;
+        top: 0.15rem;
+        right: 0.3rem;
+        padding: 0.1rem 0.45rem;
+        border: none;
+        background: none;
+        color: inherit;
+        font-size: 1.2rem;
+        line-height: 1;
+        opacity: 0.65;
+        cursor: pointer;
+    }
+
+    .store-status-dismiss:hover {
+        opacity: 1;
+    }
+
     /* Row switches: a submit button dressed as a toggle, so the table keeps
        working with JavaScript disabled. One form per cell, one POST per flip. */
     .switch {
@@ -197,34 +246,61 @@
     </div>
 </header>
 
-{# Store status. Only the stores the scheduler is having trouble with show up
-   here - if a retailer is walling us off, that is worth seeing before you read
-   its stale prices as current. #}
-<section style="margin-bottom: 1.5rem; padding: 0.6rem 0.9rem; border: 1px solid #e5e7eb; border-radius: 6px;">
-    <strong style="font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-light);">Store status</strong>
-    {% if store_backoff %}
-        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; margin-top: 0.4rem;">
-            {% for store in store_backoff %}
-                <span style="font-size: 0.9rem;">
-                    {{ store.label }}
-                    {% if store.backed_off %}
-                        <span class="badge badge-danger" title="Next attempt at {{ format_datetime(store.retry_at, current_timezone) }}">
-                            backing off, retry in {{ store.minutes_remaining }} min
-                            ({{ store.failures }} failure{{ '' if store.failures == 1 else 's' }})
-                        </span>
-                    {% else %}
-                        <span class="badge badge-info">
-                            still checking, {{ store.failures }} recent failure{{ '' if store.failures == 1 else 's' }}
-                        </span>
-                    {% endif %}
-                </span>
-            {% endfor %}
-        </div>
-    {% else %}
-        <span class="badge badge-success" style="margin-left: 0.5rem;">ok</span>
-        <span style="font-size: 0.9rem; color: var(--text-light);">every store is answering</span>
-    {% endif %}
+{# Store status. Shown only when the scheduler is actually having trouble with a
+   retailer - a bar that says "everything is fine" on every load is furniture, and
+   furniture stops being read long before the day it has something to say. If a
+   retailer is walling us off, that is worth seeing before you read its stale
+   prices as current, so this appears exactly then.
+
+   Dismissable, and the dismissal is remembered against which stores are in
+   trouble rather than against the banner itself, so waving it away does not also
+   hide the next store to fall over. #}
+{% if store_backoff %}
+    {%- set status_key -%}
+        {%- for store in store_backoff -%}{{ store.label }}:{{ 1 if store.backed_off else 0 }};{% endfor -%}
+    {%- endset -%}
+<section class="store-status" id="store-status" data-status-key="{{ status_key }}">
+    <button type="button" class="store-status-dismiss" aria-label="Dismiss store status" title="Dismiss until this changes">&times;</button>
+    <strong class="store-status-title">Store status</strong>
+    <div class="store-status-items">
+        {% for store in store_backoff %}
+            <span style="font-size: 0.9rem;">
+                {{ store.label }}
+                {% if store.backed_off %}
+                    <span class="badge badge-danger" title="Next attempt at {{ format_datetime(store.retry_at, current_timezone) }}">
+                        backing off, retry in {{ store.minutes_remaining }} min
+                        ({{ store.failures }} failure{{ '' if store.failures == 1 else 's' }})
+                    </span>
+                {% else %}
+                    <span class="badge badge-info">
+                        still checking, {{ store.failures }} recent failure{{ '' if store.failures == 1 else 's' }}
+                    </span>
+                {% endif %}
+            </span>
+        {% endfor %}
+    </div>
 </section>
+<script>
+    // Inline and synchronous: a banner that is already dismissed should never
+    // paint at all. Runs where it stands rather than on DOMContentLoaded.
+    (function () {
+        var banner = document.getElementById('store-status');
+        var STORE = 'store-status-dismissed';
+        var key = banner.dataset.statusKey;
+        var seen = null;
+        // Storage throws outright in some privacy modes, so every access is guarded.
+        try { seen = sessionStorage.getItem(STORE); } catch (e) { /* no storage */ }
+        if (seen === key) {
+            banner.hidden = true;
+            return;
+        }
+        banner.querySelector('.store-status-dismiss').addEventListener('click', function () {
+            banner.hidden = true;
+            try { sessionStorage.setItem(STORE, key); } catch (e) { /* no storage */ }
+        });
+    })();
+</script>
+{% endif %}
 
 {% if view == 'grouped' %}
     {% include 'products/_grouped.html' %}
@@ -297,7 +373,8 @@
                         </td>
                         {% set alerts_on = product.notify_on_price_drop or product.notify_on_availability %}
                         <td style="text-align: center;">
-                            <form method="POST" action="{{ url_for('main.toggle_product_flag', product_id=product.id, field='alerts') }}" style="margin: 0;">
+                            <form method="POST" data-toggle-form="alerts"
+                                  action="{{ url_for('main.toggle_product_flag', product_id=product.id, field='alerts') }}" style="margin: 0;">
                                 <button type="submit" role="switch" aria-checked="{{ 'true' if alerts_on else 'false' }}"
                                         class="switch{% if alerts_on %} switch-on{% endif %}"
                                         title="{% if alerts_on %}Alerts are on. Click to silence this product.{% else %}Alerts are off. Click to be notified about price drops and restocks.{% endif %}">
@@ -307,7 +384,8 @@
                             </form>
                         </td>
                         <td style="text-align: center;">
-                            <form method="POST" action="{{ url_for('main.toggle_product_flag', product_id=product.id, field='auto_cart') }}" style="margin: 0;">
+                            <form method="POST" data-toggle-form="auto_cart"
+                                  action="{{ url_for('main.toggle_product_flag', product_id=product.id, field='auto_cart') }}" style="margin: 0;">
                                 <button type="submit" role="switch" aria-checked="{{ 'true' if product.auto_cart_enabled else 'false' }}"
                                         class="switch{% if product.auto_cart_enabled %} switch-armed{% endif %}"
                                         title="{% if product.auto_cart_enabled %}Armed: a cart attempt can fire within a minute of this going in stock. Click to disarm.{% else %}Not armed. Click to let the tracker add this to the cart by itself. It never checks out.{% endif %}">
@@ -397,6 +475,89 @@
         label.append(input, track, text);
         return label;
     }
+
+    // The wording and the "on" colour for the two row switches, in one place.
+    // Both the delegated handler below and the refresh loop's rebuilt cells read
+    // from here, so the server-rendered switch and the JS-built one cannot drift
+    // apart in what they say.
+    const SWITCH_COPY = {
+        alerts: {
+            onClass: 'switch-on',
+            label: on => (on ? 'On' : 'Off'),
+            title: on => (on
+                ? 'Alerts are on. Click to silence this product.'
+                : 'Alerts are off. Click to be notified about price drops and restocks.')
+        },
+        auto_cart: {
+            onClass: 'switch-armed',
+            label: on => (on ? 'Armed' : 'Off'),
+            title: on => (on
+                ? 'Armed: a cart attempt can fire within a minute of this going in stock. Click to disarm.'
+                : 'Not armed. Click to let the tracker add this to the cart by itself. It never checks out.')
+        }
+    };
+
+    // Put one switch into a state: colour, label, tooltip and the accessible
+    // checked state together, so they can never disagree.
+    function paintSwitch(button, field, isOn) {
+        const copy = SWITCH_COPY[field];
+        if (!copy) { return; }
+        button.setAttribute('aria-checked', isOn ? 'true' : 'false');
+        button.className = isOn ? `switch ${copy.onClass}` : 'switch';
+        button.title = copy.title(isOn);
+        const text = button.querySelector('.switch-text');
+        if (text) { text.textContent = copy.label(isOn); }
+    }
+
+    // Flip Alerts and Auto-cart without reloading the page.
+    //
+    // These were plain form posts, and the route answered with a redirect back to
+    // the dashboard. That works, but it reloads: flipping a switch on the ninth
+    // row scrolled the reader back to the top of the table every single time. The
+    // route now answers JSON to an XMLHttpRequest, so the switch updates in place
+    // and the scroll position is never touched. Without JavaScript the form still
+    // posts and still redirects, which is why the markup is still a form.
+    //
+    // Delegated, so rows rebuilt by the 30-second refresh keep working.
+    document.addEventListener('submit', function (event) {
+        const form = event.target.closest('form[data-toggle-form]');
+        if (!form) { return; }
+
+        const field = form.dataset.toggleForm;
+        const button = form.querySelector('button[role="switch"]');
+        if (!button || !SWITCH_COPY[field]) { return; }
+
+        event.preventDefault();
+        const wasOn = button.getAttribute('aria-checked') === 'true';
+
+        button.disabled = true;
+        fetch(form.action, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: '{}'
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (!data.success) { throw new Error(data.error || 'refused'); }
+                paintSwitch(button, field, data.enabled);
+                if (data.message && window.showFlash) {
+                    window.showFlash(data.message, data.category);
+                }
+            })
+            .catch(error => {
+                // Put the switch back: it must never show a state the server did
+                // not agree to, least of all on the one that arms a cart attempt.
+                console.error(`Error toggling ${field}:`, error);
+                paintSwitch(button, field, wasOn);
+                if (window.showFlash) {
+                    window.showFlash('Could not change that setting. It is unchanged.', 'danger');
+                }
+            })
+            .finally(() => { button.disabled = false; });
+    });
 
     // Delegated so it keeps working after the refresh loop replaces the rows.
     document.addEventListener('change', function(event) {
@@ -532,22 +693,22 @@
         
         // Build one toggle cell for a rebuilt row. This mirrors the server-rendered
         // markup in the table above; if you change one, change the other, or the
-        // switches will change shape 30 seconds after every page load.
-        function buildToggleCell(productId, field, isOn, onClass, label, title) {
+        // switches will change shape 30 seconds after every page load. The
+        // data-toggle-form attribute is what the submit handler keys off, so both
+        // paths have to emit it or a refreshed row stops responding.
+        function buildToggleCell(productId, field, isOn) {
             const cell = document.createElement('td');
             cell.style.textAlign = 'center';
 
             const form = document.createElement('form');
             form.method = 'POST';
             form.action = `/product/${productId}/toggle/${field}`;
+            form.dataset.toggleForm = field;
             form.style.margin = '0';
 
             const button = document.createElement('button');
             button.type = 'submit';
             button.setAttribute('role', 'switch');
-            button.setAttribute('aria-checked', isOn ? 'true' : 'false');
-            button.className = isOn ? `switch ${onClass}` : 'switch';
-            button.title = title;
 
             const knob = document.createElement('span');
             knob.className = 'switch-knob';
@@ -555,8 +716,9 @@
 
             const text = document.createElement('span');
             text.className = 'switch-text';
-            text.textContent = label;
             button.appendChild(text);
+
+            paintSwitch(button, field, isOn);
 
             form.appendChild(button);
             cell.appendChild(form);
@@ -686,23 +848,11 @@
                 
                 // Alerts cell
                 const alertsOn = !!product.alerts_enabled;
-                row.appendChild(buildToggleCell(
-                    product.id, 'alerts', alertsOn, 'switch-on',
-                    alertsOn ? 'On' : 'Off',
-                    alertsOn
-                        ? 'Alerts are on. Click to silence this product.'
-                        : 'Alerts are off. Click to be notified about price drops and restocks.'
-                ));
+                row.appendChild(buildToggleCell(product.id, 'alerts', alertsOn));
 
                 // Auto-cart cell
                 const armed = !!product.auto_cart_enabled;
-                row.appendChild(buildToggleCell(
-                    product.id, 'auto_cart', armed, 'switch-armed',
-                    armed ? 'Armed' : 'Off',
-                    armed
-                        ? 'Armed: a cart attempt can fire within a minute of this going in stock. Click to disarm.'
-                        : 'Not armed. Click to let the tracker add this to the cart by itself. It never checks out.'
-                ));
+                row.appendChild(buildToggleCell(product.id, 'auto_cart', armed));
 
                 // Action cell
                 const actionCell = document.createElement('td');

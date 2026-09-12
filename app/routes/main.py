@@ -935,46 +935,69 @@ def _alerts_enabled(product):
 @main_bp.route('/product/<int:product_id>/toggle/<field>', methods=['POST'])
 def toggle_product_flag(product_id, field):
     """
-    Flip one setting from the dashboard table, then come back to the table.
+    Flip one setting from the dashboard table.
 
     Only the two switches the list view shows are accepted. `alerts` moves both
     notify_on_* flags together, because the table has room for one control rather
     than two; the product page still sets them individually.
+
+    Answers JSON for the dashboard switch and redirects for a plain form post, the
+    same way toggle_tracking does. The JSON path is what keeps the page from
+    reloading: redirecting back to the index threw the reader to the top of the
+    table on every flip, which is the one thing a per-row control must not do.
     """
     if field not in TOGGLE_FIELDS:
         abort(404)
 
     product = Product.query.get_or_404(product_id)
+    wants_json = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
     try:
         if field == 'auto_cart':
             product.auto_cart_enabled = not product.auto_cart_enabled
             db.session.commit()
-            if product.auto_cart_enabled:
+            enabled = product.auto_cart_enabled
+            if enabled:
                 # Say what arming actually costs: the auto-cart job runs every 60
                 # seconds and does not wait for the next scrape.
-                flash(
+                message = (
                     f'Auto-cart armed for {product.name}. If it is in stock, a cart '
                     f'attempt can fire within a minute. It stops at the cart and never '
-                    f'checks out.',
-                    'warning',
+                    f'checks out.'
                 )
+                category = 'warning'
             else:
-                flash(f'Auto-cart disarmed for {product.name}.', 'success')
+                message = f'Auto-cart disarmed for {product.name}.'
+                category = 'success'
         else:
-            new_state = not _alerts_enabled(product)
-            product.notify_on_price_drop = new_state
-            product.notify_on_availability = new_state
+            enabled = not _alerts_enabled(product)
+            product.notify_on_price_drop = enabled
+            product.notify_on_availability = enabled
             db.session.commit()
-            if new_state:
-                flash(f'Alerts on for {product.name}: price drops and restocks.', 'success')
+            category = 'success'
+            if enabled:
+                message = f'Alerts on for {product.name}: price drops and restocks.'
             else:
-                flash(f'Alerts off for {product.name}. It is still being tracked.', 'success')
+                message = f'Alerts off for {product.name}. It is still being tracked.'
     except Exception as e:
         db.session.rollback()
         logger.error(f"Error toggling {field} on product {product_id}: {str(e)}")
+        if wants_json:
+            return jsonify({'success': False, 'error': str(e)}), 500
         flash(f'Could not change that setting: {str(e)}', 'danger')
+        return redirect(url_for('main.index'))
 
+    if wants_json:
+        return jsonify({
+            'success': True,
+            'id': product.id,
+            'field': field,
+            'enabled': enabled,
+            'message': message,
+            'category': category,
+        })
+
+    flash(message, category)
     return redirect(url_for('main.index'))
 
 
