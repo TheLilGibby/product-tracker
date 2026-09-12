@@ -300,6 +300,81 @@ Content-Type: application/json
             If <code>at-main</code> is missing from the cookie table, you are not fully signed in. Cookies expire; paste fresh values if add-to-cart starts failing.
         </p>
     </article>
+
+    <!-- Target Session Form -->
+    <article style="margin-bottom: 2rem;">
+        <h3>Target Session</h3>
+        <p>Target&#8217;s price/stock API answers <code>403</code> to anything that has not passed its press-and-hold challenge, which is why Target checks currently need a Chrome window &mdash; and still fail when the challenge comes back. Pass it once in your own browser and paste the session here.</p>
+        {% if target_cookies_configured %}
+            <p><strong style="color: var(--ok-text);">Session saved</strong> &mdash; Target checks send it with every API call. Paste a new one to replace it.</p>
+        {% else %}
+            <p><strong style="color: var(--bad-text);">No session saved.</strong> Target checks fall back to a Chrome window.</p>
+        {% endif %}
+
+        <div style="margin: 1rem 0; padding: 1rem; background-color: var(--accent-bg); border-radius: 5px;">
+            <p style="margin-top: 0;"><strong>How to copy it</strong></p>
+            <ol style="margin-bottom: 0;">
+                <li>Open a product page on <code>target.com</code>. If you get the press-and-hold box, hold the button until the page loads. <strong>Do that yourself</strong> &mdash; this app never answers a challenge for you.</li>
+                <li>Press F12 &rarr; <strong>Network</strong> tab &rarr; reload the page.</li>
+                <li>Click any request to <code>target.com</code>, scroll to <strong>Request Headers</strong>, right-click the <code>cookie:</code> line and Copy value.</li>
+                <li>Paste the whole thing below. The one that matters is <code>_px3</code> (the clearance token); <code>_pxvid</code>, <code>pxcts</code> and <code>visitorId</code> travel with it.</li>
+            </ol>
+        </div>
+
+        <form method="post" action="{{ url_for('main.update_target_cookies') }}">
+            <div style="margin-bottom: 1rem;">
+                <label for="target_cookies">Cookie header</label>
+                <textarea id="target_cookies" name="target_cookies" rows="4" autocomplete="off" spellcheck="false" style="font-family: monospace; font-size: 0.8rem;" placeholder="visitorId=...; _pxvid=...; _px3=..."></textarea>
+            </div>
+            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                <button type="submit">Save Target session</button>
+                <button type="submit" name="clear_target_cookies" value="1" class="secondary">Clear saved session</button>
+            </div>
+        </form>
+        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-light);">
+            Saved in plain text in this app&#8217;s <code>.env</code> file, the same as the Amazon and Newegg values above. It is a browser session, not your password, and it expires on its own &mdash; paste a fresh one if Target starts failing again.
+        </p>
+    </article>
+
+    <!-- GameStop Session Form -->
+    <article style="margin-bottom: 2rem;">
+        <h3>GameStop Session</h3>
+        <p>GameStop sits behind Cloudflare, which refuses plain requests outright, so every check opens a visible Chrome window. With a session pasted here a check is an ordinary HTTP request and no window opens at all.</p>
+        {% if gamestop_cookies_configured %}
+            <p><strong style="color: var(--ok-text);">Session saved</strong> &mdash; checks try HTTP first and fall back to Chrome if it is refused.</p>
+        {% else %}
+            <p><strong style="color: var(--bad-text);">No session saved.</strong> Every GameStop check opens a Chrome window.</p>
+        {% endif %}
+
+        <div style="margin: 1rem 0; padding: 1rem; background-color: var(--accent-bg); border-radius: 5px;">
+            <p style="margin-top: 0;"><strong>How to copy it</strong></p>
+            <ol style="margin-bottom: 0;">
+                <li>Open a product page on <code>gamestop.com</code> and let the &#8220;Checking your browser&#8221; step finish.</li>
+                <li>Press F12 &rarr; <strong>Network</strong> tab &rarr; reload the page.</li>
+                <li>Click any request to <code>gamestop.com</code>, scroll to <strong>Request Headers</strong>, and copy both the <code>cookie:</code> line and the <code>user-agent:</code> line.</li>
+                <li><code>cf_clearance</code> is the one that matters. Cloudflare issues it to <em>one</em> browser and <em>one</em> network address, so it has to be sent with that browser&#8217;s User-Agent, and it stops working if this machine&#8217;s IP changes.</li>
+            </ol>
+        </div>
+
+        <form method="post" action="{{ url_for('main.update_gamestop_cookies') }}">
+            <div style="margin-bottom: 1rem;">
+                <label for="gamestop_cookies">Cookie header</label>
+                <textarea id="gamestop_cookies" name="gamestop_cookies" rows="4" autocomplete="off" spellcheck="false" style="font-family: monospace; font-size: 0.8rem;" placeholder="cf_clearance=...; __cf_bm=..."></textarea>
+            </div>
+            <div style="margin-bottom: 1rem;">
+                <label for="gamestop_user_agent">User-Agent <span style="color: var(--bad-text);">(required with a cookie header)</span></label>
+                <input type="text" id="gamestop_user_agent" name="gamestop_user_agent" autocomplete="off" spellcheck="false" value="{{ gamestop_user_agent }}" placeholder="Mozilla/5.0 (Windows NT 10.0; Win64; x64) ...">
+                <small>The <code>user-agent:</code> line from the same request. Without it the clearance is refused, and the refusal looks identical to having no session.</small>
+            </div>
+            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                <button type="submit">Save GameStop session</button>
+                <button type="submit" name="clear_gamestop_cookies" value="1" class="secondary">Clear saved session</button>
+            </div>
+        </form>
+        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-light);">
+            Saved in plain text in this app&#8217;s <code>.env</code> file, the same as the values above. Cloudflare clearances are short-lived; paste a fresh one when GameStop checks start opening a window again.
+        </p>
+    </article>
 </div>
 {% endblock %}
 

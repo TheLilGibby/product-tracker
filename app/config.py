@@ -151,6 +151,21 @@ class Config:
     # Shared secret for the JSON API / MCP server. Leave blank to leave the API open.
     API_TOKEN = os.environ.get('API_TOKEN', '')
 
+    # Sessions the user pastes on the settings page, as Cookie headers, for the
+    # two retailers that answer nothing without one: Target's Redsky API 403s a
+    # client with no PerimeterX clearance, and GameStop's Cloudflare edge does
+    # the same to a plain request. Blank is the normal state - both stores fall
+    # back to the browser path, which is what they do today.
+    #
+    # These are live credentials in a plaintext file, same as AMAZON_COOKIES.
+    # They are session cookies, not passwords: they expire, and signing out of
+    # the retailer in the browser they came from revokes them.
+    TARGET_COOKIES = os.environ.get('TARGET_COOKIES', '')
+    GAMESTOP_COOKIES = os.environ.get('GAMESTOP_COOKIES', '')
+    # Cloudflare issues a clearance to one User-Agent and refuses it to any
+    # other, so a GameStop paste needs the UA of the browser it came from.
+    GAMESTOP_USER_AGENT = os.environ.get('GAMESTOP_USER_AGENT', '')
+
     # HTTP Basic Auth for add-to-cart / delete / cookie paste on the public URL.
     # Viewing and preference saves stay open. Leave AUTH_PASSWORD blank to disable.
     AUTH_USER = os.environ.get('AUTH_USER', 'admin')

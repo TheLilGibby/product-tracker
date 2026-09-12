@@ -47,6 +47,29 @@ PX tokens are short-lived, so the jar going cold is the normal case, not a
 failure: an expired cookie is dropped on load and a rejected one is flagged
 stale, and either way step 2 runs exactly as it does today. Nothing here solves
 a challenge - it carries a session the user established themselves.
+
+The pasted session (TARGET_COOKIES)
+-----------------------------------
+Same session, second way in, for someone who will not install a cookie-export
+extension: Settings -> Target cookies takes the one line DevTools calls the
+Cookie request header, and it is preferred over the exported jar when both
+exist, being the more deliberate of the two. Which cookies actually matter,
+read off the 403 body's own captcha flow:
+
+    _px3        the PerimeterX clearance token. This is the one. Without it
+                Redsky answers 403 with a captchaRelativeURL no matter what
+                else is sent.
+    _pxvid      the visitor id _px3 was minted for. A clearance token issued
+                to another visitor is not accepted.
+    pxcts       set alongside _pxvid by the same script.
+    visitorId   Target's own visitor id. Not part of the check, but it is in
+                every real request and costs nothing to carry.
+
+A paste is scoped to .target.com so it reaches redsky.target.com, which is the
+whole point - a cookie scoped to www would be left behind and every request
+would 403 with a session that looks perfectly healthy. Nothing here solves a
+challenge either: the user passes it in their own browser and pastes the
+result.
 """
 
 import re
@@ -64,7 +87,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from app.scrapers.common import (DEFAULT_HEADERS, REQUEST_TIMEOUT, detect_block_page, is_preorder_text,
                                  detect_chrome_major, profile_lock, ProfileBusyError,
-                                 load_cookie_jar, mark_cookie_jar_stale)
+                                 load_cookie_jar, mark_cookie_jar_stale,
+                                 apply_cookie_header, cookie_header_is_rejected,
+                                 cookie_header_jar, cookie_header_names, cookie_setting,
+                                 note_cookie_header_rejected)
 
 # Set up logging
 logger = logging.getLogger('app.scrapers.target')
@@ -108,6 +134,17 @@ TARGET_PROFILE_DIR = os.path.join(os.path.expanduser("~"), ".chrome_profiles", "
 # be committed by any branch. TARGET_COOKIE_JAR overrides it.
 TARGET_COOKIE_JAR = os.environ.get('TARGET_COOKIE_JAR') or os.path.join(
     TARGET_PROFILE_DIR, 'cookies.json')
+
+# The cookies that decide whether Redsky answers, in the order the 403 body's own
+# captcha flow sets them. Only used to tell the user what a useful paste looks
+# like - a header is sent whole, because a session is more than the parts we can
+# name and dropping the rest would be guessing.
+TARGET_SESSION_COOKIES = ('_px3', '_pxvid', 'pxcts', 'visitorId')
+
+
+def load_target_cookies():
+    """The pasted Target session as a Cookie header, or ''."""
+    return cookie_setting('TARGET_COOKIES')
 
 # Redsky is an XHR from the product page. With a cookie jar attached the request
 # has to look like that XHR and not like a bare script, so it carries the client
@@ -240,7 +277,7 @@ class TargetScraper:
         # valid _px3 Redsky answers 200 and no browser is needed for tracking at
         # all; without one it 403s exactly as it does today and the caller falls
         # through to the browser.
-        cookies = self._redsky_cookies()
+        cookies, source = self._redsky_session()
         if cookies is not None:
             headers.update(REDSKY_BROWSER_HEADERS)
             logger.info(f"Attempting Redsky {what} for TCIN {tcin} with the saved session "
@@ -259,7 +296,10 @@ class TargetScraper:
                 # The cookies were rejected, so they will be rejected next cycle too.
                 # Flag them once and let every later check go straight to the browser
                 # rather than spending a doomed request on them every minute.
-                mark_cookie_jar_stale(TARGET_COOKIE_JAR)
+                if source == 'pasted':
+                    note_cookie_header_rejected(load_target_cookies(), 'Target')
+                else:
+                    mark_cookie_jar_stale(TARGET_COOKIE_JAR)
             return None
 
         try:
@@ -354,10 +394,27 @@ class TargetScraper:
     @staticmethod
     def _redsky_cookies():
         """
-        Build a requests cookie jar from the session --import-cookies saved, or
-        return None when there is no usable one.
+        The user's Target session as a requests cookie jar, or None.
 
         None means "ask the browser", never "the product is unavailable".
+        """
+        jar, _source = TargetScraper._redsky_session()
+        return jar
+
+    @staticmethod
+    def _redsky_session():
+        """
+        The same jar, plus where it came from: 'pasted', 'jar', or '' for none.
+
+        Two sources, pasted header first: someone who has just typed a session
+        into the settings page means that one, and an exported jar sitting in a
+        profile directory from days ago should not quietly win over it. A paste
+        the site has already refused this run is skipped, so a dead session
+        costs one request rather than one per check.
+
+        The source is also what makes a 403 actionable - a refused paste and a
+        refused export are told apart here rather than guessed at from which one
+        exists, so neither is blamed for the other's rejection.
 
         Domain scoping is done properly rather than by shoving every cookie at
         every host: _px3 is set on .target.com and must reach redsky.target.com,
@@ -366,11 +423,23 @@ class TargetScraper:
         and which parse_cookie_file deliberately produces for chromedriver - is
         promoted back to ".target.com" here. Without that promotion the one
         cookie that matters would be silently left behind and every request
-        would 403 with a jar that looks perfectly healthy on disk.
+        would 403 with a jar that looks perfectly healthy on disk. A pasted
+        header carries no domains at all, so cookie_header_jar scopes the whole
+        paste to .target.com for the same reason.
         """
+        pasted = load_target_cookies()
+        if pasted and not cookie_header_is_rejected(pasted):
+            jar = cookie_header_jar(pasted, 'target.com')
+            if jar is not None:
+                logger.debug("Using the pasted Target session "
+                             f"({', '.join(cookie_header_names(pasted))})")
+                return jar, 'pasted'
+            logger.warning("The pasted Target session holds no usable cookie; "
+                           "falling back to the exported jar")
+
         saved = load_cookie_jar(TARGET_COOKIE_JAR)
         if not saved:
-            return None
+            return None, ''
 
         jar = requests.cookies.RequestsCookieJar()
         for cookie in saved:
@@ -391,8 +460,8 @@ class TargetScraper:
                 logger.debug(f"Skipping saved cookie {cookie.get('name')!r}: {str(e)}")
         if not len(jar):
             logger.warning("The saved Target session held no usable cookies; using the browser path")
-            return None
-        return jar
+            return None, ''
+        return jar, 'jar'
 
     @staticmethod
     def _price_from_redsky(price):
@@ -480,6 +549,28 @@ class TargetScraper:
         options.add_argument('--lang=en-US')
         return options
 
+    def _apply_target_cookies(self, driver, url):
+        """
+        Carry the pasted session into the browser, and reload onto it.
+
+        The same session the Redsky path uses, and the browser is where it is
+        worth the most: a PerimeterX clearance the user earned in their own
+        window is what keeps this one from being handed the press-and-hold. The
+        reload is not optional - cookies added after a page has loaded do not
+        apply to it, so without it the page on screen is still the anonymous
+        one that was fetched before they arrived.
+
+        Does nothing when no session is configured, which is the default.
+        """
+        header = load_target_cookies()
+        if not header or cookie_header_is_rejected(header):
+            return 0
+        applied = apply_cookie_header(
+            driver, header, ('.target.com', 'www.target.com', 'target.com'), 'Target')
+        if applied:
+            driver.get(url)
+        return applied
+
     def scrape_via_browser(self, url, tcin):
         """
         Render the product page with undetected-chromedriver and parse the DOM.
@@ -501,6 +592,7 @@ class TargetScraper:
             driver = self._start_driver()
             driver.set_page_load_timeout(45)
             driver.get(url)
+            self._apply_target_cookies(driver, url)
             try:
                 WebDriverWait(driver, 15).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, '[data-test="product-price"], [data-test="product-title"]'))
@@ -701,6 +793,7 @@ class TargetScraper:
             driver = self._start_driver()
             driver.set_page_load_timeout(45)
             driver.get(url)
+            self._apply_target_cookies(driver, url)
             try:
                 WebDriverWait(driver, 15).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, '[data-test="product-title"], [data-test="product-price"]'))

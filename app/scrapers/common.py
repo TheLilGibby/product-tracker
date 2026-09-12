@@ -553,3 +553,190 @@ def mark_cookie_jar_stale(path):
         return False
     logger.warning(f"Marked the cookie jar at {path} stale; re-import to restore the cheap path")
     return True
+
+
+# --------------------------------------------------------- pasted cookie headers
+# The other half of the cookie story above. A jar is exported from the browser as
+# a file; a header is the one line a person can copy out of DevTools ("Copy value"
+# on the Cookie request header) and paste into the settings page, which is the only
+# route that works for someone who will not install a cookie-export extension.
+#
+# Same principle either way, and it is worth restating because it is what keeps
+# this on the right side of the line: nothing here solves, weakens or automates a
+# challenge. The user passes a challenge themselves, in their own browser, and
+# hands us the session it produced.
+
+def cookie_setting(name, default=''):
+    """
+    Read a cookie-header setting, from the environment or the Flask config.
+
+    The environment wins because that is what the settings page writes when it
+    saves one: .env for the next boot, os.environ for this process. The config
+    lookup is the fallback for a deployment that configures Flask directly, and
+    it is skipped outside an app context - scrapers also run on the scheduler.
+    """
+    value = (os.environ.get(name) or '').strip()
+    if value:
+        return value
+    try:
+        from flask import current_app, has_app_context
+        if has_app_context():
+            value = (current_app.config.get(name) or '').strip()
+            if value:
+                return value
+    except (ImportError, RuntimeError):
+        pass
+    return default
+
+
+def clean_cookie_value(cookie_name, value):
+    """Strip table copy/paste extras: wrapping quotes and a leading name=."""
+    value = (value or '').strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        value = value[1:-1].strip()
+    prefix = cookie_name + '='
+    if value.lower().startswith(prefix.lower()):
+        value = value[len(prefix):].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1].strip()
+    return value
+
+
+def parse_cookie_header(cookie_header):
+    """
+    Split a Cookie header into (name, value) pairs.
+
+    Malformed pairs are dropped rather than raising: a paste that picked up one
+    stray fragment should still carry the rest of the session.
+    """
+    cookies = []
+    for pair in (cookie_header or '').split(';'):
+        pair = pair.strip()
+        if not pair or '=' not in pair:
+            continue
+        name, value = pair.split('=', 1)
+        name = name.strip()
+        if name:
+            cookies.append((name, clean_cookie_value(name, value)))
+    return cookies
+
+
+def cookie_header_names(cookie_header):
+    """The cookie names in a header, for logging a session without its values."""
+    return [name for name, _value in parse_cookie_header(cookie_header)]
+
+
+def cookie_header_jar(cookie_header, domain):
+    """
+    A requests cookie jar from a pasted header, scoped to one site.
+
+    ``domain`` is stored with a leading dot so the cookies reach the retailer's
+    API subdomain as well as www - Target's clearance token is set on
+    .target.com and has to arrive at redsky.target.com or the request is refused
+    exactly as an uncookied one is. A header carries no domains of its own, so
+    unlike an exported jar there is nothing to scope per cookie; every pair in
+    it came from the one site the user copied it from.
+
+    Returns None when the header holds no usable pair, which is the same signal
+    as having no header at all: use the browser.
+    """
+    import requests
+
+    pairs = parse_cookie_header(cookie_header)
+    if not pairs:
+        return None
+    domain = '.' + domain.lstrip('.')
+    jar = requests.cookies.RequestsCookieJar()
+    for name, value in pairs:
+        try:
+            jar.set_cookie(requests.cookies.create_cookie(
+                name=name, value=value, domain=domain, path='/'))
+        except Exception as e:
+            logger.debug(f"Skipping pasted cookie {name!r}: {str(e)}")
+    if not len(jar):
+        return None
+    return jar
+
+
+def apply_cookie_header(driver, cookie_header, domains, label):
+    """
+    Inject a pasted session into a running browser.
+
+    The browser has to already be on the site - selenium refuses a cookie for a
+    domain the current page does not belong to - and the caller reloads
+    afterwards, because cookies added after a page loaded do not apply to it.
+
+    ``domains`` is tried in order per cookie: chromedriver rejects a domain that
+    does not match the current page, and which spelling it accepts depends on
+    where the browser currently is, so the first that takes is kept.
+
+    Returns the number of cookies the browser accepted.
+    """
+    pairs = parse_cookie_header(cookie_header)
+    if not pairs:
+        return 0
+
+    applied = 0
+    for name, value in pairs:
+        for domain in domains:
+            try:
+                driver.add_cookie({'name': name, 'value': value,
+                                   'domain': domain, 'path': '/'})
+                applied += 1
+                break
+            except Exception:
+                continue
+        else:
+            logger.debug(f"Could not add {label} cookie {name}")
+    if applied:
+        logger.info(f"Applied {applied} pasted {label} cookie(s) to the browser")
+    else:
+        # Said at WARNING because the run continues either way, and a silent
+        # zero here looks identical to never having configured a session.
+        logger.warning(
+            f"{label} cookies are configured but the browser accepted none of "
+            "them; this page will load as an anonymous visitor"
+        )
+    return applied
+
+
+# A pasted session that the retailer has already refused this process. An
+# exported jar gets flagged stale in its own file; a pasted header has no file
+# to flag - rewriting .env to record a failure would be the app editing its own
+# config behind the user's back - so the refusal is remembered here, keyed by a
+# digest of the header. A fresh paste is a different digest and is tried again,
+# and a restart forgets, which is the right default: the usual reason a paste
+# stops working is that it expired, and the usual fix is a new one.
+_REJECTED_COOKIE_HEADERS = {}
+
+
+def _cookie_header_digest(cookie_header):
+    import hashlib
+
+    return hashlib.sha256((cookie_header or '').encode('utf-8')).hexdigest()[:16]
+
+
+def note_cookie_header_rejected(cookie_header, label):
+    """
+    Record that the retailer refused this exact paste. Returns True the first
+    time, so the caller can say so once instead of every cycle.
+    """
+    digest = _cookie_header_digest(cookie_header)
+    if digest in _REJECTED_COOKIE_HEADERS:
+        return False
+    _REJECTED_COOKIE_HEADERS[digest] = label
+    logger.warning(
+        f"The pasted {label} session was refused; skipping it until a fresh one "
+        "is saved on the settings page"
+    )
+    return True
+
+
+def cookie_header_is_rejected(cookie_header):
+    """Whether this paste has already been refused since the app started."""
+    return _cookie_header_digest(cookie_header) in _REJECTED_COOKIE_HEADERS
+
+
+def clear_rejected_cookie_headers():
+    """Forget every refusal. For tests, and for a settings-page re-save."""
+    _REJECTED_COOKIE_HEADERS.clear()
