@@ -53,6 +53,41 @@
         opacity: 1;
     }
 
+    /* Scheduler liveness. Nothing is server-rendered into it: the poll at the
+       end of this file fills it in, so an instance whose build predates
+       GET /api/health shows no empty furniture at all.
+
+       Unlike the store-status banner above it this is NOT dismissable. A
+       stalled tracker is the one state where waving the message away would
+       hide exactly the thing the page exists to do. */
+    .tracker-liveness {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.2rem 0.6rem;
+        margin: 0 0 1.25rem;
+        font-size: 0.85rem;
+        opacity: 0.75;
+    }
+
+    .tracker-liveness[hidden] {
+        display: none;
+    }
+
+    /* Stalled is the one state allowed to shout: a banner in the danger
+       palette rather than a faint line of small print. */
+    .tracker-liveness.is-stalled {
+        padding: 0.55rem 0.9rem;
+        border: 1px solid var(--bad-text);
+        border-left-width: 4px;
+        border-radius: 6px;
+        background-color: var(--bad-bg);
+        color: var(--bad-text);
+        font-size: 0.9rem;
+        font-weight: bold;
+        opacity: 1;
+    }
+
     /* Row switches: a submit button dressed as a toggle, so the table keeps
        working with JavaScript disabled. One form per cell, one POST per flip.
 
@@ -354,6 +389,16 @@
         <a href="{{ url_for('main.add_product') }}" class="button">Add New Product</a>
     </div>
 </header>
+
+{# Is this instance actually checking products? HTTP 200 from this page proves
+   only that Flask is serving - a scheduler can be dead behind a perfectly
+   healthy dashboard, which is how an 83-minute outage went unnoticed on
+   2026-09-12. The poll at the end of this file asks the process itself.
+
+   Empty and hidden until that answers, so a 404 from an older build leaves no
+   trace, and role=status announces the change to a screen reader without
+   stealing focus. #}
+<div class="tracker-liveness" id="tracker-liveness" role="status" aria-live="polite" hidden></div>
 
 {# Store status. Shown only when a check is actually having trouble with a
    retailer - a bar that says "everything is fine" on every load is furniture, and
@@ -1114,5 +1159,120 @@
             startAutoRefresh();
         }
     });
+</script>
+
+<script>
+    // Scheduler liveness, against GET /api/health (PR #44). The route reports
+    // the process's own view of its scheduler: whether it is enabled, how
+    // often it is meant to run, when the last pass started and completed, and
+    // whether that makes it overdue. `overdue` is computed server-side against
+    // the running interval, so this file does not second-guess it.
+    (function () {
+        var box = document.getElementById('tracker-liveness');
+        if (!box || !window.fetch) { return; }
+
+        var HEALTH_URL = '{{ url_for('api.health') }}';
+        // Alongside the product refresh above rather than with it: the
+        // scheduler's state is worth knowing even with auto-refresh switched
+        // off, and it is one small unauthenticated GET.
+        var POLL_MS = 30000;
+        // The "ago" has to keep counting between polls, so it is re-rendered
+        // from the last payload rather than from the network.
+        var TICK_MS = 5000;
+
+        var latest = null;
+
+        function secondsSince(iso) {
+            var then = Date.parse(iso);
+            if (isNaN(then)) { return null; }
+            // A browser clock a little behind the server's would otherwise
+            // read as a check in the future.
+            return Math.max(0, (Date.now() - then) / 1000);
+        }
+
+        function ago(seconds) {
+            if (seconds < 90) { return Math.round(seconds) + ' s ago'; }
+            var minutes = Math.round(seconds / 60);
+            if (minutes < 90) { return minutes + ' min ago'; }
+            var hours = Math.floor(minutes / 60);
+            return hours + ' h ' + (minutes % 60) + ' min ago';
+        }
+
+        function every(seconds) {
+            if (!seconds) { return ''; }
+            if (seconds < 90) { return 'every ' + seconds + ' s'; }
+            return 'every ' + Math.round(seconds / 60) + ' min';
+        }
+
+        // The payload carries UTC instants and no timezone preference, and the
+        // rest of this page prints UTC too, so the suffix stays rather than
+        // guessing at the browser's zone.
+        function clockUTC(iso) {
+            return iso.length >= 19 ? iso.slice(11, 19) + ' UTC' : iso;
+        }
+
+        function joinParts(parts) {
+            return parts.filter(function (part) { return part; }).join(' \u00b7 ');
+        }
+
+        function textFor(data) {
+            var scheduler = data.scheduler || {};
+            var completed = scheduler.last_pass_completed;
+
+            if (!scheduler.enabled) {
+                // A UI-only instance is not supposed to be checking anything,
+                // so this is neutral, not a warning.
+                var label = (data.instance_label || '').trim();
+                return 'Scheduler off on this instance'
+                    + (label ? ' (' + label + ')' : '');
+            }
+            if (scheduler.overdue) {
+                return 'Tracker stalled \u2014 no completed check since '
+                    + (completed
+                        ? clockUTC(completed) + ' (' + ago(secondsSince(completed)) + ')'
+                        : 'this instance started');
+            }
+            if (!completed) {
+                return joinParts(['No completed check yet',
+                                  every(scheduler.interval_seconds)]);
+            }
+            return joinParts(['Last check: ' + ago(secondsSince(completed)),
+                              every(scheduler.interval_seconds)]);
+        }
+
+        function render() {
+            if (!latest) { return; }
+            var stalled = !!(latest.scheduler && latest.scheduler.overdue);
+            // textContent, not innerHTML: instance_label comes from the
+            // environment and the rest is built here, but a status line is no
+            // place to start parsing markup.
+            box.textContent = textFor(latest);
+            box.classList.toggle('is-stalled', stalled);
+            box.hidden = false;
+        }
+
+        function poll() {
+            fetch(HEALTH_URL, {
+                headers: { 'Accept': 'application/json' },
+                credentials: 'same-origin'
+            }).then(function (response) {
+                // 404 on a build without the route, or anything else unhappy:
+                // say nothing at all rather than invent a state.
+                return response.ok ? response.json() : null;
+            }).then(function (data) {
+                if (!data || !data.scheduler) { return; }
+                latest = data;
+                render();
+            }).catch(function () {
+                // A failed request says nothing about the scheduler, so the
+                // last known state stays on screen and its "ago" keeps
+                // counting - which is itself the honest reading.
+            });
+        }
+
+        poll();
+        setInterval(poll, POLL_MS);
+        setInterval(render, TICK_MS);
+    })();
 </script>
 {% endblock %} 
