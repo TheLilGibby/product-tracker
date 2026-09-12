@@ -284,7 +284,13 @@
                 <div style="font-size: 0.875rem; margin-top: 0.5rem; padding: 1rem; background-color: var(--accent-bg); border-radius: 5px;">
                     <p style="margin-top: 0;">Last cart attempt: {{ format_datetime(product.last_cart_attempt, current_timezone) }}</p>
                     <p style="margin-bottom: 0;">Status: {{ product.last_cart_status }}</p>
-                    
+
+                    {% if product.last_cart_screenshot %}
+                        <p style="margin-bottom: 0; margin-top: 0.5rem;">
+                            <a href="{{ url_for('main.product_cart_screenshot', product_id=product.id) }}" target="_blank">See what the store looked like</a>
+                        </p>
+                    {% endif %}
+
                     {% if product.last_cart_status and 'success' in product.last_cart_status.lower() %}
                         <div style="margin-top: 1rem;">
                             <a href="{{ product.url }}" target="_blank" class="complete-purchase-btn">
