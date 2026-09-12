@@ -225,6 +225,23 @@ def test_gamestop_session(url=None):
 
 
 
+# Far enough off the left edge to clear any monitor arrangement, and negative
+# so it cannot land on a second screen the user is actually looking at.
+OFFSCREEN_POSITION = '-32000,-32000'
+
+
+def window_offscreen():
+    """
+    True when the GameStop window should open off-screen. Default on.
+
+    Read from the environment rather than app config because the scrapers also
+    run on the scheduler, outside any app context - the same reason
+    GAMESTOP_HEADLESS is read this way.
+    """
+    return os.environ.get('GAMESTOP_WINDOW_OFFSCREEN', '1').strip().lower() not in (
+        '0', 'false', 'no', 'off')
+
+
 class GameStopScraper:
     """Scraper for GameStop product pages"""
 
@@ -412,7 +429,8 @@ class GameStopScraper:
         The lock must already be held.
         """
         try:
-            return uc.Chrome(options=self._get_chrome_options(), version_main=detect_chrome_major())
+            driver = uc.Chrome(options=self._get_chrome_options(),
+                               version_main=detect_chrome_major())
         except WebDriverException as e:
             message = str(e)
             if 'not reachable' in message or 'session not created' in message:
@@ -421,6 +439,20 @@ class GameStopScraper:
                     "likely using it - close any window opened from that profile and retry") from e
             raise
 
+        if window_offscreen():
+            # Measured on Windows 11 with a throwaway profile: --window-position
+            # alone stopped the focus steal - the foreground window did not
+            # change at launch, after a navigation, or at all. This minimise is
+            # kept only for the case that probe could not cover, a persistent
+            # profile restoring a saved on-screen placement. It costs one call,
+            # and a minimised window still renders: this is not headless, and
+            # Cloudflare sees no difference.
+            try:
+                driver.minimize_window()
+            except Exception as e:
+                logger.debug(f"Could not minimise the GameStop window: {str(e)}")
+        return driver
+
     def _get_chrome_options(self):
         """
         Get fresh ChromeOptions (reusing an options object raises in undetected-chromedriver).
@@ -428,10 +460,21 @@ class GameStopScraper:
         Note the headless default is OFF, the opposite of the other browser
         scrapers: Cloudflare serves headless Chrome a 4.8KB challenge page here
         every time. Set GAMESTOP_HEADLESS=1 only to reproduce that.
+
+        Because headless is not available, every check opens a real window on
+        the user's desktop. GAMESTOP_WINDOW_OFFSCREEN=1 (the default) puts it
+        far off the left of every monitor so it renders normally without taking
+        the foreground; set 0 when a human needs to watch it, which is what the
+        first-pass clearance run is.
         """
         options = uc.ChromeOptions()
         options.add_argument(f'--user-data-dir={self.profile_dir}')
         options.add_argument('--profile-directory=Default')
+        if window_offscreen():
+            # Paired with the explicit --window-size below: a window positioned
+            # off-screen with no size given can come up 0x0, and a viewport that
+            # size is its own bot signal.
+            options.add_argument(f'--window-position={OFFSCREEN_POSITION}')
         if os.environ.get('GAMESTOP_HEADLESS', '0') == '1':
             logger.warning("GAMESTOP_HEADLESS=1: Cloudflare blocks headless Chrome on gamestop.com, "
                            "so this run will almost certainly return no result")

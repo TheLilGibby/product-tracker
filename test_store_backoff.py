@@ -22,6 +22,7 @@ Exit code is non-zero if any check fails.
 """
 import argparse
 import logging
+import os
 import sys
 import warnings
 from contextlib import contextmanager
@@ -29,7 +30,8 @@ from datetime import datetime, timedelta
 
 from flask import current_app
 
-from app.config import parse_store_intervals
+from app.config import (DEFAULT_GAMESTOP_CHECK_INTERVAL_SECONDS,
+                        apply_gamestop_floor, parse_store_intervals)
 
 # The app stores naive UTC via datetime.utcnow(); these checks compare against it.
 warnings.filterwarnings('ignore', message='datetime.datetime.utcnow', category=DeprecationWarning)
@@ -684,6 +686,127 @@ def check_store_rows_are_labelled():
     return failures
 
 
+def check_gamestop_floor_is_applied():
+    """
+    GameStop gets a cadence floor even when nothing is configured.
+
+    This is the one store where a check is not free: Cloudflare blocks headless
+    Chrome on gamestop.com, so every scrape opens a real window on the user's
+    desktop. On the scheduler's own cadence - 19 seconds on the live instance -
+    that is a window taking the foreground every few seconds, all day. The
+    mechanism to stop it already existed (STORE_CHECK_INTERVALS) and was simply
+    never set, so the floor is folded into the same map rather than added as a
+    second thing that can disagree with it.
+    """
+    print("GameStop has a default cadence floor")
+    failures = 0
+
+    # Unset: the floor applies, in minutes, because that is the map's unit.
+    got = apply_gamestop_floor({}, DEFAULT_GAMESTOP_CHECK_INTERVAL_SECONDS)
+    failures += report(got == {'gamestop': 5.0},
+                       'unset means 300 seconds, which the map holds as 5 minutes', str(got))
+
+    got = apply_gamestop_floor({'bestbuy': 15.0}, 300)
+    failures += report(got == {'bestbuy': 15.0, 'gamestop': 5.0},
+                       'and it does not disturb another store already listed', str(got))
+
+    # An explicit entry wins: somebody who names a number has said what they want.
+    got = apply_gamestop_floor({'gamestop': 60.0}, 300)
+    failures += report(got == {'gamestop': 60.0},
+                       'an explicit gamestop= entry beats the floor', str(got))
+    got = apply_gamestop_floor({'gamestop': 0.5}, 300)
+    failures += report(got == {'gamestop': 0.5},
+                       'including one that asks for a shorter interval than the floor', str(got))
+
+    # 0 is the off switch. It has to be, because parse_store_intervals drops a
+    # gamestop=0 entry rather than keeping it, so there is no way to say "no
+    # floor" through the map itself.
+    failures += report(apply_gamestop_floor({}, 0) == {},
+                       'zero seconds removes the floor entirely')
+    failures += report(parse_store_intervals('gamestop=0') == {},
+                       'which matters, because the map itself drops a 0 entry')
+
+    # Garbage in the environment must not take the scheduler down.
+    got = apply_gamestop_floor({}, 'soon')
+    failures += report(got == {'gamestop': 5.0},
+                       'an unreadable value falls back to the default', str(got))
+    got = apply_gamestop_floor({}, None)
+    failures += report(got == {'gamestop': 5.0}, 'and so does a missing one', str(got))
+    return failures
+
+
+def check_gamestop_rows_wait_for_the_floor():
+    """The floor, as the check loop sees it: a row checked recently is left alone."""
+    print("A GameStop row inside the floor is skipped")
+    failures = 0
+    now = datetime(2026, 1, 1, 12, 0, 0)
+
+    with store_intervals(apply_gamestop_floor({}, 300)):
+        failures += report(
+            not tasks.store_check_is_due('gamestop', now - timedelta(seconds=10), now=now),
+            'checked 10 seconds ago: not due, so no window opens')
+        failures += report(
+            tasks.store_check_is_due('gamestop', now - timedelta(seconds=400), now=now),
+            'checked 400 seconds ago: due')
+        failures += report(
+            tasks.store_check_is_due('amazon', now - timedelta(seconds=10), now=now),
+            'a non-GameStop row 10 seconds old is unaffected')
+        failures += report(
+            tasks.store_check_is_due('gamestop', None, now=now),
+            'a GameStop row that was never checked is due')
+        failures += report(tasks.store_check_interval('gamestop') == 5.0,
+                           'and the interval reports itself in minutes',
+                           str(tasks.store_check_interval('gamestop')))
+    return failures
+
+
+def check_gamestop_window_is_offscreen():
+    """
+    The window placement switch, without launching anything.
+
+    Reading the flag and building the options is all that can be checked
+    offline; whether Windows honours the position is a question only a real
+    launch answers, and it is recorded on the PR.
+    """
+    print("The GameStop window opens off-screen by default")
+    failures = 0
+    from app.scrapers import gamestop_scraper
+    from app.scrapers.gamestop_scraper import OFFSCREEN_POSITION, window_offscreen
+
+    previous = os.environ.get('GAMESTOP_WINDOW_OFFSCREEN')
+    try:
+        os.environ.pop('GAMESTOP_WINDOW_OFFSCREEN', None)
+        failures += report(window_offscreen(), 'unset means off-screen')
+        for value, expected in [('1', True), ('0', False), ('false', False),
+                                ('off', False), ('yes', True), ('', True)]:
+            os.environ['GAMESTOP_WINDOW_OFFSCREEN'] = value
+            failures += report(window_offscreen() is expected,
+                               f'GAMESTOP_WINDOW_OFFSCREEN={value!r} reads as {expected}')
+
+        os.environ['GAMESTOP_WINDOW_OFFSCREEN'] = '1'
+        scraper = gamestop_scraper.GameStopScraper()
+        arguments = scraper._get_chrome_options().arguments
+        failures += report(f'--window-position={OFFSCREEN_POSITION}' in arguments,
+                           'the position is on the command line', str(arguments))
+        # The pair matters: an off-screen window with no size can come up 0x0,
+        # and a viewport that size is its own bot signal.
+        failures += report(any(a.startswith('--window-size=') for a in arguments),
+                           'and an explicit size travels with it', str(arguments))
+        failures += report('--headless=new' not in arguments,
+                           'off-screen is not headless - Cloudflare blocks headless here')
+
+        os.environ['GAMESTOP_WINDOW_OFFSCREEN'] = '0'
+        arguments = gamestop_scraper.GameStopScraper()._get_chrome_options().arguments
+        failures += report(not any(a.startswith('--window-position=') for a in arguments),
+                           'and 0 gives back a window a human can watch', str(arguments))
+    finally:
+        if previous is None:
+            os.environ.pop('GAMESTOP_WINDOW_OFFSCREEN', None)
+        else:
+            os.environ['GAMESTOP_WINDOW_OFFSCREEN'] = previous
+    return failures
+
+
 CHECKS = [
     check_healthy_cycle,
     check_backoff_after_failures,
@@ -697,6 +820,9 @@ CHECKS = [
     check_interval_settings_are_parsed,
     check_interval_due_boundaries,
     check_store_waits_for_its_interval,
+    check_gamestop_floor_is_applied,
+    check_gamestop_rows_wait_for_the_floor,
+    check_gamestop_window_is_offscreen,
     check_backoff_beats_interval,
     check_block_page_counts_as_failure,
     check_a_real_page_is_still_an_answer,

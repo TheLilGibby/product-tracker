@@ -52,6 +52,39 @@ def parse_store_intervals(raw):
     return intervals
 
 
+# Seconds between GameStop checks when nothing more specific is configured.
+# Not an arbitrary default: a GameStop check opens a real Chrome window, because
+# Cloudflare serves headless Chrome a challenge page every time. On the
+# scheduler's own cadence that is a window stealing the foreground every few
+# seconds, all day, which is what this floor exists to stop.
+DEFAULT_GAMESTOP_CHECK_INTERVAL_SECONDS = 300
+
+
+def apply_gamestop_floor(intervals, seconds):
+    """
+    Put a floor under GameStop's check cadence unless one is already set.
+
+    Folded into STORE_CHECK_INTERVALS rather than checked separately, so there
+    is one per-store cadence mechanism and not two that can disagree. An
+    explicit `gamestop=` entry wins outright - somebody who names a number has
+    said what they want - and 0 seconds turns the floor off entirely, which is
+    the only way to ask for the old every-cycle behaviour now that a browser
+    window is the cost of a check.
+    """
+    if 'gamestop' in intervals:
+        return intervals
+
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError):
+        print(f"Ignoring unreadable GAMESTOP_CHECK_INTERVAL_SECONDS: {seconds!r}")
+        seconds = DEFAULT_GAMESTOP_CHECK_INTERVAL_SECONDS
+
+    if seconds <= 0:
+        return intervals
+    return dict(intervals, gamestop=seconds / 60.0)
+
+
 def normalize_database_uri(raw):
     """
     Accept the Postgres URLs people actually paste and hand SQLAlchemy one it
@@ -139,7 +172,12 @@ class Config:
     # Some retailers cannot take that cadence: GameStop is Cloudflare-blocked
     # over plain HTTP and needs a visible Chrome window, and Best Buy starts
     # serving Akamai block pages at roughly five loads a minute.
-    STORE_CHECK_INTERVALS = parse_store_intervals(os.environ.get('STORE_CHECK_INTERVALS', ''))
+    # GameStop carries a default floor (see apply_gamestop_floor); every other
+    # store follows the global interval unless it is listed above.
+    STORE_CHECK_INTERVALS = apply_gamestop_floor(
+        parse_store_intervals(os.environ.get('STORE_CHECK_INTERVALS', '')),
+        os.environ.get('GAMESTOP_CHECK_INTERVAL_SECONDS',
+                       DEFAULT_GAMESTOP_CHECK_INTERVAL_SECONDS))
     
     # Overridden per browser by the settings page; see DEFAULT_TIMEZONE above.
     DEFAULT_TIMEZONE = os.environ.get('DEFAULT_TIMEZONE', DEFAULT_TIMEZONE)
