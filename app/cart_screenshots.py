@@ -21,6 +21,7 @@ import binascii
 import logging
 import os
 import re
+import uuid
 from datetime import datetime
 
 from flask import current_app
@@ -35,11 +36,20 @@ SCREENSHOT_DIR = 'cart_screenshots'
 KEEP_PER_PRODUCT = 5
 
 # The exact shape save_cart_screenshot() writes, and the only shape
-# screenshot_path() will serve back. The timestamp sorts chronologically as
-# text, which is what _prune() relies on.
-NAME_FORMAT = 'cart_{product_id}_{stamp}.png'
+# screenshot_path() will serve back. The timestamp leads so the names sort
+# chronologically as text, which is what _prune() relies on.
+#
+# The trailing token is not decoration. %f says microseconds but the clock
+# behind it ticks about once a millisecond on Windows, so two saves in the same
+# tick produced the same name and the second quietly overwrote the first -
+# measured here at 2 collisions in 60 back-to-back saves. Real attempts are
+# minutes apart and would never have hit it, which is precisely why it would
+# have sat there unnoticed. The token makes the name unique by construction
+# instead of by luck.
+TOKEN_LENGTH = 6
+NAME_FORMAT = 'cart_{product_id}_{stamp}_{token}.png'
 STAMP_FORMAT = '%Y%m%dT%H%M%S_%f'
-FILENAME_RE = re.compile(r'^cart_\d+_\d{8}T\d{6}_\d{6}\.png$')
+FILENAME_RE = re.compile(r'^cart_\d+_\d{8}T\d{6}_\d{6}_[0-9a-f]{%d}\.png$' % TOKEN_LENGTH)
 
 
 def screenshot_dir():
@@ -68,7 +78,8 @@ def save_cart_screenshot(product_id, screenshot):
         return None
 
     name = NAME_FORMAT.format(product_id=product_id,
-                              stamp=datetime.utcnow().strftime(STAMP_FORMAT))
+                              stamp=datetime.utcnow().strftime(STAMP_FORMAT),
+                              token=uuid.uuid4().hex[:TOKEN_LENGTH])
     try:
         directory = screenshot_dir()
         with open(os.path.join(directory, name), 'wb') as handle:

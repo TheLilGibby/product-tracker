@@ -61,6 +61,16 @@ def main():
                         'cart_8_20260911T120000_000000.png/../../secrets'):
                 check(screenshot_path(bad) is None, f"refused: {bad!r}")
 
+            print("Saves in the same clock tick still get their own file")
+            # The timestamp alone was not enough: %f is microseconds but the
+            # clock ticks about once a millisecond, and a burst this size
+            # collided twice before the name carried a token. Kept deliberately
+            # tight so it would fail again if the token ever went away.
+            burst = [save_cart_screenshot(9, PNG_B64) for _ in range(60)]
+            check(all(burst), "all 60 saves in a burst returned a name")
+            check(len(set(burst)) == len(burst),
+                  f"all 60 names are distinct (got {len(set(burst))})")
+
             print("Old attempts are pruned, and only this product's")
             other = save_cart_screenshot(80, PNG_B64)
             kept = [save_cart_screenshot(8, PNG_B64) for _ in range(KEEP_PER_PRODUCT + 3)]
@@ -68,6 +78,7 @@ def main():
             check(len(mine) == KEEP_PER_PRODUCT,
                   f"product 8 keeps {KEEP_PER_PRODUCT} of its {KEEP_PER_PRODUCT + 4} screenshots "
                   f"(has {len(mine)})")
+            check(len(set(kept)) == len(kept), "each of those saves got its own filename")
             check(mine == sorted(kept[-KEEP_PER_PRODUCT:]), "the ones kept are the newest")
             check(screenshot_path(kept[-1]) is not None, "the newest is still servable")
             check(bool(other) and os.path.isfile(os.path.join(directory, other)),

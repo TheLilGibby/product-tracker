@@ -36,6 +36,7 @@ _PRODUCT_SCHEMA_ADDITIONS = (
     ('auto_cart_quantity', 'INTEGER DEFAULT 1'),
     ('last_cart_attempt', 'DATETIME'),
     ('last_cart_status', 'VARCHAR(100)'),
+    ('last_cart_screenshot', 'VARCHAR(120)'),
     ('tracking_enabled', 'BOOLEAN NOT NULL DEFAULT 1'),
 )
 
