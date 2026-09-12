@@ -40,7 +40,7 @@ def _unauthorized():
     return Response(
         'Authentication required.',
         401,
-        {'WWW-Authenticate': 'Basic realm="Product Tracker", charset="UTF-8"'},
+        {'WWW-Authenticate': 'Basic realm="TRACKER_", charset="UTF-8"'},
     )
 
 
