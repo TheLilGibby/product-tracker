@@ -141,7 +141,10 @@ def build_caption(when=None):
     import html
     import pytz
 
-    tz_name = str(_config_value('DEFAULT_TIMEZONE', 'UTC') or 'UTC')
+    from app.config import DEFAULT_TIMEZONE
+
+    tz_name = str(_config_value('DEFAULT_TIMEZONE', DEFAULT_TIMEZONE)
+                  or DEFAULT_TIMEZONE)
     try:
         tz = pytz.timezone(tz_name)
     except Exception:

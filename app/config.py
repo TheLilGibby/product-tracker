@@ -7,6 +7,12 @@ from dotenv import load_dotenv
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env')
 load_dotenv(_ENV_PATH, override=False)
 
+# Timezone every displayed time is written in when nothing more specific was
+# chosen. The drops this tracks are watched from Utah, and a tooltip reading
+# 04:02 UTC is a time nobody here can read at a glance; America/Denver carries
+# its own DST, so times say MDT in summer and MST in winter.
+DEFAULT_TIMEZONE = 'America/Denver'
+
 
 def parse_store_intervals(raw):
     """
@@ -135,8 +141,8 @@ class Config:
     # serving Akamai block pages at roughly five loads a minute.
     STORE_CHECK_INTERVALS = parse_store_intervals(os.environ.get('STORE_CHECK_INTERVALS', ''))
     
-    # Default timezone setting (uses UTC by default)
-    DEFAULT_TIMEZONE = os.environ.get('DEFAULT_TIMEZONE', 'UTC')
+    # Overridden per browser by the settings page; see DEFAULT_TIMEZONE above.
+    DEFAULT_TIMEZONE = os.environ.get('DEFAULT_TIMEZONE', DEFAULT_TIMEZONE)
     
     # Time display format preference (24-hour/military or 12-hour/AM-PM)
     # Options: '24h' or '12h'

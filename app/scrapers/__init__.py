@@ -145,6 +145,25 @@ def store_display_name(store_type):
     return STORE_LABELS.get(store_type, store_type.replace('_', ' ').title())
 
 
+# A small square tile per retailer, drawn by make_store_tiles.py and served out
+# of app/static. It lives next to the names because a lane on the group chart is
+# recognisable by its retailer's colour at sizes where its name is unreadable.
+STORE_ICON_DIR = 'img/stores'
+GENERIC_STORE_ICON = STORE_ICON_DIR + '/generic.svg'
+
+
+def store_icon_path(store_type):
+    """
+    Static path of a store's tile, e.g. 'img/stores/gamestop.svg'.
+
+    Anything without a tile of its own - a store added to STORE_DOMAINS before
+    its tile was drawn - gets the generic one, so a chart never has a hole in it.
+    """
+    if store_type in STORE_LABELS:
+        return '{}/{}.svg'.format(STORE_ICON_DIR, store_type)
+    return GENERIC_STORE_ICON
+
+
 def store_label_from_url(url):
     """
     Retailer name for a product URL.
